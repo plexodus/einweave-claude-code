@@ -30,7 +30,7 @@ export interface ProcInfo {
     pid: number;
     /** Normalized `ps -o lstart=` at write time — "" if `ps` is unavailable (e.g. Windows). */
     procStart: string;
-    /** RFC-017 D4 `software_id` (`einweave-claude-plugin`, `einweave-openclaw`, …). */
+    /** RFC-017 D4 `software_id` (`einweave-claude-code`, `einweave-openclaw`, …). */
     software: string;
     version: string;
     sessionKey: string;

@@ -27,7 +27,7 @@ const GENERAL = "01a11c21-175f-7000-9449-f0a07118354a";
 const SECRET = "01a11c21-175f-7000-9449-f0a07118354b";
 const GONE = "01a11c21-175f-7000-9449-f0a07118354c";
 const OLD = "01a11c21-175f-7000-9449-f0a07118354d";
-const TASK = "01a11c21-175f-7000-9449-f0a0711835aa";
+const THREAD = "01a11c21-175f-7000-9449-f0a0711835aa";
 const MINE = "01a11c21-175f-7000-9449-f0a07118354e"; // private, this agent is in it (its last owner)
 const OPS_UPPER = "01a11c21-175f-7000-9449-f0a071183501"; // "Ops"
 const OPS_LOWER = "01a11c21-175f-7000-9449-f0a071183502"; // "ops" — names differ only in case
@@ -92,9 +92,9 @@ function startStub() {
       const leave = url.pathname.match(/^\/api\/channels\/([^/]+)\/leave$/);
       if (req.method === "POST" && leave) {
         const id = leave[1];
-        if (id === GENERAL) return Response.json({ ok: true, channelId: id, left: true, releasedTasks: 2, agentsRemoved: [] });
+        if (id === GENERAL) return Response.json({ ok: true, channelId: id, left: true, releasedItems: 2, agentsRemoved: [] });
         if (id === MINE) return Response.json({ error: "last_owner" }, { status: 409 });
-        if (id === OPS_UPPER || id === OPS_LOWER) return Response.json({ ok: true, channelId: id, left: true, releasedTasks: 0, agentsRemoved: [] });
+        if (id === OPS_UPPER || id === OPS_LOWER) return Response.json({ ok: true, channelId: id, left: true, releasedItems: 0, agentsRemoved: [] });
         if (id === OLD) return Response.json({ error: "channel_archived" }, { status: 409 });
         return Response.json({ error: "Not a member of this channel" }, { status: 404 });
       }
@@ -112,12 +112,12 @@ function startStub() {
         }
         return Response.json({ error: "Channel not found" }, { status: 404 });
       }
-      if (req.method === "GET" && url.pathname === `/api/tasks/${TASK}/audience`) {
-        return Response.json({
-          visibility: "private",
-          entries: [{ principalId: "a2", kind: "agent", name: "Atlas", handle: "atlas", reasons: [{ code: "assignee" }], lastSpokeAt: null }],
-          channelReaders: { people: 2, agents: 1 },
-        });
+      // A thread's read names its channel (RFC-029: a thread has its channel's audience).
+      if (req.method === "GET" && url.pathname === `/api/threads/${THREAD}/messages`) {
+        return Response.json({ thread: { id: THREAD, channelId: MINE, title: "t", kind: "bug", status: "todo" }, parent: null, replies: [], hasMore: false, nextSinceSeq: 0 });
+      }
+      if (req.method === "GET" && /^\/api\/threads\/[^/]+\/messages$/.test(url.pathname)) {
+        return Response.json({ error: "Not found" }, { status: 404 });
       }
       if (req.method === "POST" && url.pathname === "/api/messages") {
         return Response.json({ error: "join_required" }, { status: 403 });
@@ -280,11 +280,11 @@ describe("join_channel", () => {
     expect(r.text).toContain("join_channel(channel_id)");
   });
 
-  test("leave_channel: by name, and says how many open tasks went back to the queue", async () => {
+  test("leave_channel: by name, and says how many open work items were unassigned", async () => {
     const r = await call("leave_channel", { channel_id: "general" });
     expect(r.isError, r.text).toBe(false);
     expect(r.text).toContain("left #general");
-    expect(r.text).toContain("2 open tasks went back to the queue");
+    expect(r.text).toContain("2 open work items unassigned");
     expect(stub.calls).toContainEqual({ method: "POST", path: `/api/channels/${GENERAL}/leave` });
   });
 
@@ -312,17 +312,21 @@ describe("join_channel", () => {
     expect(body).toMatchObject({ visibility: "public", readers: "everyone in the workspace", workspace: { people: 3, agents: 2 } });
   });
 
-  test("who_can_see: a task-only reader is told the channel's readers are counted, not named", async () => {
-    const body = JSON.parse((await call("who_can_see", { message_id: TASK })).text);
-    expect(body.readers.map((x: any) => x.handle)).toEqual(["atlas"]);
-    expect(body.channel_readers_not_named).toEqual({ people: 2, agents: 1 });
-    expect(stub.calls).toContainEqual({ method: "GET", path: `/api/tasks/${TASK}/audience` });
+  test("who_can_see: a thread answers its channel's audience", async () => {
+    const r = await call("who_can_see", { thread_id: THREAD });
+    expect(r.isError, r.text).toBe(false);
+    const body = JSON.parse(r.text);
+    expect(body.visibility).toBe("private");
+    expect(body.readers.map((x: any) => x.handle)).toEqual(["jorgen", "scout"]);
+    expect(stub.calls).toContainEqual({ method: "GET", path: `/api/channels/${MINE}/audience` });
+    expect(stub.calls.some((c) => c.path.startsWith("/api/tasks"))).toBe(false);
   });
 
   test("who_can_see: exactly one target; and not found reads as not found", async () => {
     expect((await call("who_can_see", {})).text).toContain("exactly one");
-    expect((await call("who_can_see", { channel_id: "general", message_id: TASK })).text).toContain("exactly one");
-    const nf = await call("who_can_see", { message_id: "01a11c21-175f-7000-9449-f0a0711835ff" });
+    expect((await call("who_can_see", { channel_id: "general", thread_id: THREAD })).text).toContain("exactly one");
+    expect((await call("who_can_see", { message_id: THREAD })).text).toContain("message_id is gone");
+    const nf = await call("who_can_see", { thread_id: "01a11c21-175f-7000-9449-f0a0711835ff" });
     expect(nf.isError).toBe(true);
     expect(nf.text).toContain("not found, or not readable");
   });

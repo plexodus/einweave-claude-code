@@ -3,6 +3,7 @@ import {
 } from "./index-0nd9zcgb.js";
 import {
   ADDRESSED_REASONS,
+  CONNECTION_KINDS,
   Clock,
   MAX_ACK_IDS,
   PROTOCOL_VERSION,
@@ -26,7 +27,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-h4hcjdhk.js";
+} from "./index-se2fcazb.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -224,6 +225,12 @@ class Session {
     this.rt = rt;
     this.client = client;
     this.opts = opts;
+    if (!opts || typeof opts !== "object" || opts.kind === undefined) {
+      throw new TypeError('session options with kind are required: client.session({ kind: "session" | "gateway" | "observer" })');
+    }
+    if (!CONNECTION_KINDS.includes(opts.kind)) {
+      throw new TypeError(`session kind must be "gateway", "session" or "observer", not ${JSON.stringify(opts.kind)}`);
+    }
     let resolve;
     this.closedPromise = new Promise((r) => resolve = r);
     this.resolveClosed = resolve;
@@ -420,7 +427,8 @@ class Session {
           ...!this.declaredOnce && this.opts.scope ? { scope: this.opts.scope } : {},
           ...!this.declaredOnce && this.opts.takeover ? { takeover: this.opts.takeover } : {},
           sessionInfo,
-          ...supersede ? { supersede: true } : {}
+          ...supersede ? { supersede: true } : {},
+          ...this.opts.interactive !== undefined ? { interactive: this.opts.interactive === true } : {}
         }));
       } catch {}
     });
@@ -724,7 +732,7 @@ class Session {
         this.sendJson({ type: "pong", lastSeq: this.seq.saved });
         return;
       case "message":
-      case "task_event":
+      case "thread_event":
       case "action_request": {
         const entry = entryFrom(env.type, p, p.redelivery === true);
         if (entry)
@@ -857,9 +865,9 @@ function entryFrom(kind, p, redelivery) {
       return null;
     return { kind: "message", id: message.id, redelivery, message: { ...message, deliveryReasons: Array.isArray(deliveryReasons) ? deliveryReasons : [] } };
   }
-  if (kind === "task_event") {
+  if (kind === "thread_event") {
     const event = p;
-    return typeof event.id === "string" ? { kind: "task_event", id: event.id, redelivery, event } : null;
+    return typeof event.id === "string" ? { kind: "thread_event", id: event.id, redelivery, event } : null;
   }
   if (kind === "action_request") {
     const action = p;
@@ -873,14 +881,14 @@ function pendingMeta(entry) {
     const m = entry.message;
     return { ...base, channelId: m.channelId ?? null, threadId: m.threadId ?? null, type: m.type ?? null, senderHandle: m.senderHandle ?? null };
   }
-  if (entry.kind === "task_event") {
-    return { ...base, channelId: null, threadId: entry.event.threadId ?? null, type: entry.event.change ?? null, senderHandle: null };
+  if (entry.kind === "thread_event") {
+    return { ...base, channelId: entry.event.channelId ?? null, threadId: entry.event.threadId ?? null, type: entry.event.action ?? null, senderHandle: null };
   }
   return { ...base, channelId: null, threadId: null, type: entry.action.action ?? null, senderHandle: null };
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.7.0";
+var SDK_VERSION = "0.8.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -982,11 +990,45 @@ function createApi(rt, client) {
       messages: (threadId, p = {}) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/messages${qs(p)}`),
       events: (threadId) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/events`),
       reply: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/messages`, { body }),
-      rename: (threadId, title) => req("PUT", `/api/threads/${encodeURIComponent(threadId)}`, { body: { title } }),
       markRead: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/read`, { body: body ?? {} }),
       markAnswer: (threadId, messageId) => req("PUT", `/api/threads/${encodeURIComponent(threadId)}/answer`, { body: { messageId } }),
       unmarkAnswer: (threadId) => req("DELETE", `/api/threads/${encodeURIComponent(threadId)}/answer`),
-      setKind: (threadId, kind) => req("PUT", `/api/threads/${encodeURIComponent(threadId)}/kind`, { body: { kind } })
+      create: (channelId, body) => req("POST", "/api/messages", { body: { channelId, ...body } }),
+      work: (threadId, body) => req("PUT", `/api/threads/${encodeURIComponent(threadId)}/work`, { body }),
+      resolve: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/resolve`, { body }),
+      reopen: (threadId, body = {}) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/reopen`, { body }),
+      triage: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/triage`, { body }),
+      activity: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/activity`, { body }),
+      links: {
+        add: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/links`, { body }),
+        remove: (threadId, linkId) => req("DELETE", `/api/threads/${encodeURIComponent(threadId)}/links/${encodeURIComponent(linkId)}`)
+      },
+      children: (threadId) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/children`)
+    },
+    work: {
+      list: (p = {}) => {
+        const list = (v) => Array.isArray(v) ? v.join(",") : v;
+        return req("GET", `/api/threads${qs({
+          scope: "work",
+          channel: p.channel,
+          q: p.query,
+          kind: list(p.kind),
+          status: list(p.status),
+          assignee: p.assignee,
+          label: p.label,
+          parent: p.parent,
+          severity: list(p.severity),
+          dueBefore: p.dueBefore,
+          resolvedIn: p.resolvedIn,
+          withoutReview: p.withoutReview ? "true" : undefined,
+          attention: list(p.attention),
+          updatedAfter: p.updatedAfter,
+          sort: p.sort,
+          limit: p.limit,
+          cursor: p.cursor
+        })}`);
+      },
+      schema: (p = {}) => req("GET", `/api/work-schema${qs({ channel: p.channel })}`)
     },
     agents: {
       list: () => req("GET", "/api/agents"),
@@ -1010,13 +1052,6 @@ function createApi(rt, client) {
         const q = qs2.toString();
         return req("GET", q ? `/api/deliveries?${q}` : "/api/deliveries");
       }
-    },
-    tasks: {
-      claim: (messageId) => req("POST", `/api/tasks/${encodeURIComponent(messageId)}/claim`),
-      updateStatus: (messageId, body) => req("PUT", `/api/tasks/${encodeURIComponent(messageId)}/status`, { body }),
-      cancel: (messageId, reason) => req("POST", `/api/tasks/${encodeURIComponent(messageId)}/cancel`, { body: reason ? { reason } : {} }),
-      list: (p = {}) => req("GET", `/api/tasks${qs(p)}`),
-      audience: (messageId) => req("GET", `/api/tasks/${encodeURIComponent(messageId)}/audience`)
     }
   };
 }

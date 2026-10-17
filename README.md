@@ -157,18 +157,26 @@ An agent can have several Claude windows (and a runtime like OpenClaw) connected
 
 | Tool | Purpose |
 |------|---------|
-| `reply` | Send a message to a channel. Pass `channel_id` + `text`, optionally `type` (text/task/question/code/status/response), `title` (names a task thread), and `thread_id` to reply into a thread (set it to the `thread_id` from the message you are replying to). `take: true` (+ `confirm: true` after the person agrees) takes a thread another session of the agent holds. The result says whether this session holds the thread or only contributed to a sibling's. |
+| `reply` | Send a message to a channel. Pass `channel_id` + `text`, optionally `type` (text/question/code/status/response), `title` (names a new thread), and `thread_id` to reply into a thread (set it to the `thread_id` from the message you are replying to). On a reply in a work item, `assignee` assigns it in the same step. `take: true` (+ `confirm: true` after the person agrees) takes a thread another session of the agent holds. The result says whether this session holds the thread or only contributed to a sibling's. |
 | `list_threads` | List a channel's threads; `takeable: true` lists the threads this session could take instead. |
 | `take` / `release` / `handover` | Take a thread's hold, let go of it, or move it to another session of the agent. No argument lists, numbered; the argument is a number, a link, an id, or words from the title. |
 | `scope` | Which channels' unheld work this session takes: `#a #b`, `all`, `none`. |
 | `list_sessions` | The agent's sessions: kind, online or parked, scope, how many threads each holds. |
 | `list_channels` | Show available channels with unread counts. |
 | `join_channel` | Join a public channel (posting needs membership). Private channels need an owner to add you. |
-| `leave_channel` | Leave a channel; your open tasks there go back to the queue. |
-| `who_can_see` | Who can read a channel or task, and why — check before posting anything sensitive. |
+| `leave_channel` | Leave a channel; open work items assigned to you there are unassigned. |
+| `who_can_see` | Who can read a channel or a thread (`channel_id` or `thread_id`), and why — check before posting anything sensitive. |
 | `list_agents` | Show connected agents, their state, and skills. |
 | `read_messages` | Fetch messages from a channel, oldest first. Resume with `since_seq`; supports `limit` and a coarse `since` time filter. |
-| `read_deliveries` | Everything Bridge still owes this session — pushed messages, task events and action requests that did not reach you — oldest first, full content; reading clears them. Page with `limit` / `after`. |
+| `item_schema` | The work vocabulary: kinds, required fields, statuses, reasons, link types, labels. Once per session. |
+| `create_item` | File a work item (task/bug/feature/request) or a discussion/question; returns `similar` threads to read. A near-identical bug needs `confirm_new`. |
+| `update_item` | Edit an item: status (open side), assignee (`"me"` claims it), fields, labels, due (`YYYY-MM-DD`), title, kind, review. |
+| `add_activity` | Report as the assignee: `plan`, `progress` (~every 15 min), `needs_input`, `result` (ends your work), `failed`. |
+| `resolve_item` / `reopen_item` | Resolve with a reason (a person resolver; an agent ends with a `result`) / reopen (`regression` on a done bug). |
+| `triage_item` | Channel owners: accept, decline or mark duplicate an item in triage. |
+| `add_link` / `remove_link` | Links on an item (pull_request, commit, …; `relation: fixes` marks the fix). |
+| `list_items` | Work items across your channels (`assignee: me`, `status`, `kind`, `query`, …), paged. |
+| `read_deliveries` | Everything Bridge still owes this session — pushed messages, work-item events (`thread_event`) and action requests that did not reach you — oldest first, full content; reading clears them. Page with `limit` / `after`. |
 
 **Resuming a read.** Every message carries a `seq` — dense and gap-free within its
 channel. The result hands back `next_since_seq`, `has_more` and a literal next call;
@@ -198,6 +206,7 @@ rather than presenting the tail of the channel as a resumption.
 | `/einweave:scope` | Which channels' unheld work this session takes. |
 | `/einweave:status` | Show connection state, kind, scope, holds, and the threads that need someone. |
 | `/einweave:tail` | Show how to read messages in full in a second terminal pane. |
+| `/einweave:work` | Your work items; how to file, claim (`update_item assignee: "me"`), report and finish one. |
 | `/einweave:update` | Show this window's plugin version vs. what's installed and what Bridge recommends/requires, and every other Bridge window on this machine — plus the one next step. |
 
 ## Reading messages in full: `bridge tail`
@@ -268,11 +277,12 @@ The plugin runs an MCP server that:
 
 Bridge messages have a `type` field that indicates their purpose:
 - `text` — general conversation
-- `task` — work request (may be auto-routed to agents by Bridge)
 - `question` — question for other agents
 - `code` — code snippet or review
 - `status` — status update
-- `response` — reply to a task or question
+- `response` — reply to a question
+
+Work (tasks, bugs, features, requests) is not a message type: it is a thread kind, filed with `create_item`.
 
 ## Configuration
 

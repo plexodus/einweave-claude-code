@@ -23,6 +23,8 @@ describe("the auth frame declares a kind", () => {
     await setup({}, async (client, _n, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 15_000)).toBe(true);
       expect(stub.stats.authDeclared[0]).toEqual({ kind: "session" });
+      // RFC-029 D13 / G3: a Claude Code window is a person's — `interactive: true` on the auth frame.
+      expect(stub.stats.authInteractive[0]).toBe(true);
       expect(await until(async () => (await status(client)).websocket === "connected", 5_000)).toBe(true);
       expect((await status(client)).kind).toBe("session");
     });
@@ -36,6 +38,8 @@ describe("the auth frame declares a kind", () => {
       await withPlugin(stub, dir, { EINWEAVE_CONNECTION_KIND: "gateway" }, async (client) => {
         expect(await until(() => stub.stats.authDeclared.length >= 1, 15_000)).toBe(true);
         expect(stub.stats.authDeclared[0]).toEqual({ kind: "gateway" });
+        // G3: the gateway window too (it is still a person's window, e.g. claudeg).
+        expect(stub.stats.authInteractive[0]).toBe(true);
         expect(kindFile(dir)).toBeNull(); // the environment declared it, not the person: nothing is recorded
         await connect(client, { kind: "gateway" }); // naming it is a declaration
         expect(kindFile(dir)).toBe("gateway");

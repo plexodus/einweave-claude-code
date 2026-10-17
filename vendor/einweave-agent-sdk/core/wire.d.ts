@@ -6,7 +6,7 @@
  *
  * Transcribed from the server's real shapes (protocol v2, RFC-027): `packages/api/src/ws.ts`
  * (`SessionInfo`, the `auth`/`reauth`/`ack`/`pong` inputs, `authenticated`, `message`,
- * `task_event`, `action_request`, `catchup`, `invalid_session`), `ws-frame.ts` (the envelope)
+ * `thread_event`, `action_request`, `catchup`, `invalid_session`), `ws-frame.ts` (the envelope)
  * and `routing.ts` (`DeliveryReason`, `ADDRESSED_REASONS`/`BROADCAST_REASONS`, `isAddressed`).
  * `fixtures/frames/*.json` are captured from a live server, so a change to either side
  * without the other shows up there.
@@ -85,6 +85,11 @@ export interface AuthFrame {
     dpop?: unknown;
     /** RFC-017 D3: take over this session grant from a socket that already holds it. */
     supersede?: boolean;
+    /**
+     * RFC-029 D13: a person is at this connection (their window), so a work item it holds is never
+     * flagged quiet or stuck. Re-declared on EVERY auth; absent (or anything but `true`) = false.
+     */
+    interactive?: boolean;
     /** The last seq this client has durably stored for THIS grant; 0 = a fresh start (RFC-027 D5). */
     lastSeq: number;
 }
@@ -191,17 +196,38 @@ export interface MessagePayload {
     deliveryReasons: DeliveryReason[];
     redelivery?: boolean;
 }
-/** RFC-027 D3a: a task change as it happened (a `task_events` row) — never today's status. */
-export interface TaskEventPayload {
+/**
+ * RFC-029 §6: a work item changed, as it happened (one `thread_events` row) — sent to the agents
+ * it concerns (assignee, previous assignee, requester, followers, a `needs_input` recipient),
+ * never to its actor. Server source: `packages/api/src/work/header.ts` `threadEventPayload`.
+ *
+ * `status` is the item's status NOW (at send time — a resume shows today's), `work.text` the
+ * item's header rendered by the server (G11: the SDK stays zero-dep and renders nothing; a
+ * plugin prints this text). Both null when the thread is no longer a work item.
+ */
+export interface ThreadEventPayload {
     id: string;
-    taskId: string;
     threadId: string;
-    change: string;
-    status: string;
-    assigneeId: string | null;
+    channelId: string;
+    /**
+     * `assigned` · `unassigned` · `status` · `plan` · `progress` · `needs_input` · `input_answered` ·
+     * `result` · `failed` · `resolve` · `reopen` · `fields` · `stuck` · `parent_resolved` ·
+     * `child_resolved` · … — an open set (`@einweave/threads` `THREAD_EVENT_ACTIONS`).
+     */
+    action: string;
+    /**
+     * The event's own detail, per action. E.g. `stuck`: `{holder: <agent id>, session: <grant id>,
+     * since: <the holder's last heartbeat ISO | null>}`; `assigned`: `{from, to, …}`.
+     */
+    detail: Record<string, unknown> | null;
+    /** Null for the server itself (a sweep, a departure). */
     actorId: string | null;
-    reason: string | null;
+    actorType: "agent" | "human" | "system" | (string & {});
     occurredAt: string;
+    status: string | null;
+    work: {
+        text: string;
+    } | null;
     redelivery?: boolean;
 }
 export interface ActionRequestPayload {
@@ -230,7 +256,7 @@ export interface DrainPayload {
     in_ms?: number;
 }
 /** The three accountable kinds (L1) — what a session's model owes (D3). */
-export type EntryKind = "message" | "task_event" | "action_request";
+export type EntryKind = "message" | "thread_event" | "action_request";
 /** `GET /api/deliveries` — the same payloads the frames carry, one keyset page of them. */
 export interface DeliveriesResponse {
     entries: {

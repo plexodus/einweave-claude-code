@@ -99,7 +99,7 @@ export interface TokenClientOptions {
     /**
      * This runtime's PUBLIC client id (RFC-016 §3.2 `AGENT_AUTH_CLIENTS`) — sent by the enrolment
      * flows. REQUIRED, no default: an SDK consumer must never silently enrol as another runtime.
-     * The Claude plugin passes "einweave-claude-plugin" from its own (non-core) module.
+     * The Claude plugin passes "einweave-claude-code" from its own (non-core) module.
      */
     clientId: string;
     /** Injected transport (tests, proxies, other runtimes). Default: the global `fetch`. */

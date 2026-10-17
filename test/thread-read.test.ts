@@ -50,8 +50,6 @@ type Stub = {
   readBodies: { path: string; body: any }[];
   /** Bodies sent to `/answer`, in order. */
   answerBodies: any[];
-  /** Bodies sent to `/kind`, in order. */
-  kindBodies: any[];
   /** Every `ack` frame the plugin sent over the socket (RFC-027 D4), in order. */
   acks: { ids: string[]; how: string }[];
   set: (s: Partial<State>) => void;
@@ -72,6 +70,8 @@ type State = {
   /** GET /api/threads/:id/events — the timeline; `eventsStatus` 404 models an older server. */
   events: Row[];
   eventsStatus: number;
+  /** `thread.work` (RFC-029 G11): a work item's header for this reader; null for a conversation kind. */
+  work: Row | null;
 };
 
 function startStub(): Stub {
@@ -80,8 +80,7 @@ function startStub(): Stub {
   const readBodies: { path: string; body: any }[] = [];
   const answerBodies: any[] = [];
   const acks: { ids: string[]; how: string }[] = [];
-  const kindBodies: any[] = [];
-  let st: State = { root: null, replies: [], threadStatus: 200, legacy: false, readStatus: 200, threads: [], legacyList: false, answerStatus: 200, answerError: "", events: [], eventsStatus: 200 };
+  let st: State = { root: null, replies: [], threadStatus: 200, legacy: false, readStatus: 200, threads: [], legacyList: false, answerStatus: 200, answerError: "", events: [], eventsStatus: 200, work: null };
   let answer: string | null = null; // the thread's accepted answer
   let cursor = 0; // the stored thread read position
   const agentAuth = createAgentAuthRoutes();
@@ -110,13 +109,6 @@ function startStub(): Stub {
         const known = c === CHANNEL_ID || c === CHANNEL_NAME;
         if (st.legacyList) return Response.json({ threads: known ? st.threads : [] });
         return Response.json({ channelId: known ? CHANNEL_ID : null, threads: known ? st.threads : [] });
-      }
-      const k = url.pathname.match(/^\/api\/threads\/([^/]+)\/kind$/);
-      if (k && req.method === "PUT") {
-        const body: any = await req.json().catch(() => null);
-        kindBodies.push(body);
-        if (st.answerStatus !== 200) return Response.json({ error: st.answerError }, { status: st.answerStatus });
-        return Response.json({ threadId: k[1], channelId: CHANNEL_ID, kind: body.kind, status: "open", answerMessageId: null });
       }
       const ev = url.pathname.match(/^\/api\/threads\/([^/]+)\/events$/);
       if (ev && req.method === "GET") {
@@ -165,6 +157,7 @@ function startStub(): Stub {
           body.thread = {
             id: THREAD, channelId: CHANNEL_ID, title: "Bug: threaded replies", kind: "question",
             status: answer ? "resolved" : "open", answerMessageId: answer, replyCount: st.replies.length,
+            ...(st.work ? { work: st.work } : {}),
           };
           body.hasMore = after.length > limit;
           body.nextSinceSeq = last ? last.seq : Number(since ?? 0);
@@ -197,7 +190,6 @@ function startStub(): Stub {
     calls,
     readBodies,
     answerBodies,
-    kindBodies,
     acks,
     set: (s) => { st = { ...st, ...s }; },
     stop: () => server.stop(true),
@@ -429,27 +421,22 @@ describe("read_thread / list_threads", () => {
     expect(stub.acks).toEqual([{ ids: [body.root.id, ...body.replies.map((r: any) => r.id)], how: "model" }]);
   });
 
-  test("set_thread_kind PUTs the kind and reports the result (RFC-015 slice 5)", async () => {
-    const r = await ok("set_thread_kind", { thread_id: THREAD, kind: "question" });
-    expect(r).toEqual({ thread_id: THREAD, kind: "question", status: "open", answer_message_id: null });
-    expect(stub.calls).toContain(`PUT /api/threads/${THREAD}/kind`);
-    expect(stub.kindBodies).toEqual([{ kind: "question" }]);
-  });
-
-  test("set_thread_kind refuses task/unknown locally, and explains 403 and the server's 422", async () => {
-    const task = await callTool("set_thread_kind", { thread_id: THREAD, kind: "task" });
-    expect(task.isError).toBe(true);
-    expect(task.text).toContain("a task stays a task");
-    expect(stub.kindBodies).toEqual([]);
-
-    stub.set({ answerStatus: 403, answerError: "Forbidden" });
-    const r403 = await callTool("set_thread_kind", { thread_id: THREAD, kind: "question" });
-    expect(r403.text).toContain("only the thread's creator, the channel owner or a workspace admin");
-
-    stub.set({ answerStatus: 422, answerError: "A task thread's kind cannot be changed" });
-    const r422 = await callTool("set_thread_kind", { thread_id: THREAD, kind: "discussion" });
-    expect(r422.isError).toBe(true);
-    expect(r422.text).toContain("A task thread's kind cannot be changed");
+  test("read_thread prints a work item's header: the server's text, what this reader may do, the result to approve (RFC-029 G11)", async () => {
+    const may = { resolve: true, withdraw: false, withoutReview: false, triage: { accept: false, assign: false, decline: false }, changesRequested: true, assign: true, claim: false, reopen: false, regression: false };
+    stub.set({
+      work: { text: "bug · in_review\nassignee: @bellman\nlatest: result by @bellman", model: { opaque: true }, may, latestResult: { id: "ev-result-1", detail: { text: "fixed", proposed: { reason: "done" } } }, everHadResult: true },
+    });
+    const body = await ok("read_thread", { thread_id: THREAD, mark_read: false });
+    expect(body.thread.work).toEqual({
+      text: "bug · in_review\nassignee: @bellman\nlatest: result by @bellman",
+      may,
+      latest_result_id: "ev-result-1",
+      latest_result: { text: "fixed", proposed: { reason: "done" } },
+      ever_had_result: true,
+    });
+    // A conversation kind has no header: nothing is invented.
+    stub.set({ work: null });
+    expect((await ok("read_thread", { thread_id: THREAD, mark_read: false })).thread.work).toBeUndefined();
   });
 
   test("mark_answer refuses an ambiguous or empty call locally — nothing is sent", async () => {

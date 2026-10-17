@@ -147,6 +147,13 @@ export interface SessionOptions {
      * is closed "gateway taken over"). An explicit act of its own: `supersede` never implies it. First connect only.
      */
     takeover?: "gateway";
+    /**
+     * RFC-029 D13: a person is at this connection (their window) — a work item its session holds is
+     * never flagged quiet or stuck, and its header says "in @person's session". Sent on EVERY auth
+     * (unlike `scope` / `takeover`); omitted = not interactive. The Claude plugin sends `true` for
+     * every kind (G3), OpenClaw `false`.
+     */
+    interactive?: boolean;
     /** Where entries go. Default: a `checkpoint` adapter — nothing pushed, everything waits in `pending`. */
     adapter?: DeliveryAdapter;
     /** Narrows the BROADCAST tier only (RFC-018 D8) — never the addressed tier (`isAddressed`). */
@@ -300,7 +307,7 @@ export declare class Session {
     private fetchOwed;
     /**
      * ONE page of what this session's model still owes (`GET /api/deliveries`), parsed
-     * as the entries a host is handed — messages, task events and action requests, in
+     * as the entries a host is handed — messages, work-item events and action requests, in
      * the order the server owes them. For a host with no push channel (a checkpoint host
      * answering "what did I miss?") and the way to clear an entry no push will bring back.
      *

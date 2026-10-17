@@ -17,7 +17,7 @@ export interface PendingEntry {
     kind: EntryKind;
     channelId: string | null;
     threadId: string | null;
-    /** A message's type ("text", "task", …), a task event's change, an action's name. */
+    /** A message's type ("text", "question", …), a work-item event's action, an action's name. */
     type: string | null;
     senderHandle: string | null;
     /** Epoch ms the adapter's push resolved; null until then (or never, for a checkpoint host). */

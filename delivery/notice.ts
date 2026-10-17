@@ -7,13 +7,13 @@
  * arrive as text that cannot open a new line or a tag.
  *
  * Every kind points at `read_deliveries`: it returns what THIS session's model still owes
- * (messages, task events, action requests) and clears it. `read_thread` only knows messages.
+ * (messages, work-item events, action requests) and clears it. `read_thread` only knows messages.
  */
 import { stripControlChars } from "../control-chars";
 
 export interface NoticeEntry {
   id: string;
-  kind: "message" | "action_request" | "task_event";
+  kind: "message" | "action_request" | "thread_event";
   type?: string;
   channelName?: string;
   threadId?: string;

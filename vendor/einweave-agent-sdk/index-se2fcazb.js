@@ -921,7 +921,7 @@ function typeLabel(m) {
   const t = cleanLine(m.type).trim();
   if (t === "" || t === "text")
     return null;
-  return { text: t, style: t === "question" || t === "task" ? "amber" : "dim" };
+  return { text: t, style: t === "question" ? "amber" : "dim" };
 }
 function headerParts(m, o, folded) {
   const lk = look(m);

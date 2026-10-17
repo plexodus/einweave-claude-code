@@ -178,6 +178,8 @@ export function createAuthCore(opts: StubOptions = {}) {
     refusals: [] as string[],
     /** The `kind` (and starting scope / takeover) of each WS auth frame, in order (RFC-028 D1). */
     authDeclared: [] as Array<{ kind: unknown; scope?: unknown; takeover?: unknown }>,
+    /** RFC-029 D13: each auth frame's `interactive`, in order (absent → undefined). */
+    authInteractive: [] as unknown[],
   };
   const mint = mintAgentToken;
   const sockets = new Set<any>();
@@ -771,6 +773,7 @@ export function startAuthStub(opts: StubOptions = {}) {
             return core.closeLikeServer(ws, 4008, "client too old: open /plugin → Installed → einweave → Update now, then /reload-plugins");
           }
           core.stats.authDeclared.push({ kind: f.kind, scope: f.scope, takeover: f.takeover });
+          core.stats.authInteractive.push(f.interactive);
           const forced = core.takeForcedAuthClose();
           if (forced) {
             core.stats.refusals.push(`ws:forced ${forced.code}`);

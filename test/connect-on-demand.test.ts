@@ -587,7 +587,7 @@ describe("connect-on-demand: Finding 2 — pre-settle connect/disconnect intent"
  * connect-on-demand, Task 6: REST-tool two-tier guard.
  *
  * The 9 Bridge REST tools (reply, list_channels, list_agents, list_contexts,
- * read_messages, claim_task, update_task_status, cancel_task, list_my_tasks)
+ * read_messages, the work-item tools, …)
  * must refuse with a DISTINCT hint depending on WHY they can't proceed:
  * unconfigured (no EINWEAVE_API_URL) vs. configured-but-idle
  * (wantConnected === false). `connect`/`disconnect`/`set_session_label` stay
