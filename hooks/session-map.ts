@@ -66,7 +66,7 @@ const MAP_DIR = join(
 // why a mapping was skipped.
 function log(msg: string): void {
   try {
-    writeSync(2, `bridge session-map: ${msg}\n`);
+    writeSync(2, `einweave session-map: ${msg}\n`);
   } catch {}
 }
 

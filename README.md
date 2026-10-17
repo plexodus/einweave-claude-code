@@ -14,12 +14,12 @@ Connect Claude Code to [einweave](https://github.com/plexodus/bridge), an agent-
 2. **Point it at einweave and sign the machine in**
 
 ```
-/einweave:configure https://your-bridge-api.example.com
+/einweave:configure https://your-einweave-api.example.com
 /einweave:login
 ```
 
 `EINWEAVE_API_URL` must be the **exact origin** of the einweave API — scheme, host and
-port only, no path (`https://bridge-api.example.com`, not `…/api`), and the same origin
+port only, no path (`https://einweave-api.example.com`, not `…/api`), and the same origin
 the server publishes as its public URL. Every request carries a proof signed over that
 origin; a URL with a path is refused locally, and a different spelling of the host
 (another port, `http` vs `https`, an alias) is refused by the server.
@@ -209,7 +209,7 @@ rather than presenting the tail of the channel as a resumption.
 | `/einweave:work` | Your work items; how to file, claim (`update_item assignee: "me"`), report and finish one. |
 | `/einweave:update` | Show this window's plugin version vs. what's installed and what einweave recommends/requires, and every other einweave window on this machine — plus the one next step. |
 
-## Reading messages in full: `bridge tail`
+## Reading messages in full: `einweave tail`
 
 The Claude window shows an incoming einweave message as a short preview and a sent
 one as a tool call with no text. `tail` is a viewer for a second terminal pane:
@@ -219,10 +219,10 @@ only einweave messages, in full, live.
 2. In the new pane run `~/.einweave/bin/einweave-tail`.
 3. Leave it open. It waits for a session, attaches, and reattaches after a restart.
 
-One-time shortcut for `~/.zshrc`, so `bridge tail` works anywhere:
+One-time shortcut for `~/.zshrc`, so `einweave tail` works anywhere:
 
 ```sh
-bridge() { [ "$1" = tail ] && shift; "$HOME/.einweave/bin/einweave-tail" "$@"; }
+einweave() { [ "$1" = tail ] && shift; "$HOME/.einweave/bin/einweave-tail" "$@"; }
 ```
 
 - Incoming messages sit left with a green bar, outgoing right with a blue bar.
@@ -289,7 +289,7 @@ Work (tasks, bugs, features, requests) is not a message type: it is a thread kin
 All config lives in `~/.einweave/.env`:
 
 ```env
-EINWEAVE_API_URL=https://bridge-api.example.com
+EINWEAVE_API_URL=https://einweave-api.example.com
 EINWEAVE_CHANNELS=general,frontend  # optional, empty = all
 EINWEAVE_CONNECTION_KIND=gateway     # optional; the kind of a window that never named one (default session)
 EINWEAVE_ENROLMENT_KEY=ew_ek_...   # optional, headless enrolment

@@ -165,11 +165,11 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
     const dir = dirname(o.path);
     const safe = ensurePrivateDir(dir);
     if (!safe.ok) {
-      o.log(`bridge delivery: control socket not started — ${safe.reason}; hook confirmations off`);
+      o.log(`einweave delivery: control socket not started — ${safe.reason}; hook confirmations off`);
       return { server: null, failure: { kind: "unsafe-dir", detail: safe.reason } };
     }
     if (!o.takeover && lstatOrNull(o.path) && (await socketAnswers(o.path))) {
-      o.log(`bridge delivery: control socket ${o.path} is served by another process; hook confirmations off`);
+      o.log(`einweave delivery: control socket ${o.path} is served by another process; hook confirmations off`);
       return { server: null, failure: { kind: "served-elsewhere", detail: o.path } };
     }
     listener = Bun.listen<{ buf: string }>({
@@ -187,7 +187,7 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
           try {
             res = handle(s.data.buf.slice(0, nl));
           } catch (err) {
-            o.log(`bridge delivery: control request failed: ${err instanceof Error ? err.message : String(err)}`);
+            o.log(`einweave delivery: control request failed: ${err instanceof Error ? err.message : String(err)}`);
             res = { ok: false, error: "internal" };
           }
           s.write(JSON.stringify(res) + "\n");
@@ -207,7 +207,7 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
       unlinkSync(tmp);
     } catch {}
     const detail = err instanceof Error ? err.message : String(err);
-    o.log(`bridge delivery: control socket not started (hook confirmations off): ${detail}`);
+    o.log(`einweave delivery: control socket not started (hook confirmations off): ${detail}`);
     return { server: null, failure: { kind: "failed", detail } };
   }
 

@@ -88,9 +88,9 @@ const STATE_DIR = resolveStateDir();
 if (!process.env.EINWEAVE_STATE_DIR) {
   const moved = migrateLegacyState(STATE_DIR);
   if (moved.kind === "migrated") {
-    process.stderr.write(`bridge channel: moved ${moved.profiles} credential profile(s)${moved.env ? " and .env" : ""} to ${STATE_DIR}\n`);
+    process.stderr.write(`einweave channel: moved ${moved.profiles} credential profile(s)${moved.env ? " and .env" : ""} to ${STATE_DIR}\n`);
   } else if (moved.kind === "failed") {
-    process.stderr.write(`bridge channel: could not move the old state to ${STATE_DIR} (${moved.error}); sign in again with /einweave:login\n`);
+    process.stderr.write(`einweave channel: could not move the old state to ${STATE_DIR} (${moved.error}); sign in again with /einweave:login\n`);
   }
 }
 const ENV_FILE = join(STATE_DIR, ".env");
@@ -483,7 +483,7 @@ async function execOut(argv: string[]): Promise<string> {
     ]);
     if (out === null) {
       process.stderr.write(
-        `bridge channel: ${argv[0]} timed out after ${EXEC_TIMEOUT_MS}ms, killed\n`
+        `einweave channel: ${argv[0]} timed out after ${EXEC_TIMEOUT_MS}ms, killed\n`
       );
       return "";
     }
@@ -590,7 +590,7 @@ async function getSessionInfoForAuth(): Promise<Record<string, string>> {
   if (info) return info;
   if (sessionInfoPromise === p) sessionInfoPromise = null;
   process.stderr.write(
-    `bridge channel: session info unavailable (timeout/failure) — authenticating with minimal info\n`
+    `einweave channel: session info unavailable (timeout/failure) — authenticating with minimal info\n`
   );
   return minimalSessionInfo();
 }
@@ -601,10 +601,10 @@ const STATE_SWEEP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // ── Safety ──────────────────────────────────────────────────────────────────
 
 process.on("unhandledRejection", (err) => {
-  process.stderr.write(`bridge channel: unhandled rejection: ${err}\n`);
+  process.stderr.write(`einweave channel: unhandled rejection: ${err}\n`);
 });
 process.on("uncaughtException", (err) => {
-  process.stderr.write(`bridge channel: uncaught exception: ${err}\n`);
+  process.stderr.write(`einweave channel: uncaught exception: ${err}\n`);
 });
 
 // ── Connection state ───────────────────────────────────────────────────────
@@ -714,7 +714,7 @@ function notifyInboundFailure(frameType: unknown, err: unknown): void {
           `⚠️ einweave INBOUND DELIVERY IS FAILING — ${inboundFailureCount} message(s) dropped so far ` +
           `(frame type: ${String(frameType ?? "unknown")}). ${detail}. ` +
           `Messages sent to this session are NOT arriving. This is a client bug, not a quiet channel.`,
-        meta: { type: "error", sender: "bridge", dropped: inboundFailureCount },
+        meta: { type: "error", sender: "einweave", dropped: inboundFailureCount },
       },
     })
     .catch(() => {});
@@ -778,13 +778,13 @@ async function loadChannelMap(): Promise<boolean> {
     // An empty answer is still an answer (RFC-028: "no name resolves" must be told apart from "the map never
     // loaded"), but it never REPLACES a map we already hold -- that would forget every name until the next refresh.
     if (next.size === 0 && channelNameToId) {
-      process.stderr.write(`bridge channel: channel map response had no channels — keeping previous map\n`);
+      process.stderr.write(`einweave channel: channel map response had no channels — keeping previous map\n`);
       return true;
     }
     channelNameToId = next;
     return true;
   } catch (err) {
-    process.stderr.write(`bridge channel: failed to load channel map: ${err}\n`);
+    process.stderr.write(`einweave channel: failed to load channel map: ${err}\n`);
     return false;
   }
 }
@@ -899,7 +899,7 @@ const credentialWatch = setInterval(async () => {
   if (waitingFor === null || !wantConnected || shuttingDown || creds.configError()) return;
   if (waitingFor === "stop-lift" && (await creds.refreshStop()) !== null) return;
   if (waitingFor === null || !wantConnected || shuttingDown) return;
-  process.stderr.write(`bridge channel: ${waitingFor === "stop-lift" ? "a new sign-in on disk" : "credentials appeared"} — connecting\n`);
+  process.stderr.write(`einweave channel: ${waitingFor === "stop-lift" ? "a new sign-in on disk" : "credentials appeared"} — connecting\n`);
   restartConnection();
 }, CREDENTIAL_WATCH_MS);
 credentialWatch.unref?.();
@@ -933,7 +933,7 @@ function notifyModel(content: string, type: "error" | "status"): void {
   mcp
     .notification({
       method: "notifications/claude/channel",
-      params: { content, meta: { type, sender: "bridge" } },
+      params: { content, meta: { type, sender: "einweave" } },
     })
     .catch(() => {});
 }
@@ -966,7 +966,7 @@ function notifyConnectionRefused(
       method: "notifications/claude/channel",
       params: {
         content: `⚠️ einweave disconnected this session: ${describeClose(cls, code, reason, opts)}`,
-        meta: { type: "error", sender: "bridge" },
+        meta: { type: "error", sender: "einweave" },
       },
     })
     .catch(() => {});
@@ -1238,7 +1238,7 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
       }
     },
     failed: (entry, err) => {
-      process.stderr.write(`bridge channel: failed to deliver ${entry.kind} ${entry.id} to Claude: ${err}\n`);
+      process.stderr.write(`einweave channel: failed to deliver ${entry.kind} ${entry.id} to Claude: ${err}\n`);
       notifyInboundFailure(entry.kind, err);
     },
   });
@@ -1452,7 +1452,7 @@ function applyStartingScopeWhenMapLoads(): void {
         notifyModel("⚠️ EINWEAVE_CHANNELS could not be applied: the channel list never loaded. This session is still receiving unheld work from ALL channels. /einweave:scope sets the scope by hand.", "status");
       }
     } catch (err) {
-      process.stderr.write(`bridge channel: starting scope could not be set: ${err}\n`);
+      process.stderr.write(`einweave channel: starting scope could not be set: ${err}\n`);
     } finally {
       deferredScopeRunning = false;
     }
@@ -1471,7 +1471,7 @@ async function startingScopeFromEnv(): Promise<StartScope | null> {
     return null;
   }
   if (!channelNameToId && !(await loadMapForScope())) {
-    process.stderr.write("bridge channel: channel list unavailable -- connecting without a starting scope; it is set when the list loads\n");
+    process.stderr.write("einweave channel: channel list unavailable -- connecting without a starting scope; it is set when the list loads\n");
     // Missing work is worse than extra unheld work, so it connects -- but the model is told it is NOT narrowed yet.
     notifyModel("⚠️ EINWEAVE_CHANNELS is set but the channel list could not be read. Until it loads this session receives unheld work from ALL channels; the scope is applied automatically once the list loads.", "status");
     applyStartingScopeWhenMapLoads();
@@ -1508,7 +1508,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
     version: PLUGIN_VERSION,
     identity: { tty: id.tty, termProgram: id.termProgram, cwd: id.cwd },
     retryMs: LOCK_RETRY_MS,
-    log: (line) => process.stderr.write(`bridge channel: ${line}\n`),
+    log: (line) => process.stderr.write(`einweave channel: ${line}\n`),
   });
   lock = myLock;
   lockKey = SESSION_KEY;
@@ -1528,8 +1528,8 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
   if (decision === "acquire" || decision === "takeover") {
     process.stderr.write(
       decision === "takeover"
-        ? `bridge channel: session lock TAKEN OVER for ${SESSION_KEY} (pid ${process.pid}, v${PLUGIN_VERSION})\n`
-        : `bridge channel: session lock acquired for ${SESSION_KEY} (pid ${process.pid})\n`
+        ? `einweave channel: session lock TAKEN OVER for ${SESSION_KEY} (pid ${process.pid}, v${PLUGIN_VERSION})\n`
+        : `einweave channel: session lock acquired for ${SESSION_KEY} (pid ${process.pid})\n`
     );
   }
   const info = await getSessionInfoForAuth();
@@ -1570,7 +1570,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
       try {
         onStatus(st);
       } catch (err) {
-        process.stderr.write(`bridge channel: status handling failed (${st.kind}): ${err}\n`);
+        process.stderr.write(`einweave channel: status handling failed (${st.kind}): ${err}\n`);
       }
     }
   })();
@@ -1619,7 +1619,7 @@ function onStatus(st: SessionStatus): void {
       // Authenticated means this copy holds the session lock — also when it got it from the
       // SDK's standby retry rather than openSession. The socket follows the lock.
       void ctlMgr?.ensure();
-      process.stderr.write(`bridge channel: authenticated as ${agentName} (${agentId})${myContextId ? ` context ${myContextId}` : ""}\n`);
+      process.stderr.write(`einweave channel: authenticated as ${agentName} (${agentId})${myContextId ? ` context ${myContextId}` : ""}\n`);
       feedStatus("connected");
       return;
     }
@@ -1628,7 +1628,7 @@ function onStatus(st: SessionStatus): void {
       authenticated = false;
       authenticatedAt = null;
       lastClose = { cls: st.cls, code: st.code, reason: st.reason };
-      process.stderr.write(`bridge channel: WebSocket closed (${st.code ?? ""}${st.reason ? ` ${st.reason}` : ""})\n`);
+      process.stderr.write(`einweave channel: WebSocket closed (${st.code ?? ""}${st.reason ? ` ${st.reason}` : ""})\n`);
       if (st.cls !== "superseded") updateProcState(STATE_DIR, process.pid, "disconnected");
       if (st.code === 4001) {
         // C14: the first 4001 gets an immediate re-mint (the Session's); only a second in a
@@ -1651,7 +1651,7 @@ function onStatus(st: SessionStatus): void {
       reconnectAttempt = st.attempt;
       nextReconnectAt = Date.now() + delayMs;
       feedStatus("reconnecting");
-      process.stderr.write(`bridge channel: reconnecting in ${(delayMs / 1000).toFixed(1)}s (attempt ${st.attempt})\n`);
+      process.stderr.write(`einweave channel: reconnecting in ${(delayMs / 1000).toFixed(1)}s (attempt ${st.attempt})\n`);
       return;
     }
     case "standby": {
@@ -1663,7 +1663,7 @@ function onStatus(st: SessionStatus): void {
       standbyHolder = holder;
       if (holder) notifyStandby(holder);
       process.stderr.write(
-        `bridge channel: DUPLICATE INSTANCE — another process on this box already holds session key ` +
+        `einweave channel: DUPLICATE INSTANCE — another process on this box already holds session key ` +
           `${SESSION_KEY}. Not connecting; standing by and retrying every ${LOCK_RETRY_MS / 1000}s. ` +
           `This session is loaded twice (marketplace plugin + a user-scope MCP entry or ` +
           `--dangerously-load-development-channels); remove one.\n`
@@ -1680,7 +1680,7 @@ function onStatus(st: SessionStatus): void {
     }
     case "invalid_session":
       lastInvalidSession = { frames: st.lost.frames, from: st.lost.from, at: new Date().toISOString() };
-      process.stderr.write(`bridge channel: resume refused — ${st.lost.frames} frame(s) not resumable; continuing as a fresh session\n`);
+      process.stderr.write(`einweave channel: resume refused — ${st.lost.frames} frame(s) not resumable; continuing as a fresh session\n`);
       notifyModel(
         `einweave could not resume this session where it left off (${st.lost.frames} update(s) not replayable). Anything addressed to you is redelivered; list_threads shows what else is unread.`,
         "status"
@@ -1712,11 +1712,11 @@ function onStatus(st: SessionStatus): void {
       const u = st.update;
       const mine = !!u.holder && u.holder.id === myContextId;
       serverHolds = mine ? (serverHolds.includes(u.threadId) ? serverHolds : [...serverHolds, u.threadId]) : serverHolds.filter((t) => t !== u.threadId);
-      process.stderr.write(`bridge channel: hold ${u.via}: thread ${u.threadId} ${u.holder ? `-> ${u.holder.label ?? u.holder.id}` : "released"}${mine ? " (this session)" : ""}\n`);
+      process.stderr.write(`einweave channel: hold ${u.via}: thread ${u.threadId} ${u.holder ? `-> ${u.holder.label ?? u.holder.id}` : "released"}${mine ? " (this session)" : ""}\n`);
       return;
     }
     case "slow-consumer":
-      process.stderr.write(`bridge channel: host is not taking entries — dropped ${st.droppedId} here (the server still owes it)\n`);
+      process.stderr.write(`einweave channel: host is not taking entries — dropped ${st.droppedId} here (the server still owes it)\n`);
       return;
     case "stopped":
       onStopped(st.stop);
@@ -1727,7 +1727,7 @@ function onStatus(st: SessionStatus): void {
 /** A server `error` frame. Most only announce the close that follows — that close decides what the model hears. */
 function noteServerError(message: string): void {
   lastServerError = message;
-  process.stderr.write(`bridge channel: server error: ${message}\n`);
+  process.stderr.write(`einweave channel: server error: ${message}\n`);
   if (CLOSE_OWNED_ERRORS.has(message) || CLOSE_OWNED_ERROR_PREFIXES.includes(message.split(": ")[0]!)) return;
   const now = Date.now();
   if (message === notifiedServerError && now - notifiedServerErrorAt <= SERVER_ERROR_NOTIFY_INTERVAL_MS) return;
@@ -1759,8 +1759,8 @@ function onStopped(stop: SessionStop): void {
       const who = holder ? ` to pid ${holder.pid}${holder.version ? ` (v${holder.version})` : ""}` : "";
       process.stderr.write(
         local
-          ? `bridge channel: session lock LOST for ${SESSION_KEY}${who} — this window is now superseded\n`
-          : `bridge channel: session superseded by the server${who} — this window stops\n`
+          ? `einweave channel: session lock LOST for ${SESSION_KEY}${who} — this window is now superseded\n`
+          : `einweave channel: session superseded by the server${who} — this window stops\n`
       );
       notifyModel(`⚠️ einweave disconnected this session: ${describeClose("superseded", undefined, undefined, { supersededBy: holder, myVersion: PLUGIN_VERSION })}`, "error");
     })();
@@ -1774,7 +1774,7 @@ function onStopped(stop: SessionStop): void {
     lastServerError = msg;
     waitingFor = waitFor(stop.credential);
     feedStatus("stopped", msg);
-    process.stderr.write(`bridge channel: no credential for auth: ${msg}\n`);
+    process.stderr.write(`einweave channel: no credential for auth: ${msg}\n`);
     // Each distinct refusal once per episode: the model already knows, and `status` shows it.
     if (notifiedRefusal !== msg) {
       notifiedRefusal = msg;
@@ -1796,7 +1796,7 @@ function onStopped(stop: SessionStop): void {
     writeConnectKind(STATE_DIR, SESSION_KEY, "session");
   }
   const why = describeClose(cls, c?.code, c?.reason, { keyDeleted: c?.keyDeleted, myVersion: PLUGIN_VERSION });
-  process.stderr.write(`bridge channel: not reconnecting — ${why}\n`);
+  process.stderr.write(`einweave channel: not reconnecting — ${why}\n`);
   feedStatus("stopped", why);
   notifyConnectionRefused(cls, c?.code, c?.reason, { keyDeleted: c?.keyDeleted, myVersion: PLUGIN_VERSION });
 }
@@ -1856,7 +1856,7 @@ function rekeyTo(conversationId: string): boolean {
     myProc = { ...myProc, sessionKey: SESSION_KEY, state: "disconnected" };
     writeProc(STATE_DIR, myProc);
   }
-  process.stderr.write(`bridge channel: session key ${from} → ${SESSION_KEY} (conversation changed: /clear or /resume)\n`);
+  process.stderr.write(`einweave channel: session key ${from} → ${SESSION_KEY} (conversation changed: /clear or /resume)\n`);
   lastClose = { cls: "transient" };
   openGen++; // any openSession in flight was for the old key
   // Close the old conversation's Session first (it releases that key's lock), so it drains
@@ -4043,7 +4043,7 @@ let shuttingDown = false;
 function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  process.stderr.write("bridge channel: shutting down\n");
+  process.stderr.write("einweave channel: shutting down\n");
   // The Session's drain closes the socket and releases its lock (only ours, never a successor's).
   closeSession();
   ctlMgr?.close();
@@ -4117,7 +4117,7 @@ setInterval(() => touchSessionFiles(STATE_DIR, SESSION_KEY), 6 * 60 * 60 * 1000)
 sweepConnectStateFiles(STATE_DIR, connectStateFileFor(STATE_DIR, SESSION_KEY), STATE_SWEEP_MAX_AGE_MS, connectKindFileFor(STATE_DIR, SESSION_KEY), connectScopeFileFor(STATE_DIR, SESSION_KEY));
 // The one line someone debugging a lost context will need.
 process.stderr.write(
-  `bridge channel: session key ${SESSION_KEY} (source: ${resolvedSessionKey.source})\n`
+  `einweave channel: session key ${SESSION_KEY} (source: ${resolvedSessionKey.source})\n`
 );
 sessionKeySettled = true;
 
@@ -4181,7 +4181,7 @@ try {
 try {
   if (!CLAUDE_PLUGIN_ROOT || readOrphanedAt(CLAUDE_PLUGIN_ROOT) === null) writeLauncher(STATE_DIR, import.meta.dir);
 } catch (err) {
-  process.stderr.write(`bridge channel: could not write the tail launcher: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(`einweave channel: could not write the tail launcher: ${err instanceof Error ? err.message : String(err)}\n`);
 }
 {
   const id = myIdentity();
@@ -4207,7 +4207,7 @@ try {
 await creds.enrolFromKeyIfNeeded();
 const startupProblem = creds.configError();
 if (startupProblem) {
-  process.stderr.write(`bridge channel: ${startupProblem}\n`);
+  process.stderr.write(`einweave channel: ${startupProblem}\n`);
   waitingFor = "files";
 }
 if (!shuttingDown && wantConnected && !startupProblem) void openSession();

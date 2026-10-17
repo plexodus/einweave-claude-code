@@ -210,7 +210,7 @@ export function sweepStaleFeedSockets(stateDir: string, pidAlive: (pid: number) 
   } catch {
     // no feed/ yet
   }
-  if (removed > 0) log(`bridge channel: removed ${removed} stale feed socket(s)`);
+  if (removed > 0) log(`einweave channel: removed ${removed} stale feed socket(s)`);
   return removed;
 }
 
@@ -261,7 +261,7 @@ export async function startFeedTap(o: FeedTapOptions): Promise<FeedTap> {
     server = await Promise.race([opening, timedOut]);
   } catch (err) {
     gaveUp = true;
-    o.log(`bridge channel: local feed not started (tail will not see this session): ${err instanceof Error ? err.message : String(err)}`);
+    o.log(`einweave channel: local feed not started (tail will not see this session): ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
   }
@@ -269,7 +269,7 @@ export async function startFeedTap(o: FeedTapOptions): Promise<FeedTap> {
     try {
       fn();
     } catch (err) {
-      o.log(`bridge channel: local feed ${what} failed: ${err instanceof Error ? err.message : String(err)}`);
+      o.log(`einweave channel: local feed ${what} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   return {

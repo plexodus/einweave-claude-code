@@ -1039,9 +1039,9 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-016 against the real API", () => 
         expect(readState(dir)).toEqual(stateBefore);
         expect(readInstallation(dir)).toEqual(instBefore);
         // Stopped, not merely slow — no later mint sneaks through on its own.
-        const mintsBefore = (p2.stderr().match(/bridge auth: minted/g) ?? []).length;
+        const mintsBefore = (p2.stderr().match(/einweave auth: minted/g) ?? []).length;
         await Bun.sleep(1_500);
-        expect((p2.stderr().match(/bridge auth: minted/g) ?? []).length).toBe(mintsBefore);
+        expect((p2.stderr().match(/einweave auth: minted/g) ?? []).length).toBe(mintsBefore);
         // No new session, and the existing one is untouched.
         expect(await sessionsOf(instBefore!.installationId, "blocked-s1")).toEqual(sessionsBefore);
       } finally {
@@ -1084,7 +1084,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-016 against the real API", () => 
         // Inside the 60 s expiry slack every use mints; the live socket gets the new token by `reauth`.
         const lc = await p.call("list_channels");
         expect(lc.isError, JSON.stringify(lc.content)).not.toBe(true);
-        const mints = () => (p.stderr().match(/bridge auth: minted for session/g) ?? []).length;
+        const mints = () => (p.stderr().match(/einweave auth: minted for session/g) ?? []).length;
         expect(mints()).toBeGreaterThanOrEqual(2);
         // Past token 1's 4009: had the reauth been refused (4001) or ignored (4009 on token 1), the socket would be closed.
         await Bun.sleep(Math.max(0, T + 23_500 - Date.now()));

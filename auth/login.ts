@@ -239,9 +239,9 @@ export class SignIn {
     if (!p) return;
     try {
       const n = sweepOrphanTemps(p.dir) + sweepLockTombstones(p.dir);
-      if (n > 0) this.d.log(`bridge auth: removed ${n} leftover file(s) from an earlier crash in ${p.dir}`);
+      if (n > 0) this.d.log(`einweave auth: removed ${n} leftover file(s) from an earlier crash in ${p.dir}`);
     } catch (e) {
-      this.d.log(`bridge auth: could not sweep ${p.dir}: ${errDetail(e)}`);
+      this.d.log(`einweave auth: could not sweep ${p.dir}: ${errDetail(e)}`);
     }
   }
 
@@ -372,7 +372,7 @@ export class SignIn {
     if (token === this.lastToken) return;
     this.lastToken = token;
     this.sessionBlocked = false;
-    this.d.log(`bridge auth: minted for session ${c.grant()?.sessionId ?? "?"}`);
+    this.d.log(`einweave auth: minted for session ${c.grant()?.sessionId ?? "?"}`);
   }
 
   /**
@@ -486,7 +486,7 @@ export class SignIn {
     try {
       lb = await startLoopback(meta, name, { dpopJkt: key.signer.jkt });
     } catch (e) {
-      this.d.log(`bridge auth: loopback listener failed (${e}); using a device code`);
+      this.d.log(`einweave auth: loopback listener failed (${e}); using a device code`);
       return this.startDevice(client, name, mine);
     }
     mine.onCancel(() => lb.close());
@@ -599,12 +599,12 @@ export class SignIn {
         try {
           this.d.onLoggedIn();
         } catch (e) {
-          this.d.log(`bridge auth: reconnect after login failed: ${e}`);
+          this.d.log(`einweave auth: reconnect after login failed: ${e}`);
         }
         this.d.notify(`einweave: this machine is connected (profile ${profileLabel(this.profile!)}). Connecting…`);
       },
       onPreviousRevokeFailed: (prev, e) => {
-        this.d.log(`bridge auth: could not revoke the previous installation ${prev.installationId}: ${errDetail(e)}`);
+        this.d.log(`einweave auth: could not revoke the previous installation ${prev.installationId}: ${errDetail(e)}`);
         this.d.notify(
           `einweave: this machine's PREVIOUS sign-in "${prev.installationName ?? prev.installationId}" could not be revoked (${errDetail(e)}). Its key is gone from this machine, but it STAYS ENROLLED in einweave until you revoke it in Settings → Agents → Machines.`
         );
@@ -707,8 +707,8 @@ export class SignIn {
     if (!p || !enrolmentKey || !this.d.envApiUrl || this.installation()) return;
     // D8: never spend the key over a newer plugin's installation (the store would refuse
     // the write AFTER the key was used). Never through chat: log only.
-    if (this.newerInstallation()) return this.d.log(`bridge auth: not enrolling with EINWEAVE_ENROLMENT_KEY — ${NEWER_INSTALLATION_MESSAGE}`);
-    if (this.loggedOut()) return this.d.log("bridge auth: signed out with /einweave:logout — not re-enrolling from EINWEAVE_ENROLMENT_KEY (run /einweave:login)");
+    if (this.newerInstallation()) return this.d.log(`einweave auth: not enrolling with EINWEAVE_ENROLMENT_KEY — ${NEWER_INSTALLATION_MESSAGE}`);
+    if (this.loggedOut()) return this.d.log("einweave auth: signed out with /einweave:logout — not re-enrolling from EINWEAVE_ENROLMENT_KEY (run /einweave:login)");
     const client = await this.client();
     if (!client) return;
     let unrevoked: string[] = [];
@@ -717,7 +717,7 @@ export class SignIn {
         onWritten: () => this.clearLoggedOut(),
         onUnrevoked: (left) => void (unrevoked = left.map((i) => i.installationName ?? i.installationId)),
       });
-      if (g) this.d.log(`bridge auth: enrolled installation ${g.installation_id} with EINWEAVE_ENROLMENT_KEY`);
+      if (g) this.d.log(`einweave auth: enrolled installation ${g.installation_id} with EINWEAVE_ENROLMENT_KEY`);
     } catch (e) {
       if (!isAgentClientError(e)) {
         // Bridge enrolled it, but the files could not be written (the SDK revoked it).

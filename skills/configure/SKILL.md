@@ -45,7 +45,7 @@ Read both config values and give the user the full picture:
 ### `<url>` — save the API URL
 
 The URL must be the API's bare **origin** — scheme, host, optional port, no path,
-query or trailing segments (`https://bridge-api.example.com`) — and exactly the origin
+query or trailing segments (`https://einweave-api.example.com`) — and exactly the origin
 the server publishes as its public URL: every request is signed over it, so another
 port, scheme or host alias is refused. Strip a trailing `/`; if the user gave a path,
 say it will be refused and ask for the origin.

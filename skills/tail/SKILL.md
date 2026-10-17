@@ -1,6 +1,6 @@
 ---
 name: tail
-description: Show how to read this session's einweave messages in full in a second terminal pane (bridge tail). Use when the user says /einweave:tail, says einweave messages are cut off or hard to read, asks how to see the full text of an incoming or sent message, or asks about the tail pane.
+description: Show how to read this session's einweave messages in full in a second terminal pane (einweave tail). Use when the user says /einweave:tail, says einweave messages are cut off or hard to read, asks how to see the full text of an incoming or sent message, or asks about the tail pane.
 user-invocable: true
 ---
 
@@ -31,11 +31,11 @@ Arguments passed: `$ARGUMENTS`
    - In the new pane run the launcher path exactly as `status` gave it.
    - Leave it open. It waits for a session, attaches, and reattaches after a
      restart.
-3. Offer the one-time shortcut, so `bridge tail` works from any pane. Give them
+3. Offer the one-time shortcut, so `einweave tail` works from any pane. Give them
    this line for `~/.zshrc` (or `~/.bashrc`), with the real path filled in:
 
    ```sh
-   bridge() { [ "$1" = tail ] && shift; "<launcher path>" "$@"; }
+   einweave() { [ "$1" = tail ] && shift; "<launcher path>" "$@"; }
    ```
 
    The path stays the same across plugin updates; the plugin rewrites the file
