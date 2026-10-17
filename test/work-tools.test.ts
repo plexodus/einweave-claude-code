@@ -5,7 +5,7 @@
  * work-items-real-api.test.ts; this file pins what the plugin SENDS and how it SAYS a refusal.
  */
 import { test, expect, describe } from "bun:test";
-import { callWorkTool, describeRefusal, WORK_TOOLS, type WorkDeps } from "../work-tools";
+import { callWorkTool, describeRefusal, renderThreadEventContent, WORK_TOOLS, type WorkDeps } from "../work-tools";
 
 type Sent = { method: string; path: string; body?: unknown };
 
@@ -114,11 +114,11 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
   test("add_activity: plan items from strings; result with proposed {reason, duplicate_of}; answers event id + status", async () => {
     const f = fake(() => ({ status: 200, body: { eventId: "ev7", status: "in_progress", threadId: T } }));
     const out = JSON.parse(await callWorkTool("add_activity", { thread_id: T, type: "plan", items: ["a", { text: "b", done: true }] }, f.deps));
-    await callWorkTool("add_activity", { thread_id: T, type: "result", text: "done", proposed: { reason: "duplicate", duplicate_of: "t0" }, fix: "https://x/c/1" }, f.deps);
+    await callWorkTool("add_activity", { thread_id: T, type: "result", text: "done", proposed: { reason: "duplicate", duplicate_of: "t0" }, fix: { type: "commit", url: "https://x/c/1" } }, f.deps);
     await callWorkTool("add_activity", { thread_id: T, type: "needs_input", text: "which?", to: "@kai" }, f.deps);
     expect(f.sent.map((s) => s.body)).toEqual([
       { type: "plan", items: [{ text: "a" }, { text: "b", done: true }] },
-      { type: "result", text: "done", fix: { type: "url", url: "https://x/c/1" }, proposed: { reason: "duplicate", duplicateOf: "t0" } },
+      { type: "result", text: "done", fix: { type: "commit", url: "https://x/c/1" }, proposed: { reason: "duplicate", duplicateOf: "t0" } },
       { type: "needs_input", text: "which?", to: ["@kai"] },
     ]);
     expect(out).toMatchObject({ event_id: "ev7", status: "in_progress" });
@@ -171,5 +171,38 @@ describe("refusals name the fix", () => {
     const f = fake(() => ({ status: 422, body: { error: "due_must_be_date", code: "due_must_be_date" } }));
     await expect(callWorkTool("update_item", { thread_id: T, due: "tomorrow" }, f.deps)).rejects.toThrow(/422 due_must_be_date.*YYYY-MM-DD/);
     expect(f.sent).toHaveLength(1);
+  });
+});
+
+describe("an inbound thread_event, said from this agent's side", () => {
+  const ME = "agent-me";
+  const ev = (action: string, detail: Record<string, unknown>, status: string | null = "todo") =>
+    renderThreadEventContent({ threadId: T, action, detail, actorType: "human", actorId: "u1", status, work: { text: "task · todo" } }, ME);
+
+  test("assigned to me / reassigned AWAY from me (stop) / unassigned from me (stop)", () => {
+    expect(ev("assigned", { from: null, to: ME, cause: "work" })).toContain(`Work item ${T}: assigned to you — by human u1`);
+    const away = ev("assigned", { from: ME, to: "agent-other", cause: "work" });
+    expect(away).toContain("reassigned AWAY from you (now agent-other)");
+    expect(away).toContain("STOP working on it");
+    expect(ev("unassigned", { from: ME, to: null, cause: "work" })).toContain("unassigned from you — it is no longer yours: STOP working on it");
+    // Someone else's reassignment is not an order to this agent.
+    expect(ev("assigned", { from: "x", to: "y" })).not.toContain("STOP");
+  });
+
+  test("changes requested (in_review → back, with text) quotes the text", () => {
+    const t = ev("status", { from: "in_review", to: "in_progress", text: "add a test" }, "in_progress");
+    expect(t).toContain('CHANGES REQUESTED (in_review → in_progress): "add a test"');
+  });
+
+  test("a regression is a reopen {regression: true}", () => {
+    expect(ev("reopen", { roundCarried: false, regression: true, text: "broke again" })).toContain('reopened as a REGRESSION (it came back) — by human u1 (status todo) — text: "broke again"');
+  });
+
+  test("resolve: the reason is a label (bare), free text is quoted", () => {
+    const t = ev("resolve", { reason: "not_planned", triage: "decline", declineReason: "out of scope", conclusion: null }, "resolved");
+    expect(t).toContain("resolved (reason: not_planned)");
+    expect(t).toContain('declineReason: "out of scope"');
+    expect(t).not.toContain('"not_planned"');
+    expect(ev("result", { text: "shipped it" })).toContain('text: "shipped it"');
   });
 });

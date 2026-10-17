@@ -86,7 +86,7 @@ describe("link/adapter — what reaches the model", () => {
     expect(Object.keys(rt.meta).slice(0, 2)).toEqual(["channel_id", "message_id"]);
     expect(rt.meta).toMatchObject({ type: "thread_event", action: "assigned", status: "todo", thread_id: "01992f6e-0000-7000-8000-0000000000f1" });
     // The item NOW, as the server rendered it (G11), under the event line.
-    expect(rt.content).toContain("Work item 01992f6e-0000-7000-8000-0000000000f1: assigned by human 01992f6e-0000-7000-8000-0000000000bb (status todo)");
+    expect(rt.content).toContain("Work item 01992f6e-0000-7000-8000-0000000000f1: assigned to 01992f6e-0000-7000-8000-0000000000aa — by human 01992f6e-0000-7000-8000-0000000000bb (status todo)");
     expect(rt.content).toContain("task · todo\nassignee: @alpha");
     expect(Object.keys(render(ar).meta)[0]).toBe("message_id");
     for (const e of [te, ar]) expect(deliveredEntryId(hostTag(render(e)))).toBe(e.id);

@@ -2177,7 +2177,7 @@ async function readDeliveries(args: Record<string, unknown>) {
       echoes.push(e.id);
       continue;
     }
-    const r = render(e);
+    const r = render(e, agentId || null);
     const { channel_id, thread_id, ...meta } = r.meta; // the two ids ride at the top level, once
     const item = {
       kind: e.kind,

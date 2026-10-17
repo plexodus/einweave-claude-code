@@ -335,5 +335,12 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     expect(count(p, t2)).toBe(1);
     // The one the model already had is not handed over again.
     expect(count(p, t1)).toBe(0);
+
+    // Taken AWAY (the person unassigns it — a takeover is unassign, then assign): the agent is
+    // told, as previous_assignee, to stop.
+    await human("PUT", `/api/threads/${t2}/work`, { assignee: null });
+    const away = `Work item ${t2}: unassigned from you`;
+    expect(await until(() => p.notices.some((n) => n.includes(away)), 15_000), `no reassignment notice:\n${p.notices.join("\n---\n")}`).toBe(true);
+    expect(p.notices.find((n) => n.includes(away))).toContain("STOP working on it");
   }, 90_000);
 });

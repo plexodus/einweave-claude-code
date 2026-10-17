@@ -66,7 +66,8 @@ export function renderMessage(msg: Inbound): Rendered {
   return { content: msg.content ?? "", meta: out };
 }
 
-export function render(entry: Entry): Rendered {
+/** `self`: this session's agent id — a work event is said from its side (a reassignment away says stop). */
+export function render(entry: Entry, self: string | null = null): Rendered {
   switch (entry.kind) {
     case "message":
       return renderMessage(entry.message);
@@ -75,7 +76,7 @@ export function render(entry: Entry): Rendered {
       // `message_id` lead (the hook's tag rule); the entry id is what it confirms.
       const e = entry.event;
       return {
-        content: renderThreadEventContent(e),
+        content: renderThreadEventContent(e, self),
         meta: {
           ...(e.channelId ? { channel_id: e.channelId } : {}),
           message_id: entry.id,
@@ -147,7 +148,7 @@ export function channelAdapter(d: AdapterDeps): DeliveryAdapter {
       await d.ready();
       let rendered: Rendered;
       try {
-        rendered = render(entry);
+        rendered = render(entry, d.myAgentId() || null);
         await d.notify(rendered);
       } catch (err) {
         try {

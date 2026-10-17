@@ -222,7 +222,7 @@ describe("read_deliveries", () => {
     expect(m).toMatchObject({ reasons: ["channel"], channel_id: CHANNEL_ID, thread_id: THREAD, content: "hello 1", redelivery: false });
     expect(m.meta).toMatchObject({ sender: "Kevin", type: "text", message_id: id(1) });
     expect(te).toMatchObject({ channel_id: CHANNEL_ID, thread_id: THREAD });
-    expect(te.content).toContain(`Work item ${THREAD}: assigned by agent kevin (status todo) — to: bellman; cause: work`);
+    expect(te.content).toContain(`Work item ${THREAD}: assigned to you — by agent kevin (status todo) — cause: work`);
     expect(te.content).toContain("task · todo\nassignee: @bellman");
     expect(te.meta).toMatchObject({ type: "thread_event", action: "assigned", status: "todo" });
     expect(ar).toMatchObject({ content: 'Action requested: restart {"force":true}' });

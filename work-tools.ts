@@ -39,10 +39,9 @@ function given(pairs: [string, unknown][]): Record<string, unknown> {
   return out;
 }
 
+/** `fix` is `{type, url, title?}` (RFC §7); passed as given — the server judges it (http(s) only). */
 function fixOf(v: unknown): unknown {
-  if (v === undefined || v === null) return undefined;
-  if (typeof v === "string") return { type: "url", url: v };
-  return v;
+  return v === null ? undefined : v;
 }
 
 function proposedOf(v: unknown): unknown {
@@ -50,7 +49,7 @@ function proposedOf(v: unknown): unknown {
   const p = v as Record<string, unknown>;
   return given([
     ["reason", p.reason],
-    ["duplicateOf", p.duplicate_of ?? p.duplicateOf],
+    ["duplicateOf", p.duplicate_of],
   ]);
 }
 
@@ -217,7 +216,7 @@ export const WORK_TOOLS = [
         resolved_in: { type: "object", description: "{component, version} the fix shipped in.", properties: { component: { type: "string" }, version: { type: "string" } } },
         conclusion: { type: "string", description: "What was concluded (a done item needs a fix or a conclusion)." },
         without_review_reason: { type: "string", description: "A person channel owner resolving without review: why." },
-        result_event_id: { type: "string", description: "The result being approved (work.latest_result_id from read_thread)." },
+        result_event_id: { type: ["string", "null"], description: "The result being approved (work.latest_result_id from read_thread); null = you saw none (409 result_changed if one exists)." },
         expected_status: { type: "string" },
       },
       required: ["thread_id"],
@@ -533,35 +532,81 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
   throw new Error(`unknown work tool: ${name}`);
 }
 
-/** A detail value, said in one short line (ids stay ids: the model can look them up). */
-function detailLine(detail: Record<string, unknown> | null | undefined): string {
-  if (!detail || typeof detail !== "object") return "";
+/**
+ * Detail keys whose value is someone's free TEXT: always quoted (JSON), so a reader can tell
+ * what a person wrote from what einweave says. Every other string is a label (an enum such as a
+ * resolve `reason`, a status, a cause) or an id, printed bare.
+ */
+const FREE_TEXT = new Set(["text", "conclusion", "declineReason", "title", "message"]);
+/** Keys the event line already says (or that only the server needs). */
+const SAID = new Set(["from", "to", "regression", "roundCarried"]);
+
+function clip(s: string): string {
+  return s.length > 300 ? `${s.slice(0, 300)}…` : s;
+}
+
+/** A detail, said in one short line: labels bare, free text quoted, objects as JSON. */
+function detailLine(detail: Record<string, unknown>, skip: ReadonlySet<string>): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(detail)) {
-    if (v === null || v === undefined) continue;
-    const s = typeof v === "string" ? v : JSON.stringify(v);
-    parts.push(`${k}: ${s.length > 300 ? `${s.slice(0, 300)}…` : s}`);
+    if (v === null || v === undefined || skip.has(k)) continue;
+    const s = typeof v === "string" && !FREE_TEXT.has(k) ? v : JSON.stringify(v);
+    parts.push(`${k}: ${clip(s)}`);
   }
   return parts.join("; ");
 }
 
+/** What the event means to THIS agent, in words — the parts that change what it should do. */
+function headline(action: string, d: Record<string, unknown>, self: string | null): { what: string; skip: Set<string> } {
+  const skip = new Set(SAID);
+  const isSelf = (v: unknown) => !!self && v === self;
+  switch (action) {
+    case "assigned":
+      if (isSelf(d.to)) return { what: "assigned to you", skip };
+      if (isSelf(d.from)) return { what: `reassigned AWAY from you (now ${String(d.to)}) — it is no longer yours: STOP working on it`, skip };
+      return { what: `assigned to ${String(d.to)}`, skip };
+    case "unassigned":
+      if (isSelf(d.from)) return { what: "unassigned from you — it is no longer yours: STOP working on it", skip };
+      return { what: `unassigned (was ${String(d.from)})`, skip };
+    case "status":
+      if (d.from === "in_review" && typeof d.text === "string") {
+        skip.add("text");
+        return { what: `CHANGES REQUESTED (${String(d.from)} → ${String(d.to)}): ${JSON.stringify(clip(d.text))}`, skip };
+      }
+      return { what: `status ${String(d.from)} → ${String(d.to)}`, skip };
+    case "reopen":
+      return { what: d.regression === true ? "reopened as a REGRESSION (it came back)" : "reopened", skip };
+    case "resolve":
+      skip.add("reason");
+      return { what: `resolved (reason: ${String(d.reason)})`, skip };
+    default:
+      return { what: action, skip };
+  }
+}
+
 /**
- * A `thread_event` entry (RFC-029 §6) as the model reads it: what happened to which item, and the
- * item NOW — the server's rendered header (`work.text`, G11). The same text on a live push and on
+ * A `thread_event` entry (RFC-029 §6) as the model reads it: what happened to which item — said
+ * from THIS agent's side (`self`: a reassignment away tells it to stop) — and the item NOW, the
+ * server's rendered header (`work.text`, G11). The same text on a live push and on
  * `read_deliveries` (a resumed session drains the same entry).
  */
-export function renderThreadEventContent(e: {
-  threadId: string;
-  action: string;
-  detail: Record<string, unknown> | null;
-  actorType: string;
-  actorId: string | null;
-  status: string | null;
-  work: { text: string } | null;
-}): string {
+export function renderThreadEventContent(
+  e: {
+    threadId: string;
+    action: string;
+    detail: Record<string, unknown> | null;
+    actorType: string;
+    actorId: string | null;
+    status: string | null;
+    work: { text: string } | null;
+  },
+  self: string | null = null
+): string {
   const by = e.actorType === "system" || !e.actorId ? "einweave" : `${e.actorType} ${e.actorId}`;
-  const d = detailLine(e.detail);
-  const head = `Work item ${e.threadId}: ${e.action} by ${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
+  const detail = e.detail && typeof e.detail === "object" ? e.detail : {};
+  const h = headline(e.action, detail, self);
+  const d = detailLine(detail, h.skip);
+  const head = `Work item ${e.threadId}: ${h.what} — by ${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
   const tail = `read_thread(thread_id: "${e.threadId}") shows it in full.`;
   return e.work?.text ? `${head}\n${e.work.text}\n${tail}` : `${head}\n${tail}`;
 }
