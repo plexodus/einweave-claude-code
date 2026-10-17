@@ -86,6 +86,8 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
       path: `/api/threads/${T}/resolve`,
       body: { reason: "done", conclusion: "ok", fix: { type: "pull_request", url: "https://x/pr/1" }, resolvedIn: { component: "api", version: "1.2.3" }, withoutReview: { reason: "hotfix" }, resultEventId: "ev1" },
     });
+    await callWorkTool("resolve_item", { thread_id: T, reason: "duplicate", duplicate_of: "t0" }, f.deps);
+    expect(f.sent[1]!.body).toEqual({ reason: "duplicate", duplicateOf: "t0" });
   });
 
   test("reopen_item, triage_item (per action), add_link, remove_link", async () => {
