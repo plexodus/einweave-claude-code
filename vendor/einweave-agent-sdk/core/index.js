@@ -79,6 +79,7 @@ import {
   parseClientFrame,
   parseServerFrame,
   parseTailInput,
+  principalLabel,
   reconnectDelay,
   renderFooter,
   renderHeader,
@@ -93,7 +94,7 @@ import {
   userAgent,
   viewport,
   wsHtu
-} from "../index-se2fcazb.js";
+} from "../index-adbbmm3v.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,
@@ -175,6 +176,7 @@ export {
   parseClientFrame,
   parseServerFrame,
   parseTailInput,
+  principalLabel,
   reconnectDelay,
   renderFooter,
   renderHeader,

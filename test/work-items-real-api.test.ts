@@ -322,7 +322,11 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     const tid = await humanTask("Prune old preview deployments");
     const r = await p.call("update_item", { thread_id: tid, assignee: "me" });
     expect(r.isError, r.text).toBe(false);
-    expect(JSON.parse(r.text).assignee).toBe("@me");
+    const claimed = JSON.parse(r.text);
+    expect(claimed.assignee).toBe("you"); // S15: principalLabel with this agent as self
+    expect(claimed.created_by, r.text).toBe("Owner"); // the person who filed it, named (no handle → name)
+    expect(r.text).not.toContain(seed.agentId);
+    expect(r.text).not.toContain(seed.userId);
     const mine = JSON.parse((await p.call("list_items", { assignee: "me" })).text);
     expect(mine.items.map((i: any) => i.thread_id)).toContain(tid);
   });

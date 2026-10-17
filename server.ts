@@ -74,7 +74,7 @@ import { sanitizeChannelParams } from "./control-chars";
 import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type FeedTap } from "./feed-tap";
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
-import { WORK_TOOLS, assigneeName, callWorkTool, type WorkDeps } from "./work-tools";
+import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -2950,7 +2950,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const holdNote = describeSendHold(result.hold, result.threadId ?? threadId);
         // RFC-029 D4: the assignment made with this reply (same transaction as the post).
         const assignNote = result.assign?.assignee
-          ? `, assigned to ${assigneeName(result.assign.assignee, agentId)}${result.assign.assigneeJoined ? " (who joined the channel)" : ""}`
+          ? `, assigned to ${labelOf(result.assign.assignee, agentId)}${result.assign.assigneeJoined ? " (who joined the channel)" : ""}`
           : "";
         // A send that lands while the socket is deaf gets no inbound reply:
         // say so rather than let the model wait on silence.

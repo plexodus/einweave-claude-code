@@ -13,6 +13,8 @@
  * model can act on it rather than retry blindly.
  */
 
+import { principalLabel } from "./vendor/einweave-agent-sdk/core/index.js";
+
 export type ApiCall = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any; text: string }>;
 
 export interface WorkDeps {
@@ -67,25 +69,19 @@ const listOf = (v: unknown): string[] | undefined =>
           .map((s) => s.trim())
           .filter(Boolean);
 
-/** A principal as a frame names it: `@handle`, else its name, else "someone" — never its id. */
-function who(p: any): string | null {
-  if (!p || typeof p !== "object") return null;
-  return isStr(p.handle) ? `@${p.handle}` : isStr(p.name) ? p.name : "someone";
-}
-
 /**
- * Who an assignment went to, as an answer says it, from the server's assignee object (S14:
- * `{id, name, handle, kind}`): "you" when it is this agent, else its name, else `@handle`, else
- * "someone" — NEVER the raw id (a `name` that is only the id counts as missing). null when nobody
- * was assigned. Shared by create_item and reply's assign-as-you-reply.
+ * A work principal (S15: `{id, name|null, handle|null, kind}` — an assignee, `createdBy`, a link's
+ * `addedBy`, an activity's `by`) as an answer names it: the SDK's `principalLabel`, the server's ONE
+ * rule — this agent "you", else `@handle`, else the name, else "a removed agent/person"; never the
+ * id. null when there is no principal. Shared by every work answer and reply's assign-as-you-reply.
  */
-export function assigneeName(assignee: unknown, self: string | null | undefined): string | null {
-  if (!assignee || typeof assignee !== "object") return null;
-  const a = assignee as { id?: unknown; name?: unknown; handle?: unknown };
-  if (!!self && a.id === self) return "you";
-  if (isStr(a.name) && a.name !== a.id) return a.name;
-  if (isStr(a.handle)) return `@${a.handle}`;
-  return "someone";
+export function labelOf(p: unknown, self: string | null | undefined): string | null {
+  if (!p || typeof p !== "object") return null;
+  const o = p as { id?: unknown; handle?: unknown; name?: unknown; kind?: unknown };
+  return principalLabel(
+    { id: typeof o.id === "string" ? o.id : "", handle: isStr(o.handle) ? o.handle : null, name: isStr(o.name) ? o.name : null, kind: o.kind === "human" ? "human" : "agent" },
+    self || null
+  );
 }
 
 /**
@@ -141,9 +137,10 @@ async function call(deps: WorkDeps, method: string, path: string, body?: unknown
   return r.body;
 }
 
-/** A work write's answer (`WorkItemFrame`), compact: names beside ids, nothing the model has no use for. */
-export function itemView(f: any): Record<string, unknown> {
+/** A work write's answer (`WorkItemFrame`), compact: principals named, nothing the model has no use for. */
+export function itemView(f: any, self: string | null = null): Record<string, unknown> {
   if (!f || typeof f !== "object") return {};
+  const who = (p: unknown) => labelOf(p, self);
   const la = f.latestActivity;
   return given([
     ["thread_id", f.threadId],
@@ -153,6 +150,7 @@ export function itemView(f: any): Record<string, unknown> {
     ["resolved_reason", f.resolvedReason ?? undefined],
     ["conclusion", f.conclusion ?? undefined],
     ["assignee", f.assignee === undefined ? undefined : who(f.assignee)],
+    ["created_by", f.createdBy ? who(f.createdBy) : undefined],
     ["assignee_joined", f.assigneeJoined],
     ["due", f.dueAt ?? undefined],
     ["labels", Array.isArray(f.labels) && f.labels.length > 0 ? f.labels : undefined],
@@ -398,7 +396,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
           ["message_id", r?.id],
           ["kind", item?.kind ?? kind],
           ["status", status],
-          ["assignee", item ? assigneeName(item.assignee, deps.self?.()) : undefined],
+          ["assignee", item ? labelOf(item.assignee, deps.self?.()) : undefined],
           ["assignee_joined", item?.assigneeJoined],
           ["parent_thread_id", item?.parentThreadId ?? undefined],
           ["due", item?.dueAt ?? undefined],
@@ -425,7 +423,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["expectedStatus", args.expected_status],
       ]);
       if (Object.keys(body).length === 0) throw new Error("name at least one thing to change (kind, status, assignee, fields, labels, due, title, review).");
-      return json(itemView(await call(deps, "PUT", `/api/threads/${enc(threadId)}/work`, body)));
+      return json(itemView(await call(deps, "PUT", `/api/threads/${enc(threadId)}/work`, body), deps.self?.()));
     }
 
     case "resolve_item": {
@@ -444,7 +442,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["resultEventId", args.result_event_id],
         ["expectedStatus", args.expected_status],
       ]);
-      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/resolve`, body)));
+      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/resolve`, body), deps.self?.()));
     }
 
     case "reopen_item": {
@@ -455,7 +453,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["text", args.text],
         ["expectedStatus", args.expected_status],
       ]);
-      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/reopen`, body)));
+      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/reopen`, body), deps.self?.()));
     }
 
     case "triage_item": {
@@ -467,7 +465,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       else if (action === "duplicate") body = { action, duplicateOf: need(args, "duplicate_of", "the original's thread_id") };
       else throw new Error(`action must be accept, decline or duplicate, got ${JSON.stringify(action)}`);
       if (args.expected_status !== undefined) body.expectedStatus = args.expected_status;
-      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/triage`, body)));
+      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/triage`, body), deps.self?.()));
     }
 
     case "add_activity": {
@@ -485,7 +483,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["expectedStatus", args.expected_status],
       ]);
       const r = await call(deps, "POST", `/api/threads/${enc(threadId)}/activity`, body);
-      return json({ event_id: r?.eventId, status: r?.status, item: itemView(r) });
+      return json({ event_id: r?.eventId, status: r?.status, item: itemView(r, deps.self?.()) });
     }
 
     case "add_link": {
@@ -497,7 +495,14 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["relation", args.relation],
       ]);
       const r = await call(deps, "POST", `/api/threads/${enc(threadId)}/links`, body);
-      return json({ link_id: r?.link?.id, [r?.created ? "created" : "updated"]: true, relation: r?.link?.relation });
+      return json(
+        given([
+          ["link_id", r?.link?.id],
+          [r?.created ? "created" : "updated", true],
+          ["relation", r?.link?.relation],
+          ["added_by", r?.link?.addedBy ? labelOf(r.link.addedBy, deps.self?.()) : undefined],
+        ])
+      );
     }
 
     case "remove_link": {
@@ -538,7 +543,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
           ["status", i.status],
           ["title", i.title],
           ["channel", i.channelName ? `#${i.channelName}` : i.channelId],
-          ["assignee", i.assignee ? who(i.assignee) : null],
+          ["assignee", i.assignee ? labelOf(i.assignee, deps.self?.()) : null],
           ["due", i.dueAt ?? undefined],
           ["severity", i.severity ?? undefined],
           ["resolved_reason", i.resolvedReason ?? undefined],

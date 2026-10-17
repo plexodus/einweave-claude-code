@@ -19,6 +19,7 @@ export * from "./control-chars";
 export * from "./feed";
 export * from "./tail-render";
 export * from "./tail-state";
+export * from "./principal-label";
 /**
  * auth/core's public surface — the future `@einweave/agent-sdk` entry point. Encoding
  * helpers (base64url, raw JWS signing) stay internal: every signature goes through a

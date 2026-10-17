@@ -7,7 +7,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assigneeName, callWorkTool, describeRefusal, renderThreadEventContent, WORK_TOOLS, type WorkDeps } from "../work-tools";
+import { callWorkTool, labelOf, describeRefusal, renderThreadEventContent, WORK_TOOLS, type WorkDeps } from "../work-tools";
 
 type Sent = { method: string; path: string; body?: unknown };
 
@@ -70,36 +70,59 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
     expect(f.sent.map((s) => (s.body as any).content)).toEqual(["", "", "", "", "Ship it", "Ship it", "details here"]);
   });
 
-  test("create_item's answer names the assignee from the server's object (S14) — \"you\" for this agent, else its name — never a raw id", async () => {
+  test("create_item's answer names the assignee with the SDK's principalLabel (S15) — \"you\" for this agent, else @handle — never a raw id", async () => {
     const answer = (assignee: unknown) => () => ({ status: 200, body: { id: "m1", threadId: T, item: { threadId: T, kind: "task", status: "todo", assignee } } });
     const me = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "me" }, fake(answer({ id: "agent-me", name: "Me", handle: "me", kind: "agent" })).deps));
     expect(me.assignee).toBe("you");
     expect(me.hint).toContain("Assigned:");
     const kai = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "0199-kai-id" }, fake(answer({ id: "0199-kai-id", name: "Kai", handle: "kai", kind: "agent" })).deps));
-    expect(kai.assignee).toBe("Kai");
+    expect(kai.assignee).toBe("@kai");
     expect(JSON.stringify(kai)).not.toContain("0199-kai-id");
     const none = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x" }, fake(answer(null)).deps));
     expect(none.assignee).toBeNull();
     expect(none.hint ?? "").not.toContain("Assigned:");
   });
 
-  test("assigneeName: you / name / @handle / \"someone\" — never the id (a name that IS the id is missing); no self yet is never \"you\"", () => {
-    expect(assigneeName({ id: "a1", name: "Alpha", handle: "alpha" }, "a1")).toBe("you");
-    expect(assigneeName({ id: "k1", name: "Kai", handle: "kai" }, "a1")).toBe("Kai");
-    expect(assigneeName({ id: "k1", name: null, handle: "kai" }, "a1")).toBe("@kai");
-    expect(assigneeName({ id: "k1", name: "k1", handle: "kai" }, "a1")).toBe("@kai");
-    expect(assigneeName({ id: "k1", name: "k1", handle: null }, "a1")).toBe("someone");
-    expect(assigneeName({ id: "k1" }, "")).toBe("someone");
-    expect(assigneeName({ id: "", name: "Kai" }, "")).toBe("Kai");
-    expect(assigneeName(null, "a1")).toBeNull();
+  test("labelOf = the SDK's principalLabel: you / @handle / name / a removed agent|person — never the id; no self yet is never \"you\"", () => {
+    expect(labelOf({ id: "a1", name: "Alpha", handle: "alpha", kind: "agent" }, "a1")).toBe("you");
+    expect(labelOf({ id: "k1", name: "Kai", handle: "kai", kind: "agent" }, "a1")).toBe("@kai");
+    expect(labelOf({ id: "k1", name: "Kai", handle: null, kind: "agent" }, "a1")).toBe("Kai");
+    expect(labelOf({ id: "k1", name: null, handle: null, kind: "agent" }, "a1")).toBe("a removed agent");
+    expect(labelOf({ id: "u1", name: null, handle: null, kind: "human" }, "a1")).toBe("a removed person");
+    expect(labelOf({ id: "", name: null, handle: "kai", kind: "agent" }, "")).toBe("@kai");
+    expect(labelOf(null, "a1")).toBeNull();
   });
 
-  test("answers never print a principal id: an assignee with neither handle nor name is \"someone\"", async () => {
-    const f = fake(() => ({ status: 200, body: { threadId: T, assignee: { id: "0199aaaa-0000-7000-8000-00000000beef", kind: "agent" }, latestActivity: { action: "progress", by: { id: "0199aaaa-0000-7000-8000-00000000cafe" } } } }));
+  test("work answers name every principal — assignee, created_by, latest activity's by, without_review's by — never an id", async () => {
+    const id = (n: string) => `0199aaaa-0000-7000-8000-00000000${n}`;
+    const f = fake(() => ({
+      status: 200,
+      body: {
+        threadId: T,
+        assignee: { id: id("beef"), name: null, handle: null, kind: "agent" },
+        createdBy: { id: id("f00d"), name: "Jörgen", handle: "jorgen", kind: "human" },
+        latestActivity: { action: "progress", by: { id: "agent-me", name: "Me", handle: "me", kind: "agent" } },
+        withoutReview: { by: { id: id("d00d"), name: "Ops", handle: null, kind: "human" }, reason: "hotfix" },
+      },
+    }));
     const out = await callWorkTool("update_item", { thread_id: T, title: "x" }, f.deps);
-    expect(JSON.parse(out)).toMatchObject({ assignee: "someone", latest_activity: "progress by someone" });
-    expect(out).not.toContain("beef");
-    expect(out).not.toContain("cafe");
+    expect(JSON.parse(out)).toMatchObject({ assignee: "a removed agent", created_by: "@jorgen", latest_activity: "progress by you", without_review: { by: "Ops", reason: "hotfix" } });
+    expect(out).not.toMatch(/0199aaaa/);
+  });
+
+  test("every work write's answer is said from this agent's side (self → you): resolve, reopen, triage, add_activity", async () => {
+    const f = fake(() => ({ status: 200, body: { threadId: T, eventId: "ev1", status: "in_progress", assignee: { id: "agent-me", name: "Me", handle: "me", kind: "agent" } } }));
+    expect(JSON.parse(await callWorkTool("add_activity", { thread_id: T, type: "progress", text: "x" }, f.deps)).item.assignee).toBe("you");
+    expect(JSON.parse(await callWorkTool("resolve_item", { thread_id: T, reason: "done" }, f.deps)).assignee).toBe("you");
+    expect(JSON.parse(await callWorkTool("reopen_item", { thread_id: T }, f.deps)).assignee).toBe("you");
+    expect(JSON.parse(await callWorkTool("triage_item", { thread_id: T, action: "accept" }, f.deps)).assignee).toBe("you");
+    const list = fake(() => ({ status: 200, body: { items: [{ threadId: T, assignee: { id: "agent-me", name: "Me", handle: "me", kind: "agent" } }] } }));
+    expect(JSON.parse(await callWorkTool("list_items", { assignee: "me" }, list.deps)).items[0].assignee).toBe("you");
+  });
+
+  test("add_link names who added it (added_by)", async () => {
+    const f = fake(() => ({ status: 200, body: { link: { id: "l2", relation: "related", addedBy: { id: "agent-me", name: "Me", handle: "me", kind: "agent" } }, created: true } }));
+    expect(JSON.parse(await callWorkTool("add_link", { thread_id: T, type: "url", url: "https://x" }, f.deps))).toEqual({ link_id: "l2", created: true, relation: "related", added_by: "you" });
   });
 
   test("create_item confirm_new: only a literal true is sent as confirmNew", async () => {

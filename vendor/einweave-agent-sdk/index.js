@@ -21,13 +21,14 @@ import {
   isKeyAlreadyEnrolled,
   isOAuthError,
   joinStateSeq,
+  principalLabel,
   randomB64url,
   reconnectDelay,
   softwareSigner,
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-se2fcazb.js";
+} from "./index-adbbmm3v.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -1799,5 +1800,6 @@ export {
   memoryCredentialStore,
   memorySeqStore,
   memorySessionLock,
+  principalLabel,
   queueAdapter
 };

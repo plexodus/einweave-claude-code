@@ -95,9 +95,7 @@ export interface SendResult {
     hold?: SendHold;
     /** RFC-029 D4: a reply naming an `assignee` answers the assign, named (S14) — `assigneeJoined` when it joined them. */
     assign?: {
-        assignee: WorkPrincipal & {
-            name: string;
-        };
+        assignee: WorkPrincipal;
         assigneeJoined?: true;
     };
     [k: string]: unknown;
@@ -312,10 +310,8 @@ export interface CreateItemResult extends SendResult {
         threadId: string;
         kind: WorkKind;
         status: WorkStatus;
-        /** Named, never a bare id (S14): print `name` (display name, else handle, else id). */
-        assignee: (WorkPrincipal & {
-            name: string;
-        }) | null;
+        /** Named, never a bare id: a `WorkPrincipal`. */
+        assignee: WorkPrincipal | null;
         parentThreadId: string | null;
         dueAt: string | null;
         labels: string[];
@@ -420,6 +416,12 @@ export type ActivityBody = {
     text: string;
     expectedStatus?: string;
 };
+/**
+ * THE shape of every work principal (S15): an `assignee` (frames, results, `work.list`,
+ * `children`), `createdBy`, a link's `addedBy`. Name it with `principalLabel(p, self?)`
+ * (this SDK; the server's header / `thread_event` `names` rule): `@handle`, else `name`,
+ * else "a removed agent" / "a removed person" by `kind`; your own id → "you" — never `id`.
+ */
 export interface WorkPrincipal {
     id: string;
     /** Null when the principal has none left (a removed agent). */
@@ -444,7 +446,7 @@ export interface WorkHeaderPrincipal {
 /**
  * The answer of every work write (`work`, `resolve`, `reopen`, `triage`, `activity`): the
  * thread's frame, a work item's header fields (absent for a conversation kind), `createdBy`
- * and `changed`.
+ * (named, never a bare id — S15) and `changed`.
  */
 export interface WorkItemFrame {
     threadId: string;
@@ -457,7 +459,8 @@ export interface WorkItemFrame {
     conclusion: string | null;
     answerMessageId: string | null;
     updatedAt: string;
-    createdBy: string;
+    /** Named (S15): `name`/`handle` null when none is left — print a fallback, never the id. */
+    createdBy: WorkPrincipal;
     changed: boolean;
     assignee?: WorkPrincipal | null;
     dueAt?: string | null;
@@ -537,7 +540,8 @@ export interface WorkLink {
     relation: LinkRelation;
     provider: string | null;
     externalId: string | null;
-    addedBy: string | null;
+    /** Named (S15), the frame's `assignee` shape; null when no one added it (a resolve's fix link). */
+    addedBy: WorkPrincipal | null;
     createdAt: string;
 }
 export interface AddLinkBody {
@@ -559,9 +563,7 @@ export interface WorkChildren {
         status: WorkStatus;
         title: string;
         resolvedReason: string | null;
-        assignee: (WorkPrincipal & {
-            name: string;
-        }) | null;
+        assignee: WorkPrincipal | null;
         dueAt: string | null;
         createdAt: string;
     }[];
@@ -602,9 +604,7 @@ export interface WorkListItem {
     title: string;
     channelId: string;
     channelName: string;
-    assignee: (WorkPrincipal & {
-        name: string;
-    }) | null;
+    assignee: WorkPrincipal | null;
     resolvedReason: string | null;
     parentThreadId: string | null;
     dueAt: string | null;
@@ -612,7 +612,8 @@ export interface WorkListItem {
     severity?: string | null;
     labels: string[];
     attention?: AttentionState;
-    createdBy: string;
+    /** Named (S15): `name`/`handle` null when none is left — print a fallback, never the id. */
+    createdBy: WorkPrincipal;
     createdAt: string;
     updatedAt: string;
     lastActivityAt: string | null;

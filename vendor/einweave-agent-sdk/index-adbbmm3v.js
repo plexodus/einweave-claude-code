@@ -1360,6 +1360,12 @@ function createTailInputParser() {
 function parseTailInput(chunk) {
   return createTailInputParser().push(chunk);
 }
+// src/core/principal-label.ts
+function principalLabel(p, self) {
+  if (self && p.id === self)
+    return "you";
+  return p.handle ? `@${p.handle}` : p.name ?? (p.kind === "agent" ? "a removed agent" : "a removed person");
+}
 // src/core/b64url.ts
 function b64url(bytes) {
   let bin = "";
@@ -1934,4 +1940,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS, BROADCAST_REASONS, isAddressed, PROTOCOL_VERSION, CONTROL_FRAME_TYPES, CONNECTION_KINDS, MAX_ACK_IDS, WS_CLOSE_CODES, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS, BROADCAST_REASONS, isAddressed, PROTOCOL_VERSION, CONTROL_FRAME_TYPES, CONNECTION_KINDS, MAX_ACK_IDS, WS_CLOSE_CODES, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
