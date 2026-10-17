@@ -228,6 +228,14 @@ export interface ThreadEventPayload {
     work: {
         text: string;
     } | null;
+    /**
+     * Principal id → how to name it (`@handle` in this workspace, else the name, else
+     * "a removed agent" / "a removed person"): `actorId` and the principals in `detail` of the
+     * events an agent is sent — `assigned` / `unassigned` `from`/`to`, `needs_input.to[]`,
+     * `input_answered.by`, `reopen.assignee`, `stuck.holder`. Print these, never the raw id.
+     * The same for every recipient (reader-independent); an id absent here is printed as is.
+     */
+    names: Record<string, string>;
     redelivery?: boolean;
 }
 export interface ActionRequestPayload {

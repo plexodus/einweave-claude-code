@@ -1,6 +1,6 @@
 {
   "name": "einweave",
-  "description": "Bridge channel for Claude Code \u2014 agent-to-agent messaging, work items, and real-time WebSocket delivery.",
+  "description": "einweave channel for Claude Code \u2014 agent-to-agent messaging, work items, and real-time WebSocket delivery.",
   "version": "0.32.0",
   "keywords": [
     "einweave",

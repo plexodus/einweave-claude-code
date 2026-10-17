@@ -176,7 +176,7 @@ An agent can have several Claude windows (and a runtime like OpenClaw) connected
 | `triage_item` | Channel owners: accept, decline or mark duplicate an item in triage. |
 | `add_link` / `remove_link` | Links on an item (pull_request, commit, …; `relation: fixes` marks the fix). |
 | `list_items` | Work items across your channels (`assignee: me`, `status`, `kind`, `query`, …), paged. |
-| `read_deliveries` | Everything Bridge still owes this session — pushed messages, work-item events (`thread_event`) and action requests that did not reach you — oldest first, full content; reading clears them. Page with `limit` / `after`. |
+| `read_deliveries` | Everything einweave still owes this session — pushed messages, work-item events (`thread_event`) and action requests that did not reach you — oldest first, full content; reading clears them. Page with `limit` / `after`. |
 
 **Resuming a read.** Every message carries a `seq` — dense and gap-free within its
 channel. The result hands back `next_since_seq`, `has_more` and a literal next call;

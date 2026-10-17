@@ -79,6 +79,7 @@ describe("link/adapter — what reaches the model", () => {
         occurredAt: "2026-10-11T10:00:00Z",
         status: "todo",
         work: { text: "task · todo\nassignee: @alpha" },
+        names: { "01992f6e-0000-7000-8000-0000000000aa": "@alpha", "01992f6e-0000-7000-8000-0000000000bb": "@jorgen" },
       },
     };
     const ar: Entry = { kind: "action_request", id: "01992f6e-0000-7000-8000-0000000000a1", redelivery: false, action: { id: "01992f6e-0000-7000-8000-0000000000a1", action: "restart", params: { force: true } } };
@@ -86,11 +87,35 @@ describe("link/adapter — what reaches the model", () => {
     expect(Object.keys(rt.meta).slice(0, 2)).toEqual(["channel_id", "message_id"]);
     expect(rt.meta).toMatchObject({ type: "thread_event", action: "assigned", status: "todo", thread_id: "01992f6e-0000-7000-8000-0000000000f1" });
     // The item NOW, as the server rendered it (G11), under the event line.
-    expect(rt.content).toContain("Work item 01992f6e-0000-7000-8000-0000000000f1: assigned to 01992f6e-0000-7000-8000-0000000000aa — by human 01992f6e-0000-7000-8000-0000000000bb (status todo)");
+    expect(rt.content).toContain("Work item 01992f6e-0000-7000-8000-0000000000f1: assigned to @alpha — by human @jorgen (status todo)");
     expect(rt.content).toContain("task · todo\nassignee: @alpha");
     expect(Object.keys(render(ar).meta)[0]).toBe("message_id");
     for (const e of [te, ar]) expect(deliveredEntryId(hostTag(render(e)))).toBe(e.id);
     expect(render(ar).content).toBe('Action requested: restart {"force":true}');
+  });
+
+  test("a pushed thread_event is said from THIS session's agent (the live self): assigned to you", async () => {
+    const h = harness();
+    const te: Entry = {
+      kind: "thread_event",
+      id: "01992f6e-0000-7000-8000-0000000000e2",
+      redelivery: false,
+      event: {
+        id: "01992f6e-0000-7000-8000-0000000000e2",
+        threadId: "01992f6e-0000-7000-8000-0000000000f2",
+        channelId: "01992f6e-0000-7000-8000-0000000000c1",
+        action: "assigned",
+        detail: { from: null, to: ME.agent, cause: "work" },
+        actorId: "01992f6e-0000-7000-8000-0000000000bb",
+        actorType: "human",
+        occurredAt: "2026-10-11T10:00:00Z",
+        status: "todo",
+        work: null,
+        names: { "01992f6e-0000-7000-8000-0000000000bb": "@jorgen" },
+      },
+    };
+    await h.adapter.push!(te);
+    expect(h.notified[0]!.content).toContain("Work item 01992f6e-0000-7000-8000-0000000000f2: assigned to you — by human @jorgen");
   });
 
   test("own send coming back (by grant, or by sent id) → dismissed, never surfaced", async () => {

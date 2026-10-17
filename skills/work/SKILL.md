@@ -1,12 +1,12 @@
 ---
 name: work
-description: Work Bridge work items (tasks, bugs, features, requests) — file, claim, report progress, finish. Use when the user says /einweave:work, asks what Bridge work is assigned to this agent, wants to file a bug/task/feature/request on Bridge, or when you are the assignee of a Bridge work item (a thread_event arrived, or read_thread shows `work`).
+description: Work einweave work items (tasks, bugs, features, requests) — file, claim, report progress, finish. Use when the user says /einweave:work, asks what einweave work is assigned to this agent, wants to file a bug/task/feature/request on einweave, or when you are the assignee of an einweave work item (a thread_event arrived, or read_thread shows `work`).
 user-invocable: true
 ---
 
 # /einweave:work — work items
 
-A work item (`task`, `bug`, `feature`, `request`) is a Bridge thread with a status, one
+A work item (`task`, `bug`, `feature`, `request`) is an einweave thread with a status, one
 assignee and structured activity. The server renders its header; `read_thread` shows it as
 `work.text`.
 
@@ -27,9 +27,10 @@ channel, attention). `list_items(status: "triage")` shows what waits for a chann
 2. **File with `create_item`**, never with a plain `reply`. Pass the kind's required `fields`
    (a 422 `missing_fields` names the missing ones). **Read `similar`** in the result. If one is
    the same work, continue it there and say so. A near-identical bug is refused once with 409
-   `similar_exists`: read the candidates. If one is the same failure, reopen it with
-   `reopen_item(regression: true)` or reply into it. Only if none is the same, send again with
-   `confirm_new: true`.
+   `similar_exists`: read the candidates. If one is the same failure: a bug resolved `done`
+   came back — reopen it with `reopen_item(regression: true)`; an open one is still being
+   worked — reply into it instead (a regression is only for a bug resolved done). Only if
+   none is the same, send again with `confirm_new: true`.
 3. **Claiming is `update_item(thread_id, assignee: "me")`.** That makes this agent the item's
    assignee. It is not `take`: `take` only moves a thread's hold between this agent's own
    sessions. An agent usually claims, and takes only to move work between its sessions.
@@ -41,6 +42,8 @@ channel, attention). `list_items(status: "triage")` shows what waits for a chann
 5. **End with a `result`**, never by resolving: `add_activity(type: "result", text, fix?,
    conclusion?, proposed: {reason})`. A person resolves it, or the channel's review policy
    does. `resolve_item` answers an agent 403 with the remedy — that remedy is the result.
+   One exception: an item you filed (you are its requester) may be withdrawn by you —
+   `resolve_item(reason: "not_planned")` — while it never had a result.
 6. An item you file as an agent with no assignee, yourself, or an agent you manage starts in
    **triage**: a channel owner accepts it (`triage_item`). That is expected, not an error.
 7. Dates are calendar dates: `due` is `YYYY-MM-DD`. Fix and link URLs are `http(s)` only.

@@ -17,6 +17,8 @@ export type ApiCall = (method: string, path: string, body?: unknown) => Promise<
 
 export interface WorkDeps {
   api: ApiCall;
+  /** This session's agent id ("" before it authenticates): an answer names it "you", never by id. */
+  self?: () => string;
   /** A root this session posted (create_item): its echo must be dismissed, and the feed shown it. */
   onRootSent?: (r: { id: string; channelId: string; threadId: string; title: string; text: string }) => void;
 }
@@ -53,6 +55,8 @@ function proposedOf(v: unknown): unknown {
   ]);
 }
 
+const CONVERSATION_KINDS: ReadonlySet<string> = new Set(["discussion", "question"]);
+
 const listOf = (v: unknown): string[] | undefined =>
   v === undefined || v === null
     ? undefined
@@ -70,14 +74,26 @@ function who(p: any): string | null {
 }
 
 /**
+ * Who an assignment went to, as an answer says it: "you" when it is this agent, else what the
+ * caller named (`@kai`) — a raw id only when nothing else is known. Shared by create_item and
+ * reply's assign-as-you-reply.
+ */
+export function assigneeName(id: unknown, arg: unknown, self: string | null | undefined): string | null {
+  if (typeof id !== "string" || id === "") return null;
+  if (!!self && id === self) return "you";
+  if (isStr(arg) && arg.trim() !== "me") return arg.trim();
+  return id;
+}
+
+/**
  * A refusal, said so the model can act on it: the HTTP status, the server's `code`, and every
  * detail the server sent beside it (`missing`, `field`, `who_may`, `remedy`, `similar`, …).
  */
 export function describeRefusal(status: number, body: any, text: string): string {
-  if (!body || typeof body !== "object") return `Bridge API error ${status}: ${text}`;
+  if (!body || typeof body !== "object") return `einweave API error ${status}: ${text}`;
   const code = String(body.code ?? body.error ?? "error");
   const { error: _e, code: _c, message, ...rest } = body;
-  const parts: string[] = [`Bridge refused (${status} ${code})`];
+  const parts: string[] = [`einweave refused (${status} ${code})`];
   if (isStr(message)) parts.push(message);
   if (code === "missing_fields" && Array.isArray(rest.missing)) {
     parts.push(`missing required fields: ${rest.missing.join(", ")} — pass them in \`fields\` (item_schema lists each kind's required fields)`);
@@ -94,7 +110,7 @@ export function describeRefusal(status: number, body: any, text: string): string
   if (code === "similar_exists" && Array.isArray(rest.similar)) {
     const list = rest.similar.map(similarRow);
     parts.push(
-      `similar: ${JSON.stringify(list)} — if one of these is the same failure, continue it (read_thread; a resolved one: reopen_item with regression: true) instead of filing a new bug; only if none is, call create_item again with confirm_new: true`
+      `similar: ${JSON.stringify(list)} — if one of these is the same failure, continue it instead of filing a new bug (an open one: reply into it; a bug resolved done: reopen_item with regression: true); only if none is, call create_item again with confirm_new: true`
     );
     delete rest.similar;
   }
@@ -117,7 +133,7 @@ function similarRow(s: any) {
 
 async function call(deps: WorkDeps, method: string, path: string, body?: unknown): Promise<any> {
   const r = await deps.api(method, path, body);
-  if (r.status === 404) throw new Error(`Bridge refused (404 not_found) — not found, or not readable by this agent (${path.replace(/\?.*$/, "")})`);
+  if (r.status === 404) throw new Error(`einweave refused (404 not_found) — not found, or not readable by this agent (${path.replace(/\?.*$/, "")})`);
   if (r.status < 200 || r.status >= 300) throw new Error(describeRefusal(r.status, r.body, r.text));
   return r.body;
 }
@@ -166,7 +182,7 @@ export const WORK_TOOLS = [
         kind: { type: "string", enum: ["task", "bug", "feature", "request", "discussion", "question"], description: "The thread's kind." },
         title: { type: "string", description: "The item's title — how it is listed and searched." },
         fields: { type: "object", description: "The kind's fields (item_schema), its required ones included, e.g. a bug's what_happened, expected, steps." },
-        body: { type: "string", description: "The root message text (default: the title)." },
+        body: { type: "string", description: "The root message text. Omitted: a work kind's root is empty (its fields are the item, shown live in its header); a discussion's or question's root is the title." },
         assignee: { type: "string", description: `Who does it. ${ASSIGNEE_DOC}` },
         labels: { type: "array", items: { type: "string" }, description: "Label names (item_schema lists the workspace's)." },
         due: { type: "string", description: "A calendar date, YYYY-MM-DD (422 due_must_be_date otherwise)." },
@@ -181,6 +197,7 @@ export const WORK_TOOLS = [
     name: "update_item",
     description:
       "Edit a work item: kind, status (open side only: todo, in_progress, needs_input, in_review — resolving is resolve_item), assignee, fields (merge patch; null removes a key), labels {add, remove}, due, title, review. " +
+      "A conversation (discussion, question) takes only kind, title and labels — switch discussion ⇄ question with kind. " +
       "All-or-nothing; each field has its own authority — a 403 not_allowed names the first refused field and who may. " +
       "CLAIMING work is update_item(thread_id, assignee: \"me\"): it makes this agent the assignee. That is not `take`, which only moves the thread's hold between this agent's sessions.",
     inputSchema: {
@@ -213,7 +230,7 @@ export const WORK_TOOLS = [
         reason: { type: "string", enum: ["done", "not_planned", "duplicate", "outdated", "cannot_reproduce"] },
         duplicate_of: { type: "string", description: "With reason duplicate: the original's thread_id." },
         fix: { type: "object", description: "{type, url, title?} — the fix (pull_request, commit, …); url http(s) only.", properties: { type: { type: "string" }, url: { type: "string" }, title: { type: "string" } } },
-        resolved_in: { type: "object", description: "{component, version} the fix shipped in.", properties: { component: { type: "string" }, version: { type: "string" } } },
+        resolved_in: { type: "object", description: "{component, version} the fix shipped in — both, or leave it out.", properties: { component: { type: "string" }, version: { type: "string" } } },
         conclusion: { type: "string", description: "What was concluded (a done item needs a fix or a conclusion)." },
         without_review_reason: { type: "string", description: "A person channel owner resolving without review: why." },
         result_event_id: { type: ["string", "null"], description: "The result being approved (work.latest_result_id from read_thread); null = you saw none (409 result_changed if one exists)." },
@@ -347,7 +364,9 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       const channelId = need(args, "channel_id", "the channel's id or name");
       const kind = need(args, "kind");
       const title = need(args, "title");
-      const text = isStr(args.body) ? String(args.body) : title;
+      // RFC §2: the root is only what its author wrote — empty for a work kind; a conversation
+      // (discussion, question) is nothing but its posts, so its root defaults to the title.
+      const text = isStr(args.body) ? String(args.body) : CONVERSATION_KINDS.has(kind) ? title : "";
       const body = given([
         ["channelId", channelId],
         ["content", text],
@@ -376,7 +395,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
           ["message_id", r?.id],
           ["kind", item?.kind ?? kind],
           ["status", status],
-          ["assignee_id", item ? item.assigneeId : undefined],
+          ["assignee", item ? assigneeName(item.assigneeId, args.assignee, deps.self?.()) : undefined],
           ["assignee_joined", item?.assigneeJoined],
           ["parent_thread_id", item?.parentThreadId ?? undefined],
           ["due", item?.dueAt ?? undefined],
@@ -409,6 +428,9 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     case "resolve_item": {
       const threadId = need(args, "thread_id");
       const ri = args.resolved_in as Record<string, unknown> | undefined;
+      if (ri !== undefined && ri !== null && !(typeof ri === "object" && isStr(ri.component) && isStr(ri.version))) {
+        throw new Error('resolved_in needs both component and version, e.g. {component: "api", version: "1.2.3"} — nothing was sent.');
+      }
       const body = given([
         ["reason", args.reason],
         ["duplicateOf", args.duplicate_of],
@@ -545,35 +567,59 @@ function clip(s: string): string {
   return s.length > 300 ? `${s.slice(0, 300)}…` : s;
 }
 
-/** A detail, said in one short line: labels bare, free text quoted, objects as JSON. */
-function detailLine(detail: Record<string, unknown>, skip: ReadonlySet<string>): string {
+/**
+ * How an event line names a principal (S13): this agent is "you"; anyone else by the payload's
+ * `names` (`@handle`, else the name, else "a removed agent/person"); an id `names` does not cover
+ * is printed as is. Agents have no roster, so without this a line reads `assigned to 0199…`.
+ */
+interface Namer {
+  isSelf(v: unknown): boolean;
+  name(v: unknown): string;
+}
+
+function namer(self: string | null, names: Readonly<Record<string, string>> | null | undefined): Namer {
+  const isSelf = (v: unknown) => !!self && v === self;
+  const known = names && typeof names === "object" ? names : {};
+  return {
+    isSelf,
+    name: (v) => (isSelf(v) ? "you" : typeof v === "string" && Object.hasOwn(known, v) ? known[v]! : String(v)),
+  };
+}
+
+/** A detail, said in one short line: labels bare, free text quoted, objects as JSON, principals named. */
+function detailLine(detail: Record<string, unknown>, skip: ReadonlySet<string>, n: Namer): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(detail)) {
     if (v === null || v === undefined || skip.has(k)) continue;
-    const s = typeof v === "string" && !FREE_TEXT.has(k) ? v : JSON.stringify(v);
+    const free = FREE_TEXT.has(k);
+    const named = free ? v : typeof v === "string" ? n.name(v) : Array.isArray(v) ? v.map((x) => (typeof x === "string" ? n.name(x) : x)) : v;
+    const s = typeof named === "string" && !free ? named : JSON.stringify(named);
     parts.push(`${k}: ${clip(s)}`);
   }
   return parts.join("; ");
 }
 
 /** What the event means to THIS agent, in words — the parts that change what it should do. */
-function headline(action: string, d: Record<string, unknown>, self: string | null): { what: string; skip: Set<string> } {
+function headline(action: string, d: Record<string, unknown>, n: Namer): { what: string; skip: Set<string> } {
   const skip = new Set(SAID);
-  const isSelf = (v: unknown) => !!self && v === self;
   switch (action) {
     case "assigned":
-      if (isSelf(d.to)) return { what: "assigned to you", skip };
-      if (isSelf(d.from)) return { what: `reassigned AWAY from you (now ${String(d.to)}) — it is no longer yours: STOP working on it`, skip };
-      return { what: `assigned to ${String(d.to)}`, skip };
+      if (n.isSelf(d.to)) return { what: "assigned to you", skip };
+      if (n.isSelf(d.from)) return { what: `reassigned AWAY from you (now ${n.name(d.to)}) — it is no longer yours: STOP working on it`, skip };
+      return { what: `assigned to ${n.name(d.to)}`, skip };
     case "unassigned":
-      if (isSelf(d.from)) return { what: "unassigned from you — it is no longer yours: STOP working on it", skip };
-      return { what: `unassigned (was ${String(d.from)})`, skip };
+      if (n.isSelf(d.from)) return { what: "unassigned from you — it is no longer yours: STOP working on it", skip };
+      return { what: `unassigned (was ${n.name(d.from)})`, skip };
     case "status":
       if (d.from === "in_review" && typeof d.text === "string") {
         skip.add("text");
         return { what: `CHANGES REQUESTED (${String(d.from)} → ${String(d.to)}): ${JSON.stringify(clip(d.text))}`, skip };
       }
       return { what: `status ${String(d.from)} → ${String(d.to)}`, skip };
+    case "needs_input": {
+      const to = Array.isArray(d.to) ? d.to : d.to === undefined || d.to === null ? [] : [d.to];
+      return { what: to.length > 0 ? `NEEDS INPUT from ${to.map(n.name).join(", ")}` : "needs input", skip };
+    }
     case "reopen":
       return { what: d.regression === true ? "reopened as a REGRESSION (it came back)" : "reopened", skip };
     case "resolve":
@@ -586,9 +632,10 @@ function headline(action: string, d: Record<string, unknown>, self: string | nul
 
 /**
  * A `thread_event` entry (RFC-029 §6) as the model reads it: what happened to which item — said
- * from THIS agent's side (`self`: a reassignment away tells it to stop) — and the item NOW, the
- * server's rendered header (`work.text`, G11). The same text on a live push and on
- * `read_deliveries` (a resumed session drains the same entry).
+ * from THIS agent's side (`self`: a reassignment away tells it to stop; it is "you") and naming
+ * everyone else by the payload's `names` — and the item NOW, the server's rendered header
+ * (`work.text`, G11). The same text on a live push and on `read_deliveries` (a resumed session
+ * drains the same entry).
  */
 export function renderThreadEventContent(
   e: {
@@ -599,13 +646,15 @@ export function renderThreadEventContent(
     actorId: string | null;
     status: string | null;
     work: { text: string } | null;
+    names?: Record<string, string> | null;
   },
   self: string | null = null
 ): string {
-  const by = e.actorType === "system" || !e.actorId ? "einweave" : `${e.actorType} ${e.actorId}`;
+  const n = namer(self, e.names);
+  const by = e.actorType === "system" || !e.actorId ? "einweave" : n.isSelf(e.actorId) ? "you" : `${e.actorType} ${n.name(e.actorId)}`;
   const detail = e.detail && typeof e.detail === "object" ? e.detail : {};
-  const h = headline(e.action, detail, self);
-  const d = detailLine(detail, h.skip);
+  const h = headline(e.action, detail, n);
+  const d = detailLine(detail, h.skip, n);
   const head = `Work item ${e.threadId}: ${h.what} — by ${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
   const tail = `read_thread(thread_id: "${e.threadId}") shows it in full.`;
   return e.work?.text ? `${head}\n${e.work.text}\n${tail}` : `${head}\n${tail}`;

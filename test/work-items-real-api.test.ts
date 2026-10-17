@@ -1,5 +1,5 @@
 /**
- * RFC-029 work items against the REAL Bridge API — the plugin 0.32.0 release gate (A1).
+ * RFC-029 work items against the REAL einweave API — the plugin 0.32.0 release gate (A1).
  *
  * The plugin's own code (server.ts over stdio, the vendored SDK 0.8.0) against a real
  * `packages/api` process on a scratch Postgres database: the §7 tools answer what the server
@@ -95,6 +95,7 @@ interface Plugin {
   stderr: () => string;
   call: (name: string, args?: Record<string, unknown>) => Promise<{ isError: boolean; text: string }>;
   tools: () => Promise<string[]>;
+  listed: () => Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>>;
   connected: () => Promise<boolean>;
   close: () => Promise<void>;
 }
@@ -136,6 +137,7 @@ async function plugin(dir: string, env: Record<string, string>): Promise<Plugin>
     stderr: () => log,
     call,
     tools: async () => ((await client.listTools()).tools ?? []).map((t: any) => t.name),
+    listed: async () => ((await client.listTools()).tools ?? []) as any,
     connected: async () => JSON.parse((await call("status", { local: true })).text).websocket === "connected",
     close: () => client.close().catch(() => {}),
   };
@@ -217,6 +219,33 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     for (const t of ["create_item", "update_item", "resolve_item", "reopen_item", "triage_item", "add_activity", "add_link", "remove_link", "list_items", "item_schema"]) expect(tools).toContain(t);
   });
 
+  test("the tools this release reworded say einweave, never Bridge", async () => {
+    const listed = await p.listed();
+    const touched = ["reply", "leave_channel", "read_deliveries", "who_can_see", "create_item", "update_item", "resolve_item", "reopen_item", "triage_item", "add_activity", "add_link", "remove_link", "list_items", "item_schema"];
+    for (const name of touched) {
+      const t = listed.find((x) => x.name === name);
+      expect(t, name).toBeDefined();
+      expect(JSON.stringify(t), name).not.toContain("Bridge");
+    }
+  });
+
+  test("create_item without body: a work kind's root is empty (RFC §2), a discussion's is its title", async () => {
+    const task = JSON.parse((await p.call("create_item", { channel_id: CHANNEL, kind: "task", title: "Empty-root task", fields: { goal: "nothing in the root" } })).text);
+    const tRead = JSON.parse((await p.call("read_thread", { thread_id: task.thread_id, mark_read: false })).text);
+    expect(tRead.root.content, JSON.stringify(tRead.root)).toBe("");
+    const disc = JSON.parse((await p.call("create_item", { channel_id: CHANNEL, kind: "discussion", title: "Where should logs live" })).text);
+    const dRead = JSON.parse((await p.call("read_thread", { thread_id: disc.thread_id, mark_read: false })).text);
+    expect(dRead.root.content).toBe("Where should logs live");
+  });
+
+  test("resolve_item with half a resolved_in is refused before the server is asked", async () => {
+    const tid = await humanTask("Bump the base image");
+    const r = await p.call("resolve_item", { thread_id: tid, reason: "done", conclusion: "bumped", resolved_in: { component: "api" } });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("resolved_in needs both component and version");
+    expect(r.text).not.toContain("einweave refused");
+  });
+
   test("item_schema answers the vocabulary (bug's required fields among it)", async () => {
     const r = await p.call("item_schema", { channel: CHANNEL });
     expect(r.isError, r.text).toBe(false);
@@ -240,7 +269,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     const first = await p.call("create_item", { channel_id: CHANNEL, kind: "bug", title: "Saving a draft throws a 500 error", fields });
     expect(first.isError, first.text).toBe(false);
     const a = JSON.parse(first.text);
-    expect(a).toMatchObject({ kind: "bug", status: "triage", assignee_id: null });
+    expect(a).toMatchObject({ kind: "bug", status: "triage", assignee: null });
     expect(a.hint).toContain("In triage");
 
     const dup = await p.call("create_item", { channel_id: CHANNEL, kind: "bug", title: "Saving a draft throws a 500 error", fields });
@@ -294,7 +323,8 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     const tid = await humanTask("Check the nightly backup restore");
     const r = await p.call("reply", { channel_id: CHANNEL, thread_id: tid, text: "I'll take this one", assignee: "me" });
     expect(r.isError, r.text).toBe(false);
-    expect(r.text).toContain(`assigned to ${seed.agentId}`);
+    expect(r.text).toContain("assigned to you");
+    expect(r.text).not.toContain(seed.agentId);
     const read = JSON.parse((await p.call("read_thread", { thread_id: tid, mark_read: false })).text);
     expect(read.thread.work.text).toContain("assignee: @me");
 
@@ -318,6 +348,11 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     expect(count(p, t1)).toBe(1);
     const live = p.notices.find((n) => n.includes(eventLine(t1)))!;
     expect(live).toContain("task · todo"); // the item NOW (work.text)
+    // S13: said from this agent's side, the person NAMED by the payload's names — no raw ids.
+    const line = live.split("\n")[0]!;
+    expect(line).toContain(`Work item ${t1}: assigned to you — by human `);
+    expect(line).not.toContain(seed.userId);
+    expect(line).not.toContain(seed.agentId);
     // The model has it: read_deliveries returns it and acks it (`model`).
     const owed = JSON.parse((await p.call("read_deliveries")).text);
     expect(owed.entries.filter((e: any) => e.kind === "thread_event" && e.thread_id === t1)).toHaveLength(1);

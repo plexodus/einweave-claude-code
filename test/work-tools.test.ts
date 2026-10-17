@@ -5,11 +5,13 @@
  * work-items-real-api.test.ts; this file pins what the plugin SENDS and how it SAYS a refusal.
  */
 import { test, expect, describe } from "bun:test";
-import { callWorkTool, describeRefusal, renderThreadEventContent, WORK_TOOLS, type WorkDeps } from "../work-tools";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { assigneeName, callWorkTool, describeRefusal, renderThreadEventContent, WORK_TOOLS, type WorkDeps } from "../work-tools";
 
 type Sent = { method: string; path: string; body?: unknown };
 
-function fake(answer: (s: Sent) => { status: number; body: any } = () => ({ status: 200, body: {} })) {
+function fake(answer: (s: Sent) => { status: number; body: any } = () => ({ status: 200, body: {} }), self = "agent-me") {
   const sent: Sent[] = [];
   const roots: unknown[] = [];
   const deps: WorkDeps = {
@@ -20,6 +22,7 @@ function fake(answer: (s: Sent) => { status: number; body: any } = () => ({ stat
       return { status: a.status, body: a.body, text: JSON.stringify(a.body) };
     },
     onRootSent: (r) => roots.push(r),
+    self: () => self,
   };
   return { deps, sent, roots };
 }
@@ -49,14 +52,49 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
       {
         method: "POST",
         path: "/api/messages",
-        body: { channelId: "dev", content: "Login fails", title: "Login fails", kind: "bug", fields: { what_happened: "a", expected: "b", steps: "c" }, assignee: "me", labels: ["ui"], due: "2026-10-20", parent: "p1", review: true, confirmNew: true },
+        body: { channelId: "dev", content: "", title: "Login fails", kind: "bug", fields: { what_happened: "a", expected: "b", steps: "c" }, assignee: "me", labels: ["ui"], due: "2026-10-20", parent: "p1", review: true, confirmNew: true },
       },
     ]);
-    expect(f.roots).toEqual([{ id: "m1", channelId: "c1", threadId: T, title: "Login fails", text: "Login fails" }]);
-    expect(out).toMatchObject({ thread_id: T, message_id: "m1", kind: "bug", status: "triage", assignee_id: null, hold: "held" });
+    expect(f.roots).toEqual([{ id: "m1", channelId: "c1", threadId: T, title: "Login fails", text: "" }]);
+    expect(out).toMatchObject({ thread_id: T, message_id: "m1", kind: "bug", status: "triage", assignee: null, hold: "held" });
+    expect(out).not.toHaveProperty("assignee_id");
     expect(out.similar).toEqual([{ thread_id: "t2", title: "Login broken", kind: "bug", status: "todo", score: 0.42 }]);
     expect(out.hint).toContain("similar thread(s): read them");
     expect(out.hint).toContain("In triage");
+  });
+
+  test("create_item without body: a work kind's root is EMPTY (RFC §2); a discussion/question's root is its title; a body is sent as written", async () => {
+    const f = fake(() => ({ status: 200, body: { id: "m1", threadId: T } }));
+    for (const kind of ["task", "bug", "feature", "request", "discussion", "question"]) await callWorkTool("create_item", { channel_id: "dev", kind, title: "Ship it" }, f.deps);
+    await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "Ship it", body: "details here" }, f.deps);
+    expect(f.sent.map((s) => (s.body as any).content)).toEqual(["", "", "", "", "Ship it", "Ship it", "details here"]);
+  });
+
+  test("create_item's answer names the assignee — \"you\" for this agent, else the name it was given — never a raw id", async () => {
+    const answer = (assigneeId: string | null) => () => ({ status: 200, body: { id: "m1", threadId: T, item: { threadId: T, kind: "task", status: "todo", assigneeId } } });
+    const me = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "me" }, fake(answer("agent-me")).deps));
+    expect(me.assignee).toBe("you");
+    const kai = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "@kai" }, fake(answer("0199-kai-id")).deps));
+    expect(kai.assignee).toBe("@kai");
+    expect(JSON.stringify(kai)).not.toContain("0199-kai-id");
+    const none = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x" }, fake(answer(null)).deps));
+    expect(none.assignee).toBeNull();
+  });
+
+  test("assigneeName: you / the arg / the id only when nothing else is known; no self yet is never \"you\"", () => {
+    expect(assigneeName("a1", "me", "a1")).toBe("you");
+    expect(assigneeName("a1", "@kai", "a1")).toBe("you");
+    expect(assigneeName("k1", " @kai ", "a1")).toBe("@kai");
+    expect(assigneeName("k1", "me", "a1")).toBe("k1");
+    expect(assigneeName("k1", undefined, "")).toBe("k1");
+    expect(assigneeName(null, "@kai", "a1")).toBeNull();
+  });
+
+  test("create_item confirm_new: only a literal true is sent as confirmNew", async () => {
+    const f = fake(() => ({ status: 200, body: { id: "m1", threadId: T } }));
+    await callWorkTool("create_item", { channel_id: "dev", kind: "bug", title: "x", confirm_new: false }, f.deps);
+    await callWorkTool("create_item", { channel_id: "dev", kind: "bug", title: "x", confirm_new: "true" }, f.deps);
+    for (const s of f.sent) expect(s.body).not.toHaveProperty("confirmNew");
   });
 
   test("update_item: PUT /work, only the given keys; labels {add, remove}; null kept (unassign / clear due)", async () => {
@@ -88,6 +126,20 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
     });
     await callWorkTool("resolve_item", { thread_id: T, reason: "duplicate", duplicate_of: "t0" }, f.deps);
     expect(f.sent[1]!.body).toEqual({ reason: "duplicate", duplicateOf: "t0" });
+  });
+
+  test("resolve_item: resolved_in needs component AND version — refused here, nothing sent", async () => {
+    const f = fake(() => ({ status: 200, body: { threadId: T } }));
+    for (const ri of [{ component: "api" }, { version: "1.2.3" }, { component: "api", version: " " }, {}, "api@1.2.3"]) {
+      await expect(callWorkTool("resolve_item", { thread_id: T, reason: "done", conclusion: "ok", resolved_in: ri }, f.deps)).rejects.toThrow("resolved_in needs both component and version");
+    }
+    expect(f.sent).toEqual([]);
+  });
+
+  test("update_item's description: a conversation takes only kind/title/labels; discussion ⇄ question via kind", () => {
+    const d = WORK_TOOLS.find((t) => t.name === "update_item")!.description;
+    expect(d).toContain("A conversation (discussion, question) takes only kind, title and labels");
+    expect(d).toContain("switch discussion ⇄ question with kind");
   });
 
   test("reopen_item, triage_item (per action), add_link, remove_link", async () => {
@@ -160,17 +212,54 @@ describe("refusals name the fix", () => {
     expect(t).toContain("remedy: an agent never resolves: post your result");
   });
 
-  test("similar_exists lists the candidates and says confirm_new", () => {
+  test("similar_exists lists the candidates and says confirm_new; regression only for a bug resolved done, an open one is replied into", () => {
     const t = describeRefusal(409, { error: "similar_exists", code: "similar_exists", message: "A bug with a near-identical title exists", similar: [{ threadId: "t1", title: "Login fails", status: "todo", kind: "bug", reason: null, score: 0.91 }] }, "");
     expect(t).toContain("409 similar_exists");
     expect(t).toContain('"thread_id":"t1"');
     expect(t).toContain("confirm_new: true");
+    expect(t).toContain("an open one: reply into it; a bug resolved done: reopen_item with regression: true");
+  });
+
+  test("einweave, never Bridge: refusals, every work tool's text, the work skill", () => {
+    expect(describeRefusal(500, null, "boom")).toBe("einweave API error 500: boom");
+    expect(describeRefusal(403, { code: "x" }, "")).toStartWith("einweave refused (403 x)");
+    expect(JSON.stringify(WORK_TOOLS)).not.toContain("Bridge");
+    expect(readFileSync(join(import.meta.dir, "..", "skills", "work", "SKILL.md"), "utf8")).not.toContain("Bridge");
+    expect(JSON.parse(readFileSync(join(import.meta.dir, "..", ".claude-plugin", "plugin.json"), "utf8")).description).toStartWith("einweave channel for Claude Code");
+    const row = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8").split("\n").find((l) => l.startsWith("| `read_deliveries` |"));
+    expect(row).toContain("Everything einweave still owes this session");
+  });
+
+  test("who_can_see's errors say einweave (its source, between its case and the next)", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "server.ts"), "utf8");
+    const start = src.indexOf('case "who_can_see": {');
+    const end = src.indexOf('case "list_channels": {', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const block = src.slice(start, end).replaceAll("requireBridge", ""); // the gate's name is code, not text
+    expect(block).toContain("einweave API error");
+    expect(block).not.toContain("Bridge");
+  });
+
+  test("a 404 says einweave refused", async () => {
+    const f = fake(() => ({ status: 404, body: null }));
+    await expect(callWorkTool("update_item", { thread_id: T, title: "x" }, f.deps)).rejects.toThrow(/^einweave refused \(404 not_found\)/);
   });
 
   test("a refusal reaches the caller as a thrown error, with nothing else sent", async () => {
     const f = fake(() => ({ status: 422, body: { error: "due_must_be_date", code: "due_must_be_date" } }));
     await expect(callWorkTool("update_item", { thread_id: T, due: "tomorrow" }, f.deps)).rejects.toThrow(/422 due_must_be_date.*YYYY-MM-DD/);
     expect(f.sent).toHaveLength(1);
+  });
+});
+
+describe("the work skill's rules", () => {
+  const skill = readFileSync(join(import.meta.dir, "..", "skills", "work", "SKILL.md"), "utf8").replace(/\s+/g, " ");
+  test("rule 5: an agent requester may withdraw (not_planned) while there is no result", () => {
+    expect(skill).toContain('One exception: an item you filed (you are its requester) may be withdrawn by you — `resolve_item(reason: "not_planned")` — while it never had a result.');
+  });
+  test("rule 2: a regression only for a bug resolved done; an open candidate is replied into", () => {
+    expect(skill).toContain("a bug resolved `done` came back — reopen it with `reopen_item(regression: true)`; an open one is still being worked — reply into it instead");
   });
 });
 
@@ -196,6 +285,29 @@ describe("an inbound thread_event, said from this agent's side", () => {
 
   test("a regression is a reopen {regression: true}", () => {
     expect(ev("reopen", { roundCarried: false, regression: true, text: "broke again" })).toContain('reopened as a REGRESSION (it came back) — by human u1 (status todo) — text: "broke again"');
+  });
+
+  test("principals are NAMED from the payload's names (S13); this agent is \"you\"; an unnamed id is printed as is", () => {
+    const names = { u1: "@jorgen", k1: "@kai", h1: "a removed agent" };
+    const say = (action: string, detail: Record<string, unknown>, actorId: string | null = "u1") =>
+      renderThreadEventContent({ threadId: T, action, detail, actorType: "human", actorId, status: "todo", work: null, names }, ME);
+    expect(say("assigned", { from: null, to: ME })).toContain("assigned to you — by human @jorgen");
+    expect(say("assigned", { from: ME, to: "k1" })).toContain("reassigned AWAY from you (now @kai)");
+    expect(say("assigned", { from: null, to: "k1" })).toContain("assigned to @kai — by human @jorgen");
+    expect(say("unassigned", { from: "k1", to: null })).toContain("unassigned (was @kai)");
+    expect(say("needs_input", { to: [ME, "k1"], text: "which db?" })).toContain('NEEDS INPUT from you, @kai — by human @jorgen (status todo) — text: "which db?"');
+    expect(say("stuck", { holder: "h1", session: "s1" }, null)).toContain("stuck — by einweave (status todo) — holder: a removed agent; session: s1");
+    expect(say("input_answered", { by: "u1" })).toContain("by: @jorgen");
+    expect(say("reopen", { assignee: ME })).toContain("assignee: you");
+    expect(say("progress", { text: "k1" }, ME)).toContain('by you (status todo) — text: "k1"'); // free text is never renamed
+    expect(say("assigned", { from: null, to: "zz" }, "yy")).toContain("assigned to zz — by human yy");
+  });
+
+  test("with no self yet (not authenticated), nothing is \"you\" — a null from is not this agent", () => {
+    const t = renderThreadEventContent({ threadId: T, action: "assigned", detail: { from: null, to: "k1" }, actorType: "human", actorId: "u1", status: "todo", work: null, names: { k1: "@kai" } }, null);
+    expect(t).toContain("assigned to @kai");
+    expect(t).not.toContain("AWAY");
+    expect(t).not.toContain("STOP");
   });
 
   test("resolve: the reason is a label (bare), free text is quoted", () => {

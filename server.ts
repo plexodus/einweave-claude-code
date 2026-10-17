@@ -74,7 +74,7 @@ import { sanitizeChannelParams } from "./control-chars";
 import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type FeedTap } from "./feed-tap";
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
-import { WORK_TOOLS, callWorkTool, type WorkDeps } from "./work-tools";
+import { WORK_TOOLS, assigneeName, callWorkTool, type WorkDeps } from "./work-tools";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -2253,7 +2253,7 @@ const mcp = new Server(
       "",
       "Use the reply tool to send messages to a Bridge channel. Pass channel_id from the inbound message. To reply in a thread, set thread_id to the thread_id shown on the message you are replying to — every inbound message carries the id of its thread. Omit thread_id to start a new root message.",
       "",
-      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything Bridge still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post.",
+      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post.",
       "",
       "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
@@ -2290,7 +2290,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "reply",
       description:
-        "Send a message to a Bridge channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's.",
+        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2380,7 +2380,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "leave_channel",
       description:
-        "Leave a Bridge channel as this session's agent. Open work items assigned to you in it are unassigned. A private " +
+        "Leave an einweave channel as this session's agent. Open work items assigned to you in it are unassigned. A private " +
         "channel cannot be rejoined by yourself afterwards — an owner must add you again. The last owner cannot " +
         "leave, and nobody leaves the workspace's default channel.",
       inputSchema: {
@@ -2533,7 +2533,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "read_deliveries",
       description:
-        "Read everything Bridge still owes THIS session's model — messages, work-item events (thread_event) and action " +
+        "Read everything einweave still owes THIS session's model — messages, work-item events (thread_event) and action " +
         "requests that were pushed but not confirmed as received (the \"entries are not reaching you\" " +
         "notice, a gap, a reconnect) — oldest first, with full content, as they would have arrived. " +
         "Reading them clears them (the sender sees ✓✓). It is the only way to clear a missed work-item " +
@@ -2790,6 +2790,7 @@ const holds = createHolds({
 // RFC-029 §7: the work-item tools' HTTP, through apiFetch (a proof per request). A root that
 // create_item posted is this session's own send: its echo is dismissed, and the feed shows it.
 const workDeps: WorkDeps = {
+  self: () => agentId,
   api: async (method, path, body) => {
     const res = await apiFetch(path, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const text = await res.text();
@@ -2949,7 +2950,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const holdNote = describeSendHold(result.hold, result.threadId ?? threadId);
         // RFC-029 D4: the assignment made with this reply (same transaction as the post).
         const assignNote = result.assign?.assigneeId
-          ? `, assigned to ${result.assign.assigneeId}${result.assign.assigneeJoined ? " (who joined the channel)" : ""}`
+          ? `, assigned to ${assigneeName(result.assign.assigneeId, assignee, agentId)}${result.assign.assigneeJoined ? " (who joined the channel)" : ""}`
           : "";
         // A send that lands while the socket is deaf gets no inbound reply:
         // say so rather than let the model wait on silence.
@@ -3068,7 +3069,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           const threadId = String(args.thread_id).trim();
           const t = await apiFetch(`/api/threads/${encodeURIComponent(threadId)}/messages?limit=1`);
           if (t.status === 404) throw new Error(`thread ${threadId}: not found, or not readable by this agent`);
-          if (!t.ok) throw new Error(`Bridge API error ${t.status}: ${await t.text()}`);
+          if (!t.ok) throw new Error(`einweave API error ${t.status}: ${await t.text()}`);
           const data = (await t.json()) as any;
           const channelId = data?.thread?.channelId ?? data?.parent?.channelId;
           if (typeof channelId !== "string") throw new Error(`thread ${threadId}: not found, or not readable by this agent`);
@@ -3082,7 +3083,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const res = await apiFetch(path);
         // The server answers every refusal exactly like a missing channel.
         if (res.status === 404) throw new Error(`${subject}: not found, or not readable by this agent`);
-        if (!res.ok) throw new Error(`Bridge API error ${res.status}: ${await res.text()}`);
+        if (!res.ok) throw new Error(`einweave API error ${res.status}: ${await res.text()}`);
         const a = (await res.json()) as any;
         const body =
           a.visibility === "public"
