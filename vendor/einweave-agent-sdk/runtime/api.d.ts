@@ -71,7 +71,7 @@ export interface SendBody {
     metadata?: Record<string, unknown>;
     /**
      * RFC-029 D4, a REPLY only: assign the work item as you reply (a handle, an id or `me`).
-     * The result carries `assign: {assigneeId, assigneeJoined?}`. A root names its assignee in
+     * The result carries `assign: {assignee: {id, name, handle, kind}, assigneeJoined?}`. A root names its assignee in
      * `threads.create` instead.
      */
     assignee?: string;
@@ -93,6 +93,13 @@ export interface SendResult {
     channelId?: string;
     /** RFC-028: present for an agent's post. */
     hold?: SendHold;
+    /** RFC-029 D4: a reply naming an `assignee` answers the assign, named (S14) — `assigneeJoined` when it joined them. */
+    assign?: {
+        assignee: WorkPrincipal & {
+            name: string;
+        };
+        assigneeJoined?: true;
+    };
     [k: string]: unknown;
 }
 /** One row of `GET /api/threads?takeable=1` (RFC-028 D8): a thread this session could take. */
@@ -305,7 +312,10 @@ export interface CreateItemResult extends SendResult {
         threadId: string;
         kind: WorkKind;
         status: WorkStatus;
-        assigneeId: string | null;
+        /** Named, never a bare id (S14): print `name` (display name, else handle, else id). */
+        assignee: (WorkPrincipal & {
+            name: string;
+        }) | null;
         parentThreadId: string | null;
         dueAt: string | null;
         labels: string[];

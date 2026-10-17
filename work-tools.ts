@@ -74,18 +74,17 @@ function who(p: any): string | null {
 }
 
 /**
- * Who an assignment went to, as an answer says it: "you" when it is this agent, else what the
- * caller named (`@kai`), else the server's name for it (`principal`: its handle, else its name),
- * else "someone" — NEVER the raw id. null when nobody was assigned. Shared by create_item and
- * reply's assign-as-you-reply.
+ * Who an assignment went to, as an answer says it, from the server's assignee object (S14:
+ * `{id, name, handle, kind}`): "you" when it is this agent, else its name, else `@handle`, else
+ * "someone" — NEVER the raw id (a `name` that is only the id counts as missing). null when nobody
+ * was assigned. Shared by create_item and reply's assign-as-you-reply.
  */
-export function assigneeName(id: unknown, arg: unknown, self: string | null | undefined, principal?: unknown): string | null {
-  if (typeof id !== "string" || id === "") return null;
-  if (!!self && id === self) return "you";
-  if (isStr(arg) && arg.trim() !== "me") return arg.trim();
-  const p = principal && typeof principal === "object" ? (principal as { handle?: unknown; name?: unknown }) : {};
-  if (isStr(p.handle)) return `@${p.handle}`;
-  if (isStr(p.name)) return p.name;
+export function assigneeName(assignee: unknown, self: string | null | undefined): string | null {
+  if (!assignee || typeof assignee !== "object") return null;
+  const a = assignee as { id?: unknown; name?: unknown; handle?: unknown };
+  if (!!self && a.id === self) return "you";
+  if (isStr(a.name) && a.name !== a.id) return a.name;
+  if (isStr(a.handle)) return `@${a.handle}`;
   return "someone";
 }
 
@@ -392,14 +391,14 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       const hints: string[] = [];
       if (similar.length > 0) hints.push(`${similar.length} similar thread(s): read them — if one is the same work, continue it there and say so here.`);
       if (status === "triage") hints.push("In triage: a channel owner accepts it (triage_item) before work starts.");
-      if (item?.assigneeId) hints.push("Assigned: the assignee works it with add_activity (plan → progress → result).");
+      if (item?.assignee) hints.push("Assigned: the assignee works it with add_activity (plan → progress → result).");
       return json(
         given([
           ["thread_id", r?.threadId],
           ["message_id", r?.id],
           ["kind", item?.kind ?? kind],
           ["status", status],
-          ["assignee", item ? assigneeName(item.assigneeId, args.assignee, deps.self?.(), item.assignee) : undefined],
+          ["assignee", item ? assigneeName(item.assignee, deps.self?.()) : undefined],
           ["assignee_joined", item?.assigneeJoined],
           ["parent_thread_id", item?.parentThreadId ?? undefined],
           ["due", item?.dueAt ?? undefined],

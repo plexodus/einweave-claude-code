@@ -2949,8 +2949,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         const holdNote = describeSendHold(result.hold, result.threadId ?? threadId);
         // RFC-029 D4: the assignment made with this reply (same transaction as the post).
-        const assignNote = result.assign?.assigneeId
-          ? `, assigned to ${assigneeName(result.assign.assigneeId, assignee, agentId)}${result.assign.assigneeJoined ? " (who joined the channel)" : ""}`
+        const assignNote = result.assign?.assignee
+          ? `, assigned to ${assigneeName(result.assign.assignee, agentId)}${result.assign.assigneeJoined ? " (who joined the channel)" : ""}`
           : "";
         // A send that lands while the socket is deaf gets no inbound reply:
         // say so rather than let the model wait on silence.

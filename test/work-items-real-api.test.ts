@@ -238,6 +238,14 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     expect(dRead.root.content).toBe("Where should logs live");
   });
 
+  test("create_item naming an assignee answers with its NAME from the server (S14), never its id", async () => {
+    const r = await p.call("create_item", { channel_id: CHANNEL, kind: "task", title: "Self-assigned chore", fields: { goal: "it is done" }, assignee: "me" });
+    expect(r.isError, r.text).toBe(false);
+    const out = JSON.parse(r.text);
+    expect(out.assignee, r.text).toBe("you");
+    expect(r.text).not.toContain(seed.agentId);
+  });
+
   test("resolve_item with half a resolved_in is refused before the server is asked", async () => {
     const tid = await humanTask("Bump the base image");
     const r = await p.call("resolve_item", { thread_id: tid, reason: "done", conclusion: "bumped", resolved_in: { component: "api" } });

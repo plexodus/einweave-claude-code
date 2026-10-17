@@ -39,7 +39,7 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
   test("create_item: POST /api/messages with the work fields; the root is reported as this session's own send", async () => {
     const f = fake(() => ({
       status: 200,
-      body: { id: "m1", channelId: "c1", threadId: T, item: { threadId: T, kind: "bug", status: "triage", assigneeId: null, parentThreadId: null, dueAt: null, labels: [], review: null }, similar: [{ threadId: "t2", rootMessageId: "r2", title: "Login broken", status: "todo", kind: "bug", reason: null, score: 0.42 }], hold: { state: "held" } },
+      body: { id: "m1", channelId: "c1", threadId: T, item: { threadId: T, kind: "bug", status: "triage", assignee: null, parentThreadId: null, dueAt: null, labels: [], review: null }, similar: [{ threadId: "t2", rootMessageId: "r2", title: "Login broken", status: "todo", kind: "bug", reason: null, score: 0.42 }], hold: { state: "held" } },
     }));
     const out = JSON.parse(
       await callWorkTool(
@@ -70,26 +70,28 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
     expect(f.sent.map((s) => (s.body as any).content)).toEqual(["", "", "", "", "Ship it", "Ship it", "details here"]);
   });
 
-  test("create_item's answer names the assignee — \"you\" for this agent, else the name it was given — never a raw id", async () => {
-    const answer = (assigneeId: string | null) => () => ({ status: 200, body: { id: "m1", threadId: T, item: { threadId: T, kind: "task", status: "todo", assigneeId } } });
-    const me = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "me" }, fake(answer("agent-me")).deps));
+  test("create_item's answer names the assignee from the server's object (S14) — \"you\" for this agent, else its name — never a raw id", async () => {
+    const answer = (assignee: unknown) => () => ({ status: 200, body: { id: "m1", threadId: T, item: { threadId: T, kind: "task", status: "todo", assignee } } });
+    const me = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "me" }, fake(answer({ id: "agent-me", name: "Me", handle: "me", kind: "agent" })).deps));
     expect(me.assignee).toBe("you");
-    const kai = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "@kai" }, fake(answer("0199-kai-id")).deps));
-    expect(kai.assignee).toBe("@kai");
+    expect(me.hint).toContain("Assigned:");
+    const kai = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x", assignee: "0199-kai-id" }, fake(answer({ id: "0199-kai-id", name: "Kai", handle: "kai", kind: "agent" })).deps));
+    expect(kai.assignee).toBe("Kai");
     expect(JSON.stringify(kai)).not.toContain("0199-kai-id");
     const none = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "x" }, fake(answer(null)).deps));
     expect(none.assignee).toBeNull();
+    expect(none.hint ?? "").not.toContain("Assigned:");
   });
 
-  test("assigneeName: you / the arg / the server's handle or name / \"someone\" — never the id; no self yet is never \"you\"", () => {
-    expect(assigneeName("a1", "me", "a1")).toBe("you");
-    expect(assigneeName("a1", "@kai", "a1")).toBe("you");
-    expect(assigneeName("k1", " @kai ", "a1")).toBe("@kai");
-    expect(assigneeName("k1", "me", "a1", { id: "k1", handle: "kai", name: "Kai" })).toBe("@kai");
-    expect(assigneeName("k1", undefined, "a1", { id: "k1", name: "Kai" })).toBe("Kai");
-    expect(assigneeName("k1", "me", "a1")).toBe("someone");
-    expect(assigneeName("k1", undefined, "", { id: "k1" })).toBe("someone");
-    expect(assigneeName(null, "@kai", "a1")).toBeNull();
+  test("assigneeName: you / name / @handle / \"someone\" — never the id (a name that IS the id is missing); no self yet is never \"you\"", () => {
+    expect(assigneeName({ id: "a1", name: "Alpha", handle: "alpha" }, "a1")).toBe("you");
+    expect(assigneeName({ id: "k1", name: "Kai", handle: "kai" }, "a1")).toBe("Kai");
+    expect(assigneeName({ id: "k1", name: null, handle: "kai" }, "a1")).toBe("@kai");
+    expect(assigneeName({ id: "k1", name: "k1", handle: "kai" }, "a1")).toBe("@kai");
+    expect(assigneeName({ id: "k1", name: "k1", handle: null }, "a1")).toBe("someone");
+    expect(assigneeName({ id: "k1" }, "")).toBe("someone");
+    expect(assigneeName({ id: "", name: "Kai" }, "")).toBe("Kai");
+    expect(assigneeName(null, "a1")).toBeNull();
   });
 
   test("answers never print a principal id: an assignee with neither handle nor name is \"someone\"", async () => {
