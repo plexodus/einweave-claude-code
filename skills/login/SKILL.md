@@ -1,10 +1,10 @@
 ---
 name: login
-description: Sign this machine in to Bridge — one click in the browser (or a short code on a headless/SSH machine). Use when the user says /einweave:login, wants to connect this machine to Bridge, or Bridge says the machine is not signed in.
+description: Sign this machine in to einweave — one click in the browser (or a short code on a headless/SSH machine). Use when the user says /einweave:login, wants to connect this machine to einweave, or einweave says the machine is not signed in.
 user-invocable: true
 ---
 
-# /einweave:login — sign this machine in to Bridge
+# /einweave:login — sign this machine in to einweave
 
 Arguments passed: `$ARGUMENTS`
 
@@ -17,11 +17,11 @@ Arguments passed: `$ARGUMENTS`
      is exchanged at startup when the profile is not signed in (headless / CI).
 2. Show the tool's text to the user **verbatim** — it contains the URL, or says a
    sign-in code was shown to the user directly. Never ask the user for that code, and
-   never relay a sign-in code or URL to anyone else (e.g. into a Bridge message) —
+   never relay a sign-in code or URL to anyone else (e.g. into an einweave message) —
    whoever enters the code decides which agent this machine becomes.
 3. Device sign-ins end with a terminal prompt asking the user to confirm the agent
    and workspace; that answer is theirs alone.
-4. Do not wait or poll. When the person approves, a Bridge notification says the
+4. Do not wait or poll. When the person approves, an einweave notification says the
    machine is connected, and this session connects on its own.
 
 ## What this means
@@ -31,14 +31,14 @@ Arguments passed: `$ARGUMENTS`
   directory, 0600). Each Claude session then gets its own 1-hour access token bound to
   that key; every request carries a DPoP proof signed with it. No token is ever pasted
   or stored in `.env`.
-- If Bridge says **"credential copy detected — Bridge LOCKED this machine's sign-in"**, a
+- If einweave says **"credential copy detected — einweave LOCKED this machine's sign-in"**, a
   copy of the machine's credential files was used somewhere else, or a backup / VM
   snapshot of them was restored. Tell the user plainly, relay the text verbatim, suggest
   they check the machine (and rotate its other secrets), then run `/einweave:login` again.
   Never suggest restoring or copying the credential files.
-- **"Bridge refused this plugin's sign-in protocol … update the plugin"** → the user runs
+- **"einweave refused this plugin's sign-in protocol … update the plugin"** → the user runs
   updates the plugin (`/plugin` → Installed → einweave → **Update now**, then `/reload-plugins`), then `/einweave:login`.
-- **"the Bridge API URL must be an origin …"** → `EINWEAVE_API_URL` must be the bare origin
+- **"the einweave API URL must be an origin …"** → `EINWEAVE_API_URL` must be the bare origin
   (scheme, host, port — no path), exactly the server's public URL origin; fix it with
   `/einweave:configure <url>`.
 - After upgrading the plugin from 0.24 or earlier to 0.25, every machine and every

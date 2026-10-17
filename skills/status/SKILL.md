@@ -1,15 +1,15 @@
 ---
 name: status
-description: Show Bridge channel connection state, available channels, and connected agents. Use when the user asks about Bridge status, connected agents, or channel info.
+description: Show einweave channel connection state, available channels, and connected agents. Use when the user asks about einweave status, connected agents, or channel info.
 user-invocable: true
 allowed-tools:
   - Read
   - Bash(curl *)
 ---
 
-# /einweave:status — Bridge Channel Status
+# /einweave:status — einweave Channel Status
 
-Shows the current state of the Bridge connection.
+Shows the current state of the einweave connection.
 
 Arguments passed: `$ARGUMENTS`
 
@@ -17,8 +17,8 @@ Arguments passed: `$ARGUMENTS`
 
 ## What to show
 
-**Always call the `status` Bridge tool FIRST.** Unlike `list_channels` /
-`list_agents`, it is not gated — it answers whether Bridge is unconfigured,
+**Always call the `status` einweave tool FIRST.** Unlike `list_channels` /
+`list_agents`, it is not gated — it answers whether einweave is unconfigured,
 configured-but-idle, or connected, which decides everything else below.
 
 It returns `{ configured, wantConnected, websocket, receiving_messages,
@@ -28,17 +28,17 @@ profile, credential, installation, `key_storage`, `key_thumbprint`, `problem`).
 
 ### 1. Unconfigured (`configured: false`)
 
-Bridge has no API URL, or this machine is not signed in (or its sign-in was
+einweave has no API URL, or this machine is not signed in (or its sign-in was
 locked / revoked). Report `auth.problem` plainly and stop — don't call any other
-Bridge tool, they'll just repeat the same thing. Next step: whatever it names
+einweave tool, they'll just repeat the same thing. Next step: whatever it names
 (`/einweave:configure` for the URL, `/einweave:login` to sign in).
 
 ### 2. Idle (`configured: true`, `wantConnected: false`)
 
-Bridge is set up but this session hasn't joined it (or was disconnected).
+einweave is set up but this session hasn't joined it (or was disconnected).
 Report:
 - Configured: yes.
-- Connected: no — this session is not receiving Bridge messages.
+- Connected: no — this session is not receiving einweave messages.
 - Next step: run `/einweave:connect` (or use `claudeb`, which auto-connects).
 
 Don't call `list_channels`/`list_agents` here — they're gated and will just
@@ -57,7 +57,7 @@ Report the snapshot itself:
   and `holds` (the thread ids it holds).
 - `threads_that_need_someone` (when connected): threads nobody holds that are addressed to this agent. Show
   them and offer `/einweave:take` (which lists them numbered; the bullets here are not numbers to pick from).
-- Delivery (`delivery.state`) — whether what Bridge pushed actually reached the model:
+- Delivery (`delivery.state`) — whether what einweave pushed actually reached the model:
   `confirmed`, `awaiting confirmation`, `idle` (nothing pushed yet), `unconfirmed`
   (entries were missed: this session runs without channels — give the person
   `delivery.hint`, which names the restart command, verbatim), or
@@ -69,9 +69,9 @@ Report the snapshot itself:
   step is `/einweave:connect`.
 
 Then, for the fuller picture, also call:
-- **Channels** — the `list_channels` Bridge tool: available channels with
+- **Channels** — the `list_channels` einweave tool: available channels with
   unread state. Note which are in this session's `scope`.
-- **Agents** — the `list_agents` Bridge tool: connected agents, their state,
+- **Agents** — the `list_agents` einweave tool: connected agents, their state,
   and skills.
 
 ---

@@ -36,7 +36,7 @@ const threadEvent = (n: number): Owed => ({
     channelId: CHANNEL_ID,
     action: "assigned",
     detail: { from: null, to: "bellman", cause: "work" },
-    actorId: "kevin",
+    actorId: "0190a000-0000-7000-9000-0000000000a7", // no `names`: never printed
     actorType: "agent",
     occurredAt: "2026-10-11T10:01:00.000Z",
     status: "todo",
@@ -222,7 +222,9 @@ describe("read_deliveries", () => {
     expect(m).toMatchObject({ reasons: ["channel"], channel_id: CHANNEL_ID, thread_id: THREAD, content: "hello 1", redelivery: false });
     expect(m.meta).toMatchObject({ sender: "Kevin", type: "text", message_id: id(1) });
     expect(te).toMatchObject({ channel_id: CHANNEL_ID, thread_id: THREAD });
-    expect(te.content).toContain(`Work item ${THREAD}: assigned to you — by agent kevin (status todo) — cause: work`);
+    expect(te.content).toContain(`Work item ${THREAD}: assigned to you (status todo) — cause: work`);
+    // An event without `names` prints no principal id: the thread's id is the only UUID in it.
+    expect(te.content.replaceAll(THREAD, "")).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
     expect(te.content).toContain("task · todo\nassignee: @bellman");
     expect(te.meta).toMatchObject({ type: "thread_event", action: "assigned", status: "todo" });
     expect(ar).toMatchObject({ content: 'Action requested: restart {"force":true}' });

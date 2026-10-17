@@ -81,13 +81,23 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
     expect(none.assignee).toBeNull();
   });
 
-  test("assigneeName: you / the arg / the id only when nothing else is known; no self yet is never \"you\"", () => {
+  test("assigneeName: you / the arg / the server's handle or name / \"someone\" — never the id; no self yet is never \"you\"", () => {
     expect(assigneeName("a1", "me", "a1")).toBe("you");
     expect(assigneeName("a1", "@kai", "a1")).toBe("you");
     expect(assigneeName("k1", " @kai ", "a1")).toBe("@kai");
-    expect(assigneeName("k1", "me", "a1")).toBe("k1");
-    expect(assigneeName("k1", undefined, "")).toBe("k1");
+    expect(assigneeName("k1", "me", "a1", { id: "k1", handle: "kai", name: "Kai" })).toBe("@kai");
+    expect(assigneeName("k1", undefined, "a1", { id: "k1", name: "Kai" })).toBe("Kai");
+    expect(assigneeName("k1", "me", "a1")).toBe("someone");
+    expect(assigneeName("k1", undefined, "", { id: "k1" })).toBe("someone");
     expect(assigneeName(null, "@kai", "a1")).toBeNull();
+  });
+
+  test("answers never print a principal id: an assignee with neither handle nor name is \"someone\"", async () => {
+    const f = fake(() => ({ status: 200, body: { threadId: T, assignee: { id: "0199aaaa-0000-7000-8000-00000000beef", kind: "agent" }, latestActivity: { action: "progress", by: { id: "0199aaaa-0000-7000-8000-00000000cafe" } } } }));
+    const out = await callWorkTool("update_item", { thread_id: T, title: "x" }, f.deps);
+    expect(JSON.parse(out)).toMatchObject({ assignee: "someone", latest_activity: "progress by someone" });
+    expect(out).not.toContain("beef");
+    expect(out).not.toContain("cafe");
   });
 
   test("create_item confirm_new: only a literal true is sent as confirmNew", async () => {
@@ -266,12 +276,12 @@ describe("the work skill's rules", () => {
 describe("an inbound thread_event, said from this agent's side", () => {
   const ME = "agent-me";
   const ev = (action: string, detail: Record<string, unknown>, status: string | null = "todo") =>
-    renderThreadEventContent({ threadId: T, action, detail, actorType: "human", actorId: "u1", status, work: { text: "task · todo" } }, ME);
+    renderThreadEventContent({ threadId: T, action, detail, actorType: "human", actorId: "u1", status, work: { text: "task · todo" }, names: { u1: "@jorgen", "agent-other": "@other" } }, ME);
 
   test("assigned to me / reassigned AWAY from me (stop) / unassigned from me (stop)", () => {
-    expect(ev("assigned", { from: null, to: ME, cause: "work" })).toContain(`Work item ${T}: assigned to you — by human u1`);
+    expect(ev("assigned", { from: null, to: ME, cause: "work" })).toContain(`Work item ${T}: assigned to you — by human @jorgen`);
     const away = ev("assigned", { from: ME, to: "agent-other", cause: "work" });
-    expect(away).toContain("reassigned AWAY from you (now agent-other)");
+    expect(away).toContain("reassigned AWAY from you (now @other)");
     expect(away).toContain("STOP working on it");
     expect(ev("unassigned", { from: ME, to: null, cause: "work" })).toContain("unassigned from you — it is no longer yours: STOP working on it");
     // Someone else's reassignment is not an order to this agent.
@@ -284,10 +294,10 @@ describe("an inbound thread_event, said from this agent's side", () => {
   });
 
   test("a regression is a reopen {regression: true}", () => {
-    expect(ev("reopen", { roundCarried: false, regression: true, text: "broke again" })).toContain('reopened as a REGRESSION (it came back) — by human u1 (status todo) — text: "broke again"');
+    expect(ev("reopen", { roundCarried: false, regression: true, text: "broke again" })).toContain('reopened as a REGRESSION (it came back) — by human @jorgen (status todo) — text: "broke again"');
   });
 
-  test("principals are NAMED from the payload's names (S13); this agent is \"you\"; an unnamed id is printed as is", () => {
+  test("principals are NAMED from the payload's names (S13); this agent is \"you\"; an unnamed principal is \"someone\"", () => {
     const names = { u1: "@jorgen", k1: "@kai", h1: "a removed agent" };
     const say = (action: string, detail: Record<string, unknown>, actorId: string | null = "u1") =>
       renderThreadEventContent({ threadId: T, action, detail, actorType: "human", actorId, status: "todo", work: null, names }, ME);
@@ -296,11 +306,37 @@ describe("an inbound thread_event, said from this agent's side", () => {
     expect(say("assigned", { from: null, to: "k1" })).toContain("assigned to @kai — by human @jorgen");
     expect(say("unassigned", { from: "k1", to: null })).toContain("unassigned (was @kai)");
     expect(say("needs_input", { to: [ME, "k1"], text: "which db?" })).toContain('NEEDS INPUT from you, @kai — by human @jorgen (status todo) — text: "which db?"');
-    expect(say("stuck", { holder: "h1", session: "s1" }, null)).toContain("stuck — by einweave (status todo) — holder: a removed agent; session: s1");
+    expect(say("stuck", { holder: "h1", session: "s1" }, null)).toContain("stuck (status todo) — holder: a removed agent; session: s1");
     expect(say("input_answered", { by: "u1" })).toContain("by: @jorgen");
     expect(say("reopen", { assignee: ME })).toContain("assignee: you");
     expect(say("progress", { text: "k1" }, ME)).toContain('by you (status todo) — text: "k1"'); // free text is never renamed
-    expect(say("assigned", { from: null, to: "zz" }, "yy")).toContain("assigned to zz — by human yy");
+    // Not in names: a principal is "someone"; an unnamed actor gets no "by" part (never invent a person).
+    expect(say("assigned", { from: null, to: "zz" }, "yy")).toContain(`Work item ${T}: assigned to someone (status todo)`);
+    expect(say("assigned", { from: null, to: "zz" }, "yy")).not.toContain(" by ");
+    expect(say("unassigned", { from: "zz", to: null })).toContain("unassigned (was someone)");
+    expect(say("needs_input", { to: ["zz"] })).toContain("NEEDS INPUT from someone");
+    expect(say("stuck", { holder: "zz" }, null)).toContain("holder: someone");
+  });
+
+  test("an event with NO names prints no principal id anywhere (actor, assignee, detail)", () => {
+    const U = (n: number) => `0199aaaa-0000-7000-8000-${String(n).padStart(12, "0")}`;
+    const cases: [string, Record<string, unknown>][] = [
+      ["assigned", { from: U(1), to: U(2), cause: "work" }],
+      ["unassigned", { from: U(1), to: null }],
+      ["needs_input", { to: [U(3), U(4)], text: "?" }],
+      ["input_answered", { by: U(5) }],
+      ["reopen", { assignee: U(6) }],
+      ["stuck", { holder: U(7), session: "s" }],
+      ["triage", { assignee: U(8) }],
+      ["kind", { from: "task", to: "bug", doers: [U(9)] }],
+    ];
+    for (const [action, detail] of cases) {
+      const t = renderThreadEventContent({ threadId: T, action, detail, actorType: "agent", actorId: U(10), status: "todo", work: null }, "self-id");
+      expect(t.replaceAll(T, ""), action).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+      expect(t, action).not.toContain(" by ");
+    }
+    // A system event has no actor to name.
+    expect(renderThreadEventContent({ threadId: T, action: "stuck", detail: {}, actorType: "system", actorId: null, status: "todo", work: null }, null)).not.toContain(" by ");
   });
 
   test("with no self yet (not authenticated), nothing is \"you\" — a null from is not this agent", () => {

@@ -1,10 +1,10 @@
 ---
 name: logout
-description: Sign this machine's Bridge profile out and revoke its access. Use when the user says /einweave:logout or wants to disconnect this machine from Bridge for good.
+description: Sign this machine's einweave profile out and revoke its access. Use when the user says /einweave:logout or wants to disconnect this machine from einweave for good.
 user-invocable: true
 ---
 
-# /einweave:logout — sign this machine out of Bridge
+# /einweave:logout — sign this machine out of einweave
 
 Arguments passed: `$ARGUMENTS`
 
@@ -12,15 +12,15 @@ Arguments passed: `$ARGUMENTS`
 
 1. Call the `logout` MCP tool.
    - `/einweave:logout local` (or `--local`) → pass `local: true` (only delete the local
-     files — use when Bridge is unreachable).
+     files — use when einweave is unreachable).
 2. Report the tool's text verbatim, including any ⚠️ line.
 
 ## What this means
 
-- Revokes this machine's access in Bridge (every session on it stops) and deletes
+- Revokes this machine's access in einweave (every session on it stops) and deletes
   the local credentials — including the machine's private key — for the active
   profile (`EINWEAVE_PROFILE`, or the default).
-- `local` leaves the machine **ENROLLED** in Bridge until it is revoked in
+- `local` leaves the machine **ENROLLED** in einweave until it is revoked in
   Settings → Agents → Machines. The tool says so; relay that line. The same warning
   appears when the revoke itself fails.
 - If the tool says the sign-in was **locked** (credential copy detected), relay that:

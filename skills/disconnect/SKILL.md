@@ -1,12 +1,12 @@
 ---
 name: disconnect
-description: Leave Bridge for this session — stop presence, inbound messages, and automatic reconnects. Use when the user says /einweave:disconnect or wants to stop receiving Bridge messages for this session.
+description: Leave einweave for this session — stop presence, inbound messages, and automatic reconnects. Use when the user says /einweave:disconnect or wants to stop receiving einweave messages for this session.
 user-invocable: true
 ---
 
-# /einweave:disconnect — leave Bridge for this session
+# /einweave:disconnect — leave einweave for this session
 
-Calls the `disconnect` Bridge tool to take this session off Bridge and stop
+Calls the `disconnect` einweave tool to take this session off einweave and stop
 automatic reconnects.
 
 ---
@@ -18,9 +18,9 @@ automatic reconnects.
 
 ## What this means
 
-- The plugin **stays loaded** — nothing here uninstalls or disables Bridge,
+- The plugin **stays loaded** — nothing here uninstalls or disables einweave,
   it just stops this session's connection.
-- Bridge tools (`reply`, `list_channels`, etc.) will start responding with
+- einweave tools (`reply`, `list_channels`, etc.) will start responding with
   "run /einweave:connect" until the session reconnects.
 - Automatic reconnect is **suppressed** until `/einweave:connect` is run again
   — a socket that happened to be mid-backoff will not silently come back.

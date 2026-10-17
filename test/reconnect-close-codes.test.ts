@@ -152,7 +152,7 @@ describe("close codes", () => {
       expect(stub.auths()).toBe(1);
       // 4007 arrives after a server error FRAME in production, which already
       // notifies — the close path must not say it a second time.
-      expect(notices().some((c) => c.includes("Bridge disconnected this session"))).toBe(false);
+      expect(notices().some((c) => c.includes("einweave disconnected this session"))).toBe(false);
     });
   }, 40_000);
 
@@ -165,7 +165,7 @@ describe("close codes", () => {
       await Bun.sleep(5_000);
       expect(stub.auths()).toBe(1);
       // 4003 carries no error frame — the close notice is the ONLY way the model hears of it. Once.
-      expect(notices().filter((c) => c.includes("Bridge disconnected this session"))).toHaveLength(1);
+      expect(notices().filter((c) => c.includes("einweave disconnected this session"))).toHaveLength(1);
     });
   }, 40_000);
 
@@ -190,7 +190,7 @@ describe("close codes", () => {
       const s = await status(client);
       expect(s.websocket).toContain("/einweave:connect takeover");
       expect(s.websocket).not.toContain("reconnect attempt");
-      expect(notices().some((c) => c.includes("Bridge disconnected this session") && c.includes("/einweave:connect takeover"))).toBe(true);
+      expect(notices().some((c) => c.includes("einweave disconnected this session") && c.includes("/einweave:connect takeover"))).toBe(true);
       // A plain connect (no takeover) must NOT mint/auth again — the whole point of D3's
       // "never auto-reconnects, only takeover resumes". Finding 4: it must also say so
       // honestly rather than claim "connecting", which would never actually happen.

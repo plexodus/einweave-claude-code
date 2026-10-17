@@ -67,22 +67,26 @@ const listOf = (v: unknown): string[] | undefined =>
           .map((s) => s.trim())
           .filter(Boolean);
 
-/** A principal as a frame names it: `@handle`, else its name, else its id. */
+/** A principal as a frame names it: `@handle`, else its name, else "someone" — never its id. */
 function who(p: any): string | null {
   if (!p || typeof p !== "object") return null;
-  return p.handle ? `@${p.handle}` : (p.name ?? p.id ?? null);
+  return isStr(p.handle) ? `@${p.handle}` : isStr(p.name) ? p.name : "someone";
 }
 
 /**
  * Who an assignment went to, as an answer says it: "you" when it is this agent, else what the
- * caller named (`@kai`) — a raw id only when nothing else is known. Shared by create_item and
+ * caller named (`@kai`), else the server's name for it (`principal`: its handle, else its name),
+ * else "someone" — NEVER the raw id. null when nobody was assigned. Shared by create_item and
  * reply's assign-as-you-reply.
  */
-export function assigneeName(id: unknown, arg: unknown, self: string | null | undefined): string | null {
+export function assigneeName(id: unknown, arg: unknown, self: string | null | undefined, principal?: unknown): string | null {
   if (typeof id !== "string" || id === "") return null;
   if (!!self && id === self) return "you";
   if (isStr(arg) && arg.trim() !== "me") return arg.trim();
-  return id;
+  const p = principal && typeof principal === "object" ? (principal as { handle?: unknown; name?: unknown }) : {};
+  if (isStr(p.handle)) return `@${p.handle}`;
+  if (isStr(p.name)) return p.name;
+  return "someone";
 }
 
 /**
@@ -395,7 +399,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
           ["message_id", r?.id],
           ["kind", item?.kind ?? kind],
           ["status", status],
-          ["assignee", item ? assigneeName(item.assigneeId, args.assignee, deps.self?.()) : undefined],
+          ["assignee", item ? assigneeName(item.assigneeId, args.assignee, deps.self?.(), item.assignee) : undefined],
           ["assignee_joined", item?.assigneeJoined],
           ["parent_thread_id", item?.parentThreadId ?? undefined],
           ["due", item?.dueAt ?? undefined],
@@ -568,31 +572,53 @@ function clip(s: string): string {
 }
 
 /**
- * How an event line names a principal (S13): this agent is "you"; anyone else by the payload's
- * `names` (`@handle`, else the name, else "a removed agent/person"); an id `names` does not cover
- * is printed as is. Agents have no roster, so without this a line reads `assigned to 0199…`.
+ * The detail keys that hold a PRINCIPAL id, per action — the server's `PRINCIPAL_DETAIL_KEYS`
+ * (S13, work/header.ts) plus `kind`'s doers, which the server leaves unnamed on purpose. A value
+ * under one of these is always said as a name, never printed: "someone" when `names` lacks it.
+ */
+const PRINCIPAL_KEYS: Readonly<Record<string, readonly string[]>> = {
+  assigned: ["to", "from"],
+  unassigned: ["to", "from"],
+  triage: ["assignee"],
+  needs_input: ["to"],
+  input_answered: ["by"],
+  reopen: ["assignee"],
+  review: ["for"],
+  stuck: ["holder"],
+  kind: ["doers", "doersStrict"],
+};
+
+/**
+ * How an event line names a principal (S13; the same rule as OpenClaw 2.2.0's): this agent is
+ * "you"; anyone else by the payload's `names` (`@handle`, else the name, else "a removed
+ * agent/person"); an id `names` lacks is "someone". A raw id is never printed — agents have no
+ * roster, so an id tells the model nothing and invites it to guess.
  */
 interface Namer {
   isSelf(v: unknown): boolean;
+  /** A name the payload (or self) gives this id, else null. */
+  known(v: unknown): string | null;
+  /** A principal said as a name: known, else "someone". */
   name(v: unknown): string;
 }
 
 function namer(self: string | null, names: Readonly<Record<string, string>> | null | undefined): Namer {
   const isSelf = (v: unknown) => !!self && v === self;
-  const known = names && typeof names === "object" ? names : {};
-  return {
-    isSelf,
-    name: (v) => (isSelf(v) ? "you" : typeof v === "string" && Object.hasOwn(known, v) ? known[v]! : String(v)),
-  };
+  const table = names && typeof names === "object" ? names : {};
+  const known = (v: unknown) => (isSelf(v) ? "you" : typeof v === "string" && Object.hasOwn(table, v) && isStr(table[v]) ? table[v]! : null);
+  return { isSelf, known, name: (v) => known(v) ?? "someone" };
 }
 
 /** A detail, said in one short line: labels bare, free text quoted, objects as JSON, principals named. */
-function detailLine(detail: Record<string, unknown>, skip: ReadonlySet<string>, n: Namer): string {
+function detailLine(action: string, detail: Record<string, unknown>, skip: ReadonlySet<string>, n: Namer): string {
   const parts: string[] = [];
+  const principal = new Set(PRINCIPAL_KEYS[action] ?? []);
+  // A principal key is always a name; any other string is renamed only when it IS a known principal.
+  const say = (k: string, x: unknown) => (typeof x !== "string" ? x : principal.has(k) ? n.name(x) : (n.known(x) ?? x));
   for (const [k, v] of Object.entries(detail)) {
     if (v === null || v === undefined || skip.has(k)) continue;
     const free = FREE_TEXT.has(k);
-    const named = free ? v : typeof v === "string" ? n.name(v) : Array.isArray(v) ? v.map((x) => (typeof x === "string" ? n.name(x) : x)) : v;
+    const named = free ? v : Array.isArray(v) ? v.map((x) => say(k, x)) : say(k, v);
     const s = typeof named === "string" && !free ? named : JSON.stringify(named);
     parts.push(`${k}: ${clip(s)}`);
   }
@@ -605,11 +631,11 @@ function headline(action: string, d: Record<string, unknown>, n: Namer): { what:
   switch (action) {
     case "assigned":
       if (n.isSelf(d.to)) return { what: "assigned to you", skip };
-      if (n.isSelf(d.from)) return { what: `reassigned AWAY from you (now ${n.name(d.to)}) — it is no longer yours: STOP working on it`, skip };
-      return { what: `assigned to ${n.name(d.to)}`, skip };
+      if (n.isSelf(d.from)) return { what: `reassigned AWAY from you${isStr(d.to) ? ` (now ${n.name(d.to)})` : ""} — it is no longer yours: STOP working on it`, skip };
+      return { what: `assigned${isStr(d.to) ? ` to ${n.name(d.to)}` : ""}`, skip };
     case "unassigned":
       if (n.isSelf(d.from)) return { what: "unassigned from you — it is no longer yours: STOP working on it", skip };
-      return { what: `unassigned (was ${n.name(d.from)})`, skip };
+      return { what: `unassigned${isStr(d.from) ? ` (was ${n.name(d.from)})` : ""}`, skip };
     case "status":
       if (d.from === "in_review" && typeof d.text === "string") {
         skip.add("text");
@@ -651,11 +677,14 @@ export function renderThreadEventContent(
   self: string | null = null
 ): string {
   const n = namer(self, e.names);
-  const by = e.actorType === "system" || !e.actorId ? "einweave" : n.isSelf(e.actorId) ? "you" : `${e.actorType} ${n.name(e.actorId)}`;
+  // Only a NAMED actor is said: a system event, or one whose actor `names` lacks, has no "by"
+  // part at all ("by someone" would invent a person).
+  const actor = e.actorType === "system" || !e.actorId ? null : n.isSelf(e.actorId) ? "you" : n.known(e.actorId);
+  const by = actor === null ? "" : actor === "you" ? " — by you" : ` — by ${e.actorType} ${actor}`;
   const detail = e.detail && typeof e.detail === "object" ? e.detail : {};
   const h = headline(e.action, detail, n);
-  const d = detailLine(detail, h.skip, n);
-  const head = `Work item ${e.threadId}: ${h.what} — by ${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
+  const d = detailLine(e.action, detail, h.skip, n);
+  const head = `Work item ${e.threadId}: ${h.what}${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
   const tail = `read_thread(thread_id: "${e.threadId}") shows it in full.`;
   return e.work?.text ? `${head}\n${e.work.text}\n${tail}` : `${head}\n${tail}`;
 }

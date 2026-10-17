@@ -926,7 +926,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-016 against the real API", () => 
       const seqBefore = Number((await grantRow(inst)).js_seq);
       const out = (await p.call("logout")).content[0].text as string;
       // manager.logout → TokenClient.revoke, which throws unless the body is exactly {"ok":true} (C11).
-      expect(out).toMatch(/revoked in Bridge/);
+      expect(out).toMatch(/revoked in einweave/);
       const row = await grantRow(inst);
       expect(row.revoked_at).not.toBeNull();
       expect(row.revoke_reason).toBe("client_revoked");

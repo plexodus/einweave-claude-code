@@ -180,7 +180,7 @@ export function writeLauncher(stateDir: string, pluginRoot: string): string {
   // the launcher runs in may not have `bun` on its own.
   const script =
     "#!/bin/sh\n" +
-    "# Written by the Bridge plugin on every start (RFC-022 D10). Do not edit: it is replaced.\n" +
+    "# Written by the einweave plugin on every start (RFC-022 D10). Do not edit: it is replaced.\n" +
     `exec ${shq(process.execPath)} ${shq(join(pluginRoot, "vendor", "einweave-agent-sdk", "tail-cli.js"))} --procs ${shq(stateDir)} "$@"\n`;
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, script, { mode: 0o700 });

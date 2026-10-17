@@ -44,7 +44,7 @@ export function deliveryState(i: DeliveryInputs): { state: DeliveryState; hint?:
     return { state: "hooks not reporting", hint: "no control socket for the hooks (Claude Code's pid was not found) — delivery cannot be confirmed; read tools still return everything" };
   if (i.pushed === 0) return { state: "idle" };
   if (i.missed > 0)
-    return { state: "unconfirmed", hint: `Bridge entries are not reaching the model — this session runs without channels. Restart it with: ${CHANNELS_LAUNCH}` };
+    return { state: "unconfirmed", hint: `einweave entries are not reaching the model — this session runs without channels. Restart it with: ${CHANNELS_LAUNCH}` };
   if (i.confirmed > 0) return { state: "confirmed" };
   if (i.lastHookAt === null)
     return { state: "hooks not reporting", hint: "the plugin's UserPromptSubmit hook has not reported in this session (hooks disabled, or EINWEAVE_STATE_DIR set where only the MCP server sees it?) — delivery cannot be confirmed; read tools still return everything" };

@@ -145,7 +145,7 @@ describe("missedNotice", () => {
   test("fresh entries are described with ids and the read call; outstanding ones only counted", () => {
     const text = missedNotice([entry()], [entry({ id: "x1", channelName: "ops" }), entry({ id: "x2", channelName: "ops" })])!;
     expect(text).toContain(`question in #general from @alice (id ${ID}, thread ${CH}) — read_deliveries returns it`);
-    expect(text).toContain("2 Bridge entries pushed earlier still unconfirmed (#ops ×2)");
+    expect(text).toContain("2 einweave entries pushed earlier still unconfirmed (#ops ×2)");
     expect(text).not.toContain("x1");
   });
 
@@ -155,7 +155,7 @@ describe("missedNotice", () => {
     const text = missedNotice([te, ar, entry()], [te, ar])!;
     expect(text).toContain("- thread event (id te1) — read_deliveries returns it");
     expect(text).toContain("- action request (id ar1) — read_deliveries returns it");
-    expect(text).toContain("2 Bridge entries pushed earlier still unconfirmed (other ×2); read_deliveries returns them.");
+    expect(text).toContain("2 einweave entries pushed earlier still unconfirmed (other ×2); read_deliveries returns them.");
     expect(text).not.toMatch(/read_thread|list_threads/);
   });
 

@@ -124,7 +124,7 @@ export function createHolds(deps: HoldsDeps) {
     if (p.cursor) q.set("cursor", p.cursor);
     const res = await deps.api("GET", `/api/threads?${q}`);
     if (res.status === 404) throw new Error(`Channel ${p.channel} not found, or not visible to this agent.`);
-    if (res.status >= 400) throw new Error(`Bridge API error ${res.status}: ${errorText(res)}`);
+    if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
     return { rows: (res.body?.threads ?? []) as TakeableRow[], next: typeof res.body?.next === "string" ? res.body.next : null };
   }
 
@@ -144,7 +144,7 @@ export function createHolds(deps: HoldsDeps) {
   async function fetchSessions(agentId: string): Promise<SessionRow[]> {
     const res = await deps.api("GET", `/api/agents/${encodeURIComponent(agentId)}/sessions`);
     if (res.status === 403) throw new Error("Only the agent itself and its managers can see its sessions.");
-    if (res.status >= 400) throw new Error(`Bridge API error ${res.status}: ${errorText(res)}`);
+    if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
     return (res.body?.sessions ?? []) as SessionRow[];
   }
 
@@ -271,7 +271,7 @@ export function createHolds(deps: HoldsDeps) {
       if (res.status === 404 || res.status === 403) {
         return await showTakeable({ lead: `That thread cannot be taken (${errorText(res)}) -- the list may have changed. Nothing was taken.` });
       }
-      if (res.status >= 400) throw new Error(`Bridge API error ${res.status}: ${errorText(res)}`);
+      if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
       pendingConfirm = null;
       const moved = res.body?.moved ? ` ${res.body.moved} open entr${res.body.moved === 1 ? "y" : "ies"} moved to this session.` : "";
       return res.body?.changed === false
@@ -284,7 +284,7 @@ export function createHolds(deps: HoldsDeps) {
       if (ref.kind === "none") return await showHeld();
       const releaseOne = async (item: ListItem): Promise<string> => {
         const res = await deps.api("POST", `/api/threads/${encodeURIComponent(item.id)}/hold`, { action: "release" });
-        if (res.status >= 400) throw new Error(`Bridge API error ${res.status}: ${errorText(res)}`);
+        if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
         return res.body?.changed === false ? `${item.label} was not held by this session.` : `Released ${item.label}.`;
       };
       if (ref.kind === "all") {
@@ -355,7 +355,7 @@ export function createHolds(deps: HoldsDeps) {
         target = found[0]!;
       }
       const res = await deps.api("POST", `/api/threads/${encodeURIComponent(thread.id)}/hold`, { action: "handover", to: target.id });
-      if (res.status >= 400) throw new Error(`Bridge API error ${res.status}: ${errorText(res)}`);
+      if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
       memory = null;
       return res.body?.changed === false ? `${target.label.split(" — ")[0]} already held ${thread.label}.` : `Handed ${thread.label} to ${target.label.split(" — ")[0]}.`;
     },
@@ -383,7 +383,7 @@ export function createHolds(deps: HoldsDeps) {
         channelIds = [...new Set(channelIds)];
       }
       const res = await deps.api("PUT", "/api/sessions/me/scope", { mode, channelIds });
-      if (res.status >= 400) throw new Error(`Bridge API error ${res.status}: ${errorText(res)}`);
+      if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
       const scope = res.body?.scope ?? { mode, channelIds };
       deps.onScope(scope);
       return describeScope(scope, true);

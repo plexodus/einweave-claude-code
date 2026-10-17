@@ -105,7 +105,7 @@ describe("RFC-017 D5/P6: client.advice from the authenticated frame", () => {
     await withPlugin(stub, async (client, notices) => {
       expect(await until(() => stub.auths() >= 1, 15_000)).toBe(true);
       await Bun.sleep(300);
-      expect(notices().some((c) => c.includes("Bridge plugin") || c.includes("Bridge will stop accepting"))).toBe(false);
+      expect(notices().some((c) => c.includes("einweave plugin") || c.includes("einweave will stop accepting"))).toBe(false);
       const s = await status(client);
       expect(s.server_versions).toEqual({ minimum: "0.25.0", recommended: "0.26.0" });
       expect(s.advice).toBe("ok");
@@ -133,7 +133,7 @@ describe("RFC-017 D5/P6: client.advice from the authenticated frame", () => {
       await Bun.sleep(300);
       const matches = notices().filter((c) => c.includes("2026-12-01"));
       expect(matches).toHaveLength(1);
-      expect(matches[0]).toContain("Bridge will stop accepting plugin");
+      expect(matches[0]).toContain("einweave will stop accepting plugin");
       expect(matches[0]).toContain(UPDATE_HOWTO);
     });
   }, 40_000);
@@ -161,7 +161,7 @@ describe("RFC-017 D5/P6: client.advice from the authenticated frame", () => {
     await withPlugin(stub, async (client, notices) => {
       expect(await until(() => stub.auths() >= 1, 15_000)).toBe(true);
       await Bun.sleep(300);
-      expect(notices().some((c) => c.includes("Bridge plugin") || c.includes("Bridge will stop accepting"))).toBe(false);
+      expect(notices().some((c) => c.includes("einweave plugin") || c.includes("einweave will stop accepting"))).toBe(false);
       const s = await status(client);
       expect(s.server_versions).toBeNull();
       expect(s.advice).toBeNull();
