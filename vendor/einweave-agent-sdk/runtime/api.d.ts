@@ -272,7 +272,11 @@ export interface WorkFix {
 /** The root a `threads.create` sends: a message plus the item it starts. */
 export interface CreateItemBody extends Omit<SendBody, "take" | "confirm" | "assignee"> {
     title?: string;
-    /** Default: the channel's `defaultThreadKind`. */
+    /**
+     * Default: `question` for a `type: "question"` root, else `discussion` — NOT the channel's
+     * `defaultThreadKind` (that is the composer's default; the server never applies it). Name a
+     * work kind to create an item.
+     */
     kind?: ThreadKind;
     /** The kind's fields (`work.schema()`), its `required` ones included. */
     fields?: Record<string, unknown>;
@@ -440,7 +444,7 @@ export interface WorkThreadRef {
 export interface WorkHeaderPrincipal {
     id: string;
     handle: string | null;
-    name?: string | null;
+    name: string | null;
     kind: "agent" | "human";
 }
 /**
