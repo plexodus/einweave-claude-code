@@ -81,11 +81,11 @@ describe("inboundToFeed", () => {
 
 describe("outboundToFeed", () => {
   const self = { id: "a-me", handle: "bellman" };
-  const send = { id: "o1", channelId: "c1", channelName: "dev", threadId: "", resultThreadId: "t9", title: "", type: "task", text: "Please rerun the suite.\nOnly recovery.", self };
+  const send = { id: "o1", channelId: "c1", channelName: "dev", threadId: "", resultThreadId: "t9", title: "", type: "question", text: "Please rerun the suite.\nOnly recovery.", self };
 
   test("a new root: no recipient, the title is the explicit one or the first line", () => {
     const f = outboundToFeed(send, new ThreadNotes());
-    expect(f).toMatchObject({ dir: "out", id: "o1", is_root: true, thread_id: "t9", thread_title: "Please rerun the suite.", targeted: true, type: "task", sender: { handle: "bellman" } });
+    expect(f).toMatchObject({ dir: "out", id: "o1", is_root: true, thread_id: "t9", thread_title: "Please rerun the suite.", targeted: true, type: "question", sender: { handle: "bellman" } });
     expect(f.to).toBeUndefined();
     expect(outboundToFeed({ ...send, title: "Monitor suite" }, new ThreadNotes()).thread_title).toBe("Monitor suite");
   });
@@ -497,10 +497,10 @@ describe("a running plugin serves its feed", () => {
       sink.write(JSON.stringify(frame) + "\n");
       sink.flush?.();
     };
-    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "reply", arguments: { channel_id: "dev", text: "Please rerun the suite.\nOnly the recovery tests.", type: "task", title: "Monitor suite" } } });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "reply", arguments: { channel_id: "dev", text: "Please rerun the suite.\nOnly the recovery tests.", type: "question", title: "Monitor suite" } } });
     const f = await nextMessage(frames, "sent-1");
     expect(f).toMatchObject({
-      dir: "out", is_root: true, type: "task", targeted: true,
+      dir: "out", is_root: true, type: "question", targeted: true,
       channel: { id: "chan-dev-id", name: "dev" },
       thread_id: "thr-out-1", thread_title: "Monitor suite",
       sender: { handle: "bellman" },
