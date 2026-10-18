@@ -1,5 +1,5 @@
 {
-  "description": "Publishes the stable conversation id (SessionStart/End) and confirms which Bridge entries reached the model (UserPromptSubmit/Stop, RFC-027)",
+  "description": "Publishes the stable conversation id (SessionStart/End) and confirms which einweave entries reached the model (UserPromptSubmit/Stop, RFC-027)",
   "hooks": {
     "SessionStart": [
       {

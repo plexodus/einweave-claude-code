@@ -193,7 +193,7 @@ describe("plugin on key credentials (RFC-016)", () => {
       {},
       async (client, _dir, notices) => {
         const connected = async () => (await status(client)).websocket === "connected";
-        const refusedNotices = () => notices().filter((n) => n.includes("Bridge refused this session's access token"));
+        const refusedNotices = () => notices().filter((n) => n.includes("einweave refused this session's access token"));
         expect(await until(connected, 5_000)).toBe(true);
         stub.rejectNextWsAuths(1); // the immediate retry is refused too
         stub.closeAll(4001, "Invalid token");
@@ -864,7 +864,7 @@ describe("plugin on key credentials (RFC-016)", () => {
         stub.rejectNextWsAuths(1); // the immediate re-mint's auth: 4001 again → told
         stub.rejectNextWsAuths(1, 4003, "deregistered"); // the slow retry's auth: 4003 → told too
         stub.closeAll(4001, "Invalid token");
-        expect(await until(() => notices().some((n) => n.includes("Bridge refused this session's access token")), 5_000)).toBe(true);
+        expect(await until(() => notices().some((n) => n.includes("einweave refused this session's access token")), 5_000)).toBe(true);
         expect(await until(() => notices().some((n) => n.includes("agent deactivated")), 5_000)).toBe(true);
       },
       enrolledIn(stub)

@@ -92,9 +92,9 @@ describe("credential errors in this plugin's words", () => {
   test("the SDK's codes become the plugin's sentences", () => {
     expect(describeCredential(new AgentClientError({ code: "installation_gone", reason: "installation_locked" }), "1.0.0")).toStartWith("credential copy detected");
     expect(describeCredential(new AgentClientError({ code: "too_old", minimum: "0.31.0" }), "1.0.0")).toBe(
-      "this plugin (1.0.0) is older than Bridge accepts (>= 0.31.0) — " + UPDATE_HOWTO
+      "this plugin (1.0.0) is older than einweave accepts (>= 0.31.0) — " + UPDATE_HOWTO
     );
-    expect(describeCredential(new AgentClientError({ code: "refused", message: "this Bridge server does not support key credentials (RFC-016)" }), "1.0.0")).toMatch(/must be upgraded/);
+    expect(describeCredential(new AgentClientError({ code: "refused", message: "this einweave server does not support key credentials (RFC-016)" }), "1.0.0")).toMatch(/must be upgraded/);
     expect(describeCredential(new AgentClientError({ code: "clock" }), "1.0.0")).toMatch(/check the system clock/);
   });
 });
@@ -208,7 +208,7 @@ describe("the Session's client", () => {
     const err = await (await m.sessionClient())!.wsAuth().catch((e) => e);
     expect(isTerminalCredentialError(err)).toBe(true);
     expect(waitFor(err)).toBe("files");
-    expect(describeCredential(err, "9.9.9")).toBe("this machine is not signed in to Bridge — run /einweave:login");
+    expect(describeCredential(err, "9.9.9")).toBe("this machine is not signed in to einweave — run /einweave:login");
   });
   test("signed in to ANOTHER API: stopped with the configuration text, nothing sent", async () => {
     const { stub, dir } = setup();
@@ -234,7 +234,7 @@ describe("RFC-017 D8: a newer-format installation.json is never mistaken for 'no
     const { stub, dir } = setup();
     await newerFormatProfile(stub, dir);
     const { m } = signIn(dir, stub.url);
-    expect(m.configError()).toBe("this profile was signed in by a newer Bridge plugin — /reload-plugins to use it");
+    expect(m.configError()).toBe("this profile was signed in by a newer einweave plugin — /reload-plugins to use it");
   });
 
   test("enrolFromKeyIfNeeded refuses: the newer file is byte-identical afterward, and nothing was enrolled", async () => {
@@ -253,8 +253,8 @@ describe("RFC-017 D8: a newer-format installation.json is never mistaken for 'no
     const snapshot = await newerFormatProfile(stub, dir);
     const before = snapshot();
     const { m } = signIn(dir, stub.url);
-    expect(await m.login("browser")).toBe("this profile was signed in by a newer Bridge plugin — /reload-plugins to use it");
-    expect(await m.login("device")).toBe("this profile was signed in by a newer Bridge plugin — /reload-plugins to use it");
+    expect(await m.login("browser")).toBe("this profile was signed in by a newer einweave plugin — /reload-plugins to use it");
+    expect(await m.login("device")).toBe("this profile was signed in by a newer einweave plugin — /reload-plugins to use it");
     expect(snapshot()).toBe(before);
     expect(readKey(dir)).not.toBeNull();
     expect(stub.stats.discoveryHits).toBe(0);
@@ -267,11 +267,11 @@ describe("RFC-017 P5: too_old", () => {
     const { stub, dir } = setup({ tooOldMints: 1 });
     await enrolledProfile(stub, dir);
     const { m } = signIn(dir, stub.url);
-    await expect(use(m)).rejects.toThrow("this plugin (9.9.9) is older than Bridge accepts (>= 0.26.0) — " + UPDATE_HOWTO);
+    await expect(use(m)).rejects.toThrow("this plugin (9.9.9) is older than einweave accepts (>= 0.26.0) — " + UPDATE_HOWTO);
     expect(readInstallation(dir)).not.toBeNull();
     expect(readKey(dir)).not.toBeNull();
     expect(readState(dir)).not.toBeNull();
-    await expect(use(m)).rejects.toThrow(/older than Bridge accepts/); // stopped: not asked again
+    await expect(use(m)).rejects.toThrow(/older than einweave accepts/); // stopped: not asked again
     expect(stub.stats.tokenRequests.client_credentials).toBe(1);
   });
 
@@ -279,7 +279,7 @@ describe("RFC-017 P5: too_old", () => {
     const { stub, dir } = setup({ tooOldMints: 1, tooOldReason: "client_blocked: bridge-claude-plugin 9.9.9 is withdrawn — open /plugin → Installed → einweave → Update now, then /reload-plugins" });
     await enrolledProfile(stub, dir);
     const { m } = signIn(dir, stub.url);
-    await expect(use(m)).rejects.toThrow("this plugin (9.9.9) is older than Bridge accepts — " + UPDATE_HOWTO);
+    await expect(use(m)).rejects.toThrow("this plugin (9.9.9) is older than einweave accepts — " + UPDATE_HOWTO);
   });
 });
 
@@ -341,7 +341,7 @@ describe("login", () => {
     blockInstallationWrite(dir);
     await drive(url);
     expect(await until(() => events.notices.some((n) => n.includes("could not be saved")))).toBe(true);
-    expect(events.notices.join()).toMatch(/"[0-9a-f-]{36}" STAYS ENROLLED in Bridge until you revoke it in Settings → Agents → Machines/);
+    expect(events.notices.join()).toMatch(/"[0-9a-f-]{36}" STAYS ENROLLED in einweave until you revoke it in Settings → Agents → Machines/);
   });
 
   test("loopback denied: browser sent to result=denied, credentials untouched, person told", async () => {
@@ -464,7 +464,7 @@ describe("login", () => {
     const { m, events } = signIn(dir, stub.url, { prompt: p.prompt });
     await m.login("device");
     expect(await until(() => events.notices.some((n) => n.includes("declined")))).toBe(true);
-    expect(p.seen.asked[0]).toContain("replaces this machine's current Bridge sign-in");
+    expect(p.seen.asked[0]).toContain("replaces this machine's current einweave sign-in");
     expect(readInstallation(dir)!.installationId).toBe(old);
     expect(stub.isRevoked(old)).toBeNull();
     expect(stub.stats.revokes).toHaveLength(1);
@@ -542,7 +542,7 @@ describe("logout and enrolment keys", () => {
     const inst = await enrolledProfile(stub, dir);
     const { m, events } = signIn(dir, stub.url);
     await use(m);
-    expect(await m.logout(false)).toMatch(/revoked in Bridge/);
+    expect(await m.logout(false)).toMatch(/revoked in einweave/);
     expect(stub.isRevoked(inst)).toBe("installation_revoked");
     expect(stub.stats.revokes).toEqual([{ id: inst, scope: "installation" }]);
     expect(stub.stats.locks).toBe(0);
@@ -562,7 +562,7 @@ describe("logout and enrolment keys", () => {
     const { m } = signIn(dir, stub.url);
     await use(m).catch(() => {});
     expect(readAttempt(dir)).not.toBeNull();
-    expect(await m.logout(false)).toMatch(/revoked in Bridge/);
+    expect(await m.logout(false)).toMatch(/revoked in einweave/);
     expect(stub.isRevoked(inst)).toBe("installation_revoked");
   });
 
@@ -584,7 +584,7 @@ describe("logout and enrolment keys", () => {
     const { m } = signIn(dir, stub.url);
     await use(m);
     stub.stop();
-    expect(await m.logout(false)).toMatch(/revoking in Bridge failed/);
+    expect(await m.logout(false)).toMatch(/revoking in einweave failed/);
     expect(readInstallation(dir)).toBeNull();
   });
 
@@ -641,7 +641,7 @@ describe("logout and enrolment keys", () => {
     blockInstallationWrite(dir);
     await m.enrolFromKeyIfNeeded();
     expect(readInstallation(dir)).toBeNull();
-    expect(events.notices.join()).toMatch(/"[0-9a-f-]{36}" STAYS ENROLLED in Bridge until you revoke it in Settings → Agents → Machines/);
+    expect(events.notices.join()).toMatch(/"[0-9a-f-]{36}" STAYS ENROLLED in einweave until you revoke it in Settings → Agents → Machines/);
   });
 
   test("a used-up enrolment key tells the person, and nothing is written", async () => {
@@ -672,7 +672,7 @@ describe("logout from the installation's own API URL (S4)", () => {
     const { m, events } = signIn(dir, `${stub.url}/bridge`);
     expect(m.configError()).toBeTruthy();
     const text = await m.logout(false);
-    expect(text).toMatch(/revoked in Bridge/);
+    expect(text).toMatch(/revoked in einweave/);
     expect(text).not.toMatch(/not signed in/);
     expect(stub.isRevoked(inst)).toBe("installation_revoked");
     for (const f of ["installation.json", "key.json", "state"]) expect(existsSync(join(dir, f))).toBe(false);

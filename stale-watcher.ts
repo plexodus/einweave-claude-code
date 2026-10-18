@@ -100,9 +100,9 @@ export function staleNoticeText(
     return `this copy's files are deleted by Claude Code in ~${daysLeft} days — /reload-plugins now`;
   }
   const installedPart = installedVersion
-    ? `Bridge plugin ${installedVersion} is installed`
-    : "this copy of the Bridge plugin was replaced or uninstalled";
-  return `this window runs Bridge plugin ${runningVersion}; ${installedPart} — /reload-plugins to switch (it restarts Bridge in this window only)`;
+    ? `einweave plugin ${installedVersion} is installed`
+    : "this copy of the einweave plugin was replaced or uninstalled";
+  return `this window runs einweave plugin ${runningVersion}; ${installedPart} — /reload-plugins to switch (it restarts einweave in this window only)`;
 }
 
 /** Where Claude Code keeps `installed_plugins.json` (D7's fallback chain). */

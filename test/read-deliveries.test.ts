@@ -16,7 +16,7 @@ const CHANNEL_ID = "0190a000-0000-7000-9000-0000000000c1";
 const THREAD = "0190a000-0000-7000-9000-000000000001";
 const id = (n: number) => `0190a000-0000-7000-8000-${String(n).padStart(12, "0")}`;
 
-type Owed = { kind: "message" | "task_event" | "action_request"; id: string; reasons: string[]; payload: Record<string, unknown> };
+type Owed = { kind: "message" | "thread_event" | "action_request"; id: string; reasons: string[]; payload: Record<string, unknown> };
 const message = (n: number, content = `hello ${n}`, reasons: string[] = ["channel"]): Owed => ({
   kind: "message",
   id: id(n),
@@ -26,11 +26,22 @@ const message = (n: number, content = `hello ${n}`, reasons: string[] = ["channe
     deliveryReasons: reasons,
   },
 });
-const taskEvent = (n: number): Owed => ({
-  kind: "task_event",
+const threadEvent = (n: number): Owed => ({
+  kind: "thread_event",
   id: id(n),
-  reasons: ["assigned"],
-  payload: { id: id(n), taskId: "T-7", threadId: THREAD, change: "assigned", status: "open", assigneeId: "bellman", actorId: "kevin", reason: "please", occurredAt: "2026-10-11T10:01:00.000Z" },
+  reasons: ["assignee"],
+  payload: {
+    id: id(n),
+    threadId: THREAD,
+    channelId: CHANNEL_ID,
+    action: "assigned",
+    detail: { from: null, to: "bellman", cause: "work" },
+    actorId: "0190a000-0000-7000-9000-0000000000a7", // no `names`: never printed
+    actorType: "agent",
+    occurredAt: "2026-10-11T10:01:00.000Z",
+    status: "todo",
+    work: { text: "task · todo\nassignee: @bellman" },
+  },
 });
 const action = (n: number): Owed => ({
   kind: "action_request",
@@ -199,19 +210,23 @@ describe("read_deliveries", () => {
   const acksSettled = async (n: number) => waitFor(() => stub.acks.length >= n, 5000, `${n} ack frame(s)`);
 
   test("all three kinds come back, rendered like pushes, and are acked `model` — exactly the ones returned", async () => {
-    stub.state.owed = [message(1), taskEvent(2), action(3)];
+    stub.state.owed = [message(1), threadEvent(2), action(3)];
     await boot();
     const r = await call("read_deliveries");
     expect(r.isError).toBe(false);
     const body = JSON.parse(r.text);
     expect(body.count).toBe(3);
     expect(body.next).toBeNull();
-    expect(body.entries.map((e: any) => [e.kind, e.id])).toEqual([["message", id(1)], ["task_event", id(2)], ["action_request", id(3)]]);
+    expect(body.entries.map((e: any) => [e.kind, e.id])).toEqual([["message", id(1)], ["thread_event", id(2)], ["action_request", id(3)]]);
     const [m, te, ar] = body.entries;
     expect(m).toMatchObject({ reasons: ["channel"], channel_id: CHANNEL_ID, thread_id: THREAD, content: "hello 1", redelivery: false });
     expect(m.meta).toMatchObject({ sender: "Kevin", type: "text", message_id: id(1) });
-    expect(te).toMatchObject({ thread_id: THREAD, content: "Task T-7: assigned (status open) — please" });
-    expect(te.meta).toMatchObject({ type: "task_event", task_id: "T-7", change: "assigned" });
+    expect(te).toMatchObject({ channel_id: CHANNEL_ID, thread_id: THREAD });
+    expect(te.content).toContain(`Work item ${THREAD}: assigned to you (status todo) — cause: work`);
+    // An event without `names` prints no principal id: the thread's id is the only UUID in it.
+    expect(te.content.replaceAll(THREAD, "")).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    expect(te.content).toContain("task · todo\nassignee: @bellman");
+    expect(te.meta).toMatchObject({ type: "thread_event", action: "assigned", status: "todo" });
     expect(ar).toMatchObject({ content: 'Action requested: restart {"force":true}' });
     await acksSettled(1);
     expect(stub.acks).toEqual([{ ids: [id(1), id(2), id(3)], how: "model" }]);
@@ -407,7 +422,7 @@ describe("read_deliveries", () => {
   }
 
   test("a failure acks nothing: the entries stay owed", async () => {
-    stub.state.owed = [message(1), taskEvent(2)];
+    stub.state.owed = [message(1), threadEvent(2)];
     await boot();
     stub.state.status = 500;
     const r = await call("read_deliveries");
@@ -428,15 +443,15 @@ describe("read_deliveries", () => {
     expect(stub.acks).toEqual([]);
   }, 40_000);
 
-  test("a missed task_event: the notice names read_deliveries, and reading it empties the notice and the count line", async () => {
+  test("a missed thread_event: the notice names read_deliveries, and reading it empties the notice and the count line", async () => {
     await boot();
-    const ev = taskEvent(5);
+    const ev = threadEvent(5);
     stub.state.owed = [ev];
     stub.push(ev); // pushed to the host, never confirmed by any prompt (channels off)
     await waitFor(() => lines().some((m) => m.method === "notifications/claude/channel" && m.params?.meta?.message_id === ev.id), 8000, "the push");
     await Bun.sleep(2300); // past the 2 s grace: the host has had its chance
     const notice = await hook("what is new?");
-    expect(notice).toContain("task event");
+    expect(notice).toContain("thread event");
     expect(notice).toContain(`(id ${ev.id}`);
     expect(notice).toContain("read_deliveries returns it");
     expect(notice).not.toMatch(/read_thread|list_threads/);

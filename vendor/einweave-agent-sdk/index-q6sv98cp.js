@@ -25,7 +25,7 @@ import {
   renderTranscript,
   tailReduce,
   viewport
-} from "./index-h4hcjdhk.js";
+} from "./index-adbbmm3v.js";
 
 // src/node/proc-start.ts
 import { execFile } from "node:child_process";

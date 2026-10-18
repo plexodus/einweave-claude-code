@@ -1,14 +1,14 @@
 ---
 name: tail
-description: Show how to read this session's Bridge messages in full in a second terminal pane (bridge tail). Use when the user says /einweave:tail, says Bridge messages are cut off or hard to read, asks how to see the full text of an incoming or sent message, or asks about the tail pane.
+description: Show how to read this session's einweave messages in full in a second terminal pane (einweave tail). Use when the user says /einweave:tail, says einweave messages are cut off or hard to read, asks how to see the full text of an incoming or sent message, or asks about the tail pane.
 user-invocable: true
 ---
 
-# /einweave:tail — read Bridge messages in full, in a second pane
+# /einweave:tail — read einweave messages in full, in a second pane
 
-The Claude window shows an incoming Bridge message as a short preview and a sent
+The Claude window shows an incoming einweave message as a short preview and a sent
 one as a tool call with no text. `tail` is a separate viewer for a second terminal
-pane: only Bridge messages, in full, live, incoming on the left and outgoing on
+pane: only einweave messages, in full, live, incoming on the left and outgoing on
 the right.
 
 It cannot be opened from here. The plugin runs inside Claude and cannot create a
@@ -20,7 +20,7 @@ Arguments passed: `$ARGUMENTS`
 
 ## What to do
 
-1. Call the `status` Bridge tool and read `tail`.
+1. Call the `status` einweave tool and read `tail`.
    - A path → that is the launcher. Go on to step 2.
    - `null` → this session's local feed did not start (or the plugin is older
      than 0.27.0). Say so plainly; `/einweave:update` shows whether an update is
@@ -31,11 +31,11 @@ Arguments passed: `$ARGUMENTS`
    - In the new pane run the launcher path exactly as `status` gave it.
    - Leave it open. It waits for a session, attaches, and reattaches after a
      restart.
-3. Offer the one-time shortcut, so `bridge tail` works from any pane. Give them
+3. Offer the one-time shortcut, so `einweave tail` works from any pane. Give them
    this line for `~/.zshrc` (or `~/.bashrc`), with the real path filled in:
 
    ```sh
-   bridge() { [ "$1" = tail ] && shift; "<launcher path>" "$@"; }
+   einweave() { [ "$1" = tail ] && shift; "<launcher path>" "$@"; }
    ```
 
    The path stays the same across plugin updates; the plugin rewrites the file

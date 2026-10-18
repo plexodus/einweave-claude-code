@@ -49,15 +49,15 @@ import { startLoopback, type LoopbackLogin } from "./loopback";
 import { isHeadless, browserDisabled, openBrowser } from "./browser";
 import { profileLabel, type Profile } from "./profile";
 
-const SERVER_TOO_OLD = "this Bridge server does not support key credentials yet (no client_credentials grant, RFC-016) — it must be upgraded before this plugin can sign in";
+const SERVER_TOO_OLD = "this einweave server does not support key credentials yet (no client_credentials grant, RFC-016) — it must be upgraded before this plugin can sign in";
 
 const UPDATE_REQUIRED =
-  "Bridge refused this plugin's sign-in protocol — the plugin and the Bridge server disagree on it; update the plugin (" + UPDATE_HOWTO + "), then run /einweave:login";
+  "einweave refused this plugin's sign-in protocol — the plugin and the einweave server disagree on it; update the plugin (" + UPDATE_HOWTO + "), then run /einweave:login";
 
-const SESSION_REVOKED = "this session was revoked in Bridge — /einweave:connect starts a new one";
+const SESSION_REVOKED = "this session was revoked in einweave — /einweave:connect starts a new one";
 
 /** D8 (RFC-017 P1 gap): a newer plugin's installation.json — never "not signed in". */
-const NEWER_INSTALLATION_MESSAGE = "this profile was signed in by a newer Bridge plugin — /reload-plugins to use it";
+const NEWER_INSTALLATION_MESSAGE = "this profile was signed in by a newer einweave plugin — /reload-plugins to use it";
 
 /** Longest a logout waits for a login's in-flight exchange to land before signing out of it. */
 const LANDING_WAIT_MS = 30_000;
@@ -97,39 +97,39 @@ export interface SignInDeps {
 
 /** What the person is told for a credential failure — the SDK's codes, in this plugin's words. */
 export function describeCredential(e: unknown, clientVersion: string): string {
-  if (!isAgentClientError(e)) return `Bridge sign-in unreachable: ${errDetail(e)}`;
+  if (!isAgentClientError(e)) return `einweave sign-in unreachable: ${errDetail(e)}`;
   if (e.cause === NO_SIGN_IN) return e.message;
   const detail = errDetail(e.cause ?? e);
   switch (e.code) {
     case "not_enrolled":
-      return "signed out of Bridge — run /einweave:login";
+      return "signed out of einweave — run /einweave:login";
     case "installation_gone":
       return goneMessage(e.reason ?? "installation_unknown");
     case "clock":
-      return "Bridge refused this machine's signature (assertion_invalid) even after correcting for clock skew — check the system clock, then /einweave:connect";
+      return "einweave refused this machine's signature (assertion_invalid) even after correcting for clock skew — check the system clock, then /einweave:connect";
     case "session_revoked":
       return SESSION_REVOKED;
     case "session_limit":
-      return "this agent has too many live sessions in Bridge (session_limit) — close one, then /einweave:connect";
+      return "this agent has too many live sessions in einweave (session_limit) — close one, then /einweave:connect";
     case "corrupt_state":
-      return "this machine's Bridge state file is damaged (corrupt_state) — run /einweave:login to re-enrol";
+      return "this machine's einweave state file is damaged (corrupt_state) — run /einweave:login to re-enrol";
     case "update_required":
       return `${UPDATE_REQUIRED} (${detail})`;
     case "rate_limited":
-      return `Bridge sign-in is rate-limited — retrying in ${e.retryAfterS ?? "a few "}s`;
+      return `einweave sign-in is rate-limited — retrying in ${e.retryAfterS ?? "a few "}s`;
     case "too_old":
-      return `this plugin (${clientVersion}) is older than Bridge accepts${e.minimum ? ` (>= ${e.minimum})` : ""} — ${UPDATE_HOWTO}`;
+      return `this plugin (${clientVersion}) is older than einweave accepts${e.minimum ? ` (>= ${e.minimum})` : ""} — ${UPDATE_HOWTO}`;
     case "refused":
       // The SDK's own refusals carry no OAuth cause: a server that cannot mint for a key, a
       // key that does not match its installation.
-      if (!isOAuthError(e.cause)) return /key credentials/.test(e.message) ? SERVER_TOO_OLD : `Bridge sign-in stopped: ${e.message} — run /einweave:login`;
-      return `Bridge refused this machine's sign-in (${detail})`;
+      if (!isOAuthError(e.cause)) return /key credentials/.test(e.message) ? SERVER_TOO_OLD : `einweave sign-in stopped: ${e.message} — run /einweave:login`;
+      return `einweave refused this machine's sign-in (${detail})`;
     case "server_mismatch":
       return `${e.message} — run /einweave:login`;
     case "network":
-      return `Bridge sign-in unreachable: ${detail}`;
+      return `einweave sign-in unreachable: ${detail}`;
     case "aborted":
-      return `Bridge sign-in was cancelled (${detail})`;
+      return `einweave sign-in was cancelled (${detail})`;
     case "declined":
       return "the sign-in was declined";
     default:
@@ -239,9 +239,9 @@ export class SignIn {
     if (!p) return;
     try {
       const n = sweepOrphanTemps(p.dir) + sweepLockTombstones(p.dir);
-      if (n > 0) this.d.log(`bridge auth: removed ${n} leftover file(s) from an earlier crash in ${p.dir}`);
+      if (n > 0) this.d.log(`einweave auth: removed ${n} leftover file(s) from an earlier crash in ${p.dir}`);
     } catch (e) {
-      this.d.log(`bridge auth: could not sweep ${p.dir}: ${errDetail(e)}`);
+      this.d.log(`einweave auth: could not sweep ${p.dir}: ${errDetail(e)}`);
     }
   }
 
@@ -290,7 +290,7 @@ export class SignIn {
       // `installation()` also reads null for a NEWER plugin's installation.json — never "not
       // signed in" for that, or a headless enrolment / a stale-window login would overwrite it.
       if (this.newerInstallation()) return NEWER_INSTALLATION_MESSAGE;
-      return p.name ? `profile "${p.name}" is not signed in — run /einweave:login` : "this machine is not signed in to Bridge — run /einweave:login";
+      return p.name ? `profile "${p.name}" is not signed in — run /einweave:login` : "this machine is not signed in to einweave — run /einweave:login";
     }
     return null;
   }
@@ -328,7 +328,7 @@ export class SignIn {
     const problem = this.configError();
     if (problem) throw new Error(problem);
     const c = await this.client();
-    if (!c) throw new Error("this machine is not signed in to Bridge — run /einweave:login");
+    if (!c) throw new Error("this machine is not signed in to einweave — run /einweave:login");
     try {
       const a = await c.httpAuth(method, path);
       this.minted(c, a.token);
@@ -372,7 +372,7 @@ export class SignIn {
     if (token === this.lastToken) return;
     this.lastToken = token;
     this.sessionBlocked = false;
-    this.d.log(`bridge auth: minted for session ${c.grant()?.sessionId ?? "?"}`);
+    this.d.log(`einweave auth: minted for session ${c.grant()?.sessionId ?? "?"}`);
   }
 
   /**
@@ -383,7 +383,7 @@ export class SignIn {
    */
   private failed(e: unknown): unknown {
     if (isAgentClientError(e) && (e.code === "not_enrolled" || e.code === "server_mismatch")) {
-      return new AgentClientError({ code: "refused", message: this.configError() ?? "signed out of Bridge — run /einweave:login", cause: NO_SIGN_IN });
+      return new AgentClientError({ code: "refused", message: this.configError() ?? "signed out of einweave — run /einweave:login", cause: NO_SIGN_IN });
     }
     if (isAgentClientError(e) && e.code === "session_revoked") this.sessionBlocked = true;
     if (isTerminalCredentialError(e)) this.stoppedOn = this.installation()?.installationId ?? null;
@@ -486,7 +486,7 @@ export class SignIn {
     try {
       lb = await startLoopback(meta, name, { dpopJkt: key.signer.jkt });
     } catch (e) {
-      this.d.log(`bridge auth: loopback listener failed (${e}); using a device code`);
+      this.d.log(`einweave auth: loopback listener failed (${e}); using a device code`);
       return this.startDevice(client, name, mine);
     }
     mine.onCancel(() => lb.close());
@@ -514,8 +514,8 @@ export class SignIn {
       }
     })();
     return opened
-      ? `Opened your browser to connect this machine to Bridge. Approve it there — I'll report back here.\nIf the browser didn't open: ${lb.authorizeUrl}`
-      : `Open this URL in a browser on this machine to connect it to Bridge:\n${lb.authorizeUrl}`;
+      ? `Opened your browser to connect this machine to einweave. Approve it there — I'll report back here.\nIf the browser didn't open: ${lb.authorizeUrl}`
+      : `Open this URL in a browser on this machine to connect it to einweave:\n${lb.authorizeUrl}`;
   }
 
   private async startDevice(client: AgentClient, name: string, mine: LoginHandle): Promise<string> {
@@ -551,7 +551,7 @@ export class SignIn {
         if (ac.signal.aborted) return; // cancelled: the SDK revoked whatever it enrolled
         if (isAgentClientError(e) && e.code === "declined") {
           this.endLogin(mine);
-          this.d.notify("Bridge: machine not connected — the sign-in was declined in the terminal.");
+          this.d.notify("einweave: machine not connected — the sign-in was declined in the terminal.");
           return;
         }
         this.enrolFailed(e, mine);
@@ -561,24 +561,24 @@ export class SignIn {
     const mins = Math.round(auth.expires_in / 60);
     if (canPrompt) {
       this.d.prompt.show(
-        `To connect this machine to Bridge, open ${auth.verification_uri} on any device and enter the code:\n\n` +
+        `To connect this machine to einweave, open ${auth.verification_uri} on any device and enter the code:\n\n` +
           `    ${auth.user_code}\n\n` +
-          `It expires in ${mins} minutes. Only enter it on the Bridge site you trust, and only if you started this sign-in.`
+          `It expires in ${mins} minutes. Only enter it on the einweave site you trust, and only if you started this sign-in.`
       );
       return `A sign-in code was shown to you directly (not to me). Enter it at ${auth.verification_uri}. You'll be asked to confirm the agent before this machine is connected.`;
     }
     return (
-      `To connect this machine to Bridge, open ${auth.verification_uri} on any device and enter the code:\n\n` +
+      `To connect this machine to einweave, open ${auth.verification_uri} on any device and enter the code:\n\n` +
       `    ${auth.user_code}\n\n` +
-      `It expires in ${mins} minutes. Only enter it on the Bridge site you trust. I'll report back here once it's approved.`
+      `It expires in ${mins} minutes. Only enter it on the einweave site you trust. I'll report back here once it's approved.`
     );
   }
 
   private bindQuestion(g: EnrolGrant): string {
     const who = g.agent ? (g.agent.handle ? `@${g.agent.handle} (${g.agent.name})` : g.agent.name) : "an agent";
     const where = g.workspace?.name ? ` in workspace "${g.workspace.name}"` : "";
-    const replacing = this.installation() ? " This replaces this machine's current Bridge sign-in." : "";
-    return `Connect this machine to Bridge as ${who}${where}?${replacing} Decline if you did not start this sign-in.`;
+    const replacing = this.installation() ? " This replaces this machine's current einweave sign-in." : "";
+    return `Connect this machine to einweave as ${who}${where}?${replacing} Decline if you did not start this sign-in.`;
   }
 
   /** The new installation is on disk: connect on it (before the old one is revoked), say so. */
@@ -599,14 +599,14 @@ export class SignIn {
         try {
           this.d.onLoggedIn();
         } catch (e) {
-          this.d.log(`bridge auth: reconnect after login failed: ${e}`);
+          this.d.log(`einweave auth: reconnect after login failed: ${e}`);
         }
-        this.d.notify(`Bridge: this machine is connected (profile ${profileLabel(this.profile!)}). Connecting…`);
+        this.d.notify(`einweave: this machine is connected (profile ${profileLabel(this.profile!)}). Connecting…`);
       },
       onPreviousRevokeFailed: (prev, e) => {
-        this.d.log(`bridge auth: could not revoke the previous installation ${prev.installationId}: ${errDetail(e)}`);
+        this.d.log(`einweave auth: could not revoke the previous installation ${prev.installationId}: ${errDetail(e)}`);
         this.d.notify(
-          `Bridge: this machine's PREVIOUS sign-in "${prev.installationName ?? prev.installationId}" could not be revoked (${errDetail(e)}). Its key is gone from this machine, but it STAYS ENROLLED in Bridge until you revoke it in Settings → Agents → Machines.`
+          `einweave: this machine's PREVIOUS sign-in "${prev.installationName ?? prev.installationId}" could not be revoked (${errDetail(e)}). Its key is gone from this machine, but it STAYS ENROLLED in einweave until you revoke it in Settings → Agents → Machines.`
         );
       },
     };
@@ -627,7 +627,7 @@ export class SignIn {
           : error === "cancelled"
             ? "cancelled"
             : `sign-in failed (${error})`;
-    if (error !== "cancelled") this.d.notify(`Bridge: machine not connected — ${why}.`);
+    if (error !== "cancelled") this.d.notify(`einweave: machine not connected — ${why}.`);
   }
 
   /** An enrolment that did not land. The SDK has already revoked the new installation if it was issued. */
@@ -635,14 +635,14 @@ export class SignIn {
     if (mine.cancelled()) return void this.endLogin(mine);
     if (this.newerInstallation()) {
       this.endLogin(mine);
-      return this.d.notify(`Bridge: ${NEWER_INSTALLATION_MESSAGE}`);
+      return this.d.notify(`einweave: ${NEWER_INSTALLATION_MESSAGE}`);
     }
     if (!isAgentClientError(e)) {
       // Not a refusal: the write itself failed (full disk, EACCES). The old files are gone
       // and both installations were revoked best-effort.
       this.endLogin(mine);
       return this.d.notify(
-        `Bridge: machine not connected — its new sign-in could not be saved on this machine (${errDetail(e)}), so it is signed out now; fix the disk problem and run /einweave:login again.${stillEnrolled(mine.unrevoked ?? [])}`
+        `einweave: machine not connected — its new sign-in could not be saved on this machine (${errDetail(e)}), so it is signed out now; fix the disk problem and run /einweave:login again.${stillEnrolled(mine.unrevoked ?? [])}`
       );
     }
     this.loginFailed(isOAuthError(e.cause) ? e.cause.error : e.message, mine);
@@ -688,12 +688,12 @@ export class SignIn {
     }
     const machine = inst.installationName ?? inst.installationId;
     // C17.
-    if (local && !unasked) return `Signed out locally (profile ${profileLabel(p)}). ⚠️ This machine STAYS ENROLLED in Bridge until you revoke "${machine}" in Settings → Agents → Machines.`;
+    if (local && !unasked) return `Signed out locally (profile ${profileLabel(p)}). ⚠️ This machine STAYS ENROLLED in einweave until you revoke "${machine}" in Settings → Agents → Machines.`;
     const revoke = r.revoke;
-    if (revoke === "revoked") return `Signed out (profile ${profileLabel(p)}); this machine's access was revoked in Bridge.`;
+    if (revoke === "revoked") return `Signed out (profile ${profileLabel(p)}); this machine's access was revoked in einweave.`;
     if (revoke === "locked") return `Signed out (profile ${profileLabel(p)}). ${goneMessage("installation_locked")}.`;
     const why = typeof revoke === "object" ? revoke.failed : "no key on disk";
-    return `Signed out locally (profile ${profileLabel(p)}), but revoking in Bridge failed (${why}). ⚠️ This machine STAYS ENROLLED in Bridge until you revoke "${machine}" in Settings → Agents → Machines.`;
+    return `Signed out locally (profile ${profileLabel(p)}), but revoking in einweave failed (${why}). ⚠️ This machine STAYS ENROLLED in einweave until you revoke "${machine}" in Settings → Agents → Machines.`;
   }
 
   /**
@@ -707,8 +707,8 @@ export class SignIn {
     if (!p || !enrolmentKey || !this.d.envApiUrl || this.installation()) return;
     // D8: never spend the key over a newer plugin's installation (the store would refuse
     // the write AFTER the key was used). Never through chat: log only.
-    if (this.newerInstallation()) return this.d.log(`bridge auth: not enrolling with EINWEAVE_ENROLMENT_KEY — ${NEWER_INSTALLATION_MESSAGE}`);
-    if (this.loggedOut()) return this.d.log("bridge auth: signed out with /einweave:logout — not re-enrolling from EINWEAVE_ENROLMENT_KEY (run /einweave:login)");
+    if (this.newerInstallation()) return this.d.log(`einweave auth: not enrolling with EINWEAVE_ENROLMENT_KEY — ${NEWER_INSTALLATION_MESSAGE}`);
+    if (this.loggedOut()) return this.d.log("einweave auth: signed out with /einweave:logout — not re-enrolling from EINWEAVE_ENROLMENT_KEY (run /einweave:login)");
     const client = await this.client();
     if (!client) return;
     let unrevoked: string[] = [];
@@ -717,16 +717,16 @@ export class SignIn {
         onWritten: () => this.clearLoggedOut(),
         onUnrevoked: (left) => void (unrevoked = left.map((i) => i.installationName ?? i.installationId)),
       });
-      if (g) this.d.log(`bridge auth: enrolled installation ${g.installation_id} with EINWEAVE_ENROLMENT_KEY`);
+      if (g) this.d.log(`einweave auth: enrolled installation ${g.installation_id} with EINWEAVE_ENROLMENT_KEY`);
     } catch (e) {
       if (!isAgentClientError(e)) {
         // Bridge enrolled it, but the files could not be written (the SDK revoked it).
         return this.d.notify(
-          `Bridge: EINWEAVE_ENROLMENT_KEY enrolled this machine, but its sign-in could not be saved on this machine (${errDetail(e)}). The key's use is spent; fix the disk problem, then run /einweave:login (or set a new enrolment key).${stillEnrolled(unrevoked)}`
+          `einweave: EINWEAVE_ENROLMENT_KEY enrolled this machine, but its sign-in could not be saved on this machine (${errDetail(e)}). The key's use is spent; fix the disk problem, then run /einweave:login (or set a new enrolment key).${stillEnrolled(unrevoked)}`
         );
       }
       this.d.notify(
-        `Bridge: EINWEAVE_ENROLMENT_KEY could not enrol this machine (${errDetail(e.cause ?? e)}) — the key may be used up or expired, or Bridge did not answer in time.`
+        `einweave: EINWEAVE_ENROLMENT_KEY could not enrol this machine (${errDetail(e.cause ?? e)}) — the key may be used up or expired, or einweave did not answer in time.`
       );
     }
   }
@@ -764,20 +764,20 @@ function errDetail(e: unknown): string {
 function stillEnrolled(labels: string[]): string {
   if (labels.length === 0) return "";
   const [verb, pronoun] = labels.length === 1 ? ["STAYS", "it"] : ["STAY", "them"];
-  return ` ⚠️ ${labels.map((l) => `"${l}"`).join(" and ")} ${verb} ENROLLED in Bridge until you revoke ${pronoun} in Settings → Agents → Machines.`;
+  return ` ⚠️ ${labels.map((l) => `"${l}"`).join(" and ")} ${verb} ENROLLED in einweave until you revoke ${pronoun} in Settings → Agents → Machines.`;
 }
 
 /** What the person is told when Bridge says this installation is gone for good (§3.3, §5.4). */
 function goneMessage(reason: InstallationGoneReason): string {
   switch (reason) {
     case "installation_locked":
-      return "credential copy detected — Bridge LOCKED this machine's sign-in: a copy of its credential was used somewhere else (or a backup / VM snapshot of it was restored). Its key was deleted here. Check this machine, rotate any other secrets on it, then run /einweave:login to re-enrol";
+      return "credential copy detected — einweave LOCKED this machine's sign-in: a copy of its credential was used somewhere else (or a backup / VM snapshot of it was restored). Its key was deleted here. Check this machine, rotate any other secrets on it, then run /einweave:login to re-enrol";
     case "agent_deactivated":
-      return "the agent this machine acts as was deactivated in Bridge, so its sign-in was deleted — once it is reactivated, run /einweave:login";
+      return "the agent this machine acts as was deactivated in einweave, so its sign-in was deleted — once it is reactivated, run /einweave:login";
     case "installation_revoked":
     case "installation_expired":
     case "installation_unknown":
-      return `this machine's Bridge sign-in is no longer valid (${reason.replace(/_/g, " ")}) — run /einweave:login`;
+      return `this machine's einweave sign-in is no longer valid (${reason.replace(/_/g, " ")}) — run /einweave:login`;
     default:
       return assertNever(reason);
   }

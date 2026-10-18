@@ -144,7 +144,7 @@ export function writeConnectState(dir: string, key: string, on: boolean): void {
         if (isNewerForeignFormat(existing)) return;
         // Anything else here is corrupt, not a newer plugin's file: falling through and
         // overwriting is what keeps this store from wedging shut forever over garbage.
-        process.stderr.write(`bridge channel: connect-state for ${key} was corrupt — overwriting\n`);
+        process.stderr.write(`einweave channel: connect-state for ${key} was corrupt — overwriting\n`);
       }
     } catch {} // absent: nothing to protect
     mkdirSync(dir, { recursive: true, mode: 0o700 });

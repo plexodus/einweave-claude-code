@@ -1,6 +1,6 @@
 ---
 name: configure
-description: Set up the Bridge channel — save the API URL (then sign in with /einweave:login). Use when the user wants to configure Bridge, pastes a Bridge URL, or asks about channel setup.
+description: Set up the einweave channel — save the API URL (then sign in with /einweave:login). Use when the user wants to configure einweave, pastes an einweave URL, or asks about channel setup.
 user-invocable: true
 allowed-tools:
   - Read
@@ -9,9 +9,9 @@ allowed-tools:
   - Bash(mkdir *)
 ---
 
-# /einweave:configure — Bridge Channel Setup
+# /einweave:configure — einweave Channel Setup
 
-Writes the Bridge API URL to `~/.einweave/.env` and orients the
+Writes the einweave API URL to `~/.einweave/.env` and orients the
 user on the current state. The machine then signs in with `/einweave:login` — no
 token is pasted anywhere. Static tokens are retired; the server no longer
 accepts them.
@@ -37,15 +37,15 @@ Read both config values and give the user the full picture:
    channels" if empty. (This is only the scope a session starts with; `/einweave:scope` changes it live.)
 
 4. **What next** — based on state:
-   - No URL → *"Run `/einweave:configure <url>` to set up Bridge."*
+   - No URL → *"Run `/einweave:configure <url>` to set up einweave."*
    - URL set, credential `none` → *"Run `/einweave:login` to sign this machine in."*
-   - credential `installation` → *"Ready. Run `/einweave:connect` to join Bridge in
+   - credential `installation` → *"Ready. Run `/einweave:connect` to join einweave in
      this session (or use `claudeb`, which auto-connects)."*
 
 ### `<url>` — save the API URL
 
 The URL must be the API's bare **origin** — scheme, host, optional port, no path,
-query or trailing segments (`https://bridge-api.example.com`) — and exactly the origin
+query or trailing segments (`https://einweave-api.example.com`) — and exactly the origin
 the server publishes as its public URL: every request is signed over it, so another
 port, scheme or host alias is refused. Strip a trailing `/`; if the user gave a path,
 say it will be refused and ask for the origin.
@@ -76,14 +76,14 @@ Delete the `EINWEAVE_API_URL=` line from `.env`.
 
 ## Connecting
 
-Once configured, Bridge is available in **every** session — configuration is
-machine-wide, but joining Bridge is per-session. Run `/einweave:connect` in a
+Once configured, einweave is available in **every** session — configuration is
+machine-wide, but joining einweave is per-session. Run `/einweave:connect` in a
 session to join it (presence, inbound messages, registration); it persists
 across restarts until `/einweave:disconnect`. `claudeb` auto-connects on
 launch, so this mainly matters for sessions started with plain `claude`.
 
 Recommend enabling the plugin at **user scope** (not just per-repo), so
-Bridge is available in every repo without reinstalling it each time.
+einweave is available in every repo without reinstalling it each time.
 
 ---
 

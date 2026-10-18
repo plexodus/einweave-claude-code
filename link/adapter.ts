@@ -6,11 +6,12 @@
  *
  * Tag shape is load-bearing: the hook reads `message_id` from the LEADING tag only
  * and only right after `source` and an optional `channel_id` (delivery/tags.ts), so
- * those two keys come first in `meta`, in that order, for every kind — a task event's
+ * those two keys come first in `meta`, in that order, for every kind — a thread event's
  * or an action's entry id rides as `message_id` too: it is the id the hook confirms.
  */
 import type { DeliveryAdapter, Entry, Inbound } from "../vendor/einweave-agent-sdk/index.js";
 import { isAddressed } from "../vendor/einweave-agent-sdk/core/index.js";
+import { renderThreadEventContent } from "../work-tools";
 
 export type ChannelMeta = Record<string, string>;
 export type Rendered = {
@@ -65,22 +66,24 @@ export function renderMessage(msg: Inbound): Rendered {
   return { content: msg.content ?? "", meta: out };
 }
 
-export function render(entry: Entry): Rendered {
+/** `self`: this session's agent id — a work event is said from its side (a reassignment away says stop). */
+export function render(entry: Entry, self: string | null = null): Rendered {
   switch (entry.kind) {
     case "message":
       return renderMessage(entry.message);
-    case "task_event": {
+    case "thread_event": {
+      // RFC-029 §6: something happened to a work item this agent is part of. `channel_id` then
+      // `message_id` lead (the hook's tag rule); the entry id is what it confirms.
       const e = entry.event;
-      const reason = e.reason ? ` — ${e.reason}` : "";
       return {
-        content: `Task ${e.taskId}: ${e.change} (status ${e.status})${reason}`,
+        content: renderThreadEventContent(e, self),
         meta: {
+          ...(e.channelId ? { channel_id: e.channelId } : {}),
           message_id: entry.id,
-          type: "task_event",
+          type: "thread_event",
           thread_id: e.threadId,
-          task_id: e.taskId,
-          change: e.change,
-          status: e.status,
+          action: e.action,
+          ...(e.status ? { status: e.status } : {}),
           ts: e.occurredAt,
         },
       };
@@ -145,7 +148,7 @@ export function channelAdapter(d: AdapterDeps): DeliveryAdapter {
       await d.ready();
       let rendered: Rendered;
       try {
-        rendered = render(entry);
+        rendered = render(entry, d.myAgentId() || null);
         await d.notify(rendered);
       } catch (err) {
         try {

@@ -112,7 +112,7 @@ describe("control socket ⇄ hook", () => {
     expect(first).not.toContain("SECRET");
     t.at(9000);
     expect(await t.hook("prompt", "and now?")).toBe(
-      "1 Bridge entry pushed earlier still unconfirmed (#general ×1); read_deliveries returns them.",
+      "1 einweave entry pushed earlier still unconfirmed (#general ×1); read_deliveries returns them.",
     );
     t.held.delete(A); // a read tool returned it (T5 wiring settles the tracker too)
     t.at(12000);

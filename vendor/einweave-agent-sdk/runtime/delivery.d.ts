@@ -11,7 +11,7 @@
  * An entry is confirmed (`ack model`) only by the adapter's host — `Session.pending.confirm`
  * from a host receipt, or `Session.ack` from a read tool that returned it. Never on push.
  */
-import type { ActionRequestPayload, DeliveryReason, TaskEventPayload, WireMessage } from "../core";
+import type { ActionRequestPayload, DeliveryReason, ThreadEventPayload, WireMessage } from "../core";
 /** One inbound message, with the reason(s) THIS session was sent it for. */
 export type Inbound = WireMessage & {
     deliveryReasons: DeliveryReason[];
@@ -23,10 +23,10 @@ export type Entry = {
     redelivery: boolean;
     message: Inbound;
 } | {
-    kind: "task_event";
+    kind: "thread_event";
     id: string;
     redelivery: boolean;
-    event: TaskEventPayload;
+    event: ThreadEventPayload;
 } | {
     kind: "action_request";
     id: string;

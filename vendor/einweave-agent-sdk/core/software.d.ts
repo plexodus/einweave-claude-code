@@ -7,7 +7,7 @@
  * these fields ad hoc at each call site.
  */
 export interface SoftwareIdentity {
-    /** The OAuth client id (RFC 7591 `software_id`) — e.g. `einweave-claude-plugin`, `einweave-openclaw`. */
+    /** The OAuth client id (RFC 7591 `software_id`) — e.g. `einweave-claude-code`, `einweave-openclaw`. */
     softwareId: string;
     /** This build's own version. A plain string (`client-versions.ts` parses it server-side; this module never has to). */
     softwareVersion: string;

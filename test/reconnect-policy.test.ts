@@ -29,7 +29,7 @@ describe("describeClose", () => {
       myVersion: "0.26.0",
     });
     expect(equal).not.toContain("/reload-plugins");
-    expect(equal).toContain("took over Bridge");
+    expect(equal).toContain("took over einweave");
     expect(equal).toContain("/einweave:connect takeover");
 
     const older = describeClose("superseded", 4008, "session superseded: …", {

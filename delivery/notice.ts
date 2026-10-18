@@ -7,13 +7,13 @@
  * arrive as text that cannot open a new line or a tag.
  *
  * Every kind points at `read_deliveries`: it returns what THIS session's model still owes
- * (messages, task events, action requests) and clears it. `read_thread` only knows messages.
+ * (messages, work-item events, action requests) and clears it. `read_thread` only knows messages.
  */
 import { stripControlChars } from "../control-chars";
 
 export interface NoticeEntry {
   id: string;
-  kind: "message" | "action_request" | "task_event";
+  kind: "message" | "action_request" | "thread_event";
   type?: string;
   channelName?: string;
   threadId?: string;
@@ -56,7 +56,7 @@ function countLine(entries: readonly NoticeEntry[]): string {
     byChannel.set(key, (byChannel.get(key) ?? 0) + 1);
   }
   const parts = [...byChannel].slice(0, MAX_LISTED).map(([k, n]) => `${k} ×${n}`);
-  return `${entries.length} Bridge ${entries.length === 1 ? "entry" : "entries"} pushed earlier still unconfirmed (${parts.join(", ")}); read_deliveries returns them.`;
+  return `${entries.length} einweave ${entries.length === 1 ? "entry" : "entries"} pushed earlier still unconfirmed (${parts.join(", ")}); read_deliveries returns them.`;
 }
 
 /** `null` when there is nothing to say: the hook then prints nothing at all. */
@@ -65,7 +65,7 @@ export function missedNotice(fresh: readonly NoticeEntry[], outstanding: readonl
   const lines: string[] = [];
   if (fresh.length > 0) {
     lines.push(
-      `Bridge pushed ${fresh.length} ${fresh.length === 1 ? "entry" : "entries"} to this session that did not reach you:`,
+      `einweave pushed ${fresh.length} ${fresh.length === 1 ? "entry" : "entries"} to this session that did not reach you:`,
     );
     for (const e of fresh.slice(0, MAX_LISTED)) lines.push(describe(e));
     if (fresh.length > MAX_LISTED) lines.push(`- and ${fresh.length - MAX_LISTED} more`);

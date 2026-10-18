@@ -137,15 +137,15 @@ describe("decideStaleNotice (C9)", () => {
 describe("staleNoticeText", () => {
   test("first/daily: names both versions when known", () => {
     const text = staleNoticeText("first", "0.25.0", "0.26.0", 1_000_000, 1_000_000);
-    expect(text).toContain("this window runs Bridge plugin 0.25.0");
-    expect(text).toContain("Bridge plugin 0.26.0 is installed");
+    expect(text).toContain("this window runs einweave plugin 0.25.0");
+    expect(text).toContain("einweave plugin 0.26.0 is installed");
     expect(text).toContain("/reload-plugins to switch");
   });
 
   test("first/daily: an unknown installed version never claims a newer one is installed (finding 11c)", () => {
     const text = staleNoticeText("first", "0.25.0", undefined, 1_000_000, 1_000_000);
-    expect(text).toContain("this copy of the Bridge plugin was replaced or uninstalled");
-    expect(text).not.toContain("a newer Bridge plugin is installed");
+    expect(text).toContain("this copy of the einweave plugin was replaced or uninstalled");
+    expect(text).not.toContain("a newer einweave plugin is installed");
     expect(text).not.toMatch(/undefined/);
   });
 

@@ -218,16 +218,16 @@ describe("reply posts a threaded reply to the thread-native route", () => {
     expect(s.body).not.toHaveProperty("parentId");
   });
 
-  test("a task root carries the explicit title (D8) on /api/messages", async () => {
-    await callTool("reply", { channel_id: "general", text: "do the thing", type: "task", title: "Do the thing" });
+  test("a root carries the explicit title (D8) on /api/messages", async () => {
+    await callTool("reply", { channel_id: "general", text: "do the thing?", type: "question", title: "Do the thing" });
     const s = stub.sends[0];
     expect(s.path).toBe("/api/messages");
-    expect(s.body.type).toBe("task");
+    expect(s.body.type).toBe("question");
     expect(s.body.title).toBe("Do the thing");
   });
 
   test("a threaded reply carries no title even if one is passed (title is root-only)", async () => {
-    await callTool("reply", { channel_id: "general", text: "reply", thread_id: "thr-xyz", type: "task", title: "ignored" });
+    await callTool("reply", { channel_id: "general", text: "reply", thread_id: "thr-xyz", type: "question", title: "ignored" });
     const s = stub.sends[0];
     expect(s.path).toBe("/api/threads/thr-xyz/messages");
     expect(s.body).not.toHaveProperty("title");

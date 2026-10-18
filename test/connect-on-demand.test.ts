@@ -587,7 +587,7 @@ describe("connect-on-demand: Finding 2 — pre-settle connect/disconnect intent"
  * connect-on-demand, Task 6: REST-tool two-tier guard.
  *
  * The 9 Bridge REST tools (reply, list_channels, list_agents, list_contexts,
- * read_messages, claim_task, update_task_status, cancel_task, list_my_tasks)
+ * read_messages, the work-item tools, …)
  * must refuse with a DISTINCT hint depending on WHY they can't proceed:
  * unconfigured (no EINWEAVE_API_URL) vs. configured-but-idle
  * (wantConnected === false). `connect`/`disconnect`/`set_session_label` stay
@@ -694,7 +694,7 @@ describe("connect-on-demand: REST tool guard", () => {
         const result = await client.callTool({ name: "list_channels", arguments: {} });
         expect(result?.isError).not.toBe(true);
         text = (result?.content as any)?.[0]?.text ?? "";
-        if (!text.startsWith("Bridge not configured")) break;
+        if (!text.startsWith("einweave not configured")) break;
         await Bun.sleep(100);
       }
       expect(text).toContain("not connected");
@@ -732,8 +732,8 @@ describe("connect-on-demand: REST tool guard", () => {
       const text = (result?.content as any)?.[0]?.text ?? "";
       // Not the gate hint — real data, even though the socket has not
       // necessarily finished authenticating yet.
-      expect(text.startsWith("Bridge not configured")).toBe(false);
-      expect(text.startsWith("Bridge not connected")).toBe(false);
+      expect(text.startsWith("einweave not configured")).toBe(false);
+      expect(text.startsWith("einweave not connected")).toBe(false);
       const body = JSON.parse(text);
       expect(Array.isArray(body.channels)).toBe(true);
     } finally {

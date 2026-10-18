@@ -225,7 +225,7 @@ describe("RFC-028 D6: the client filters nothing -- addressed or not, what the s
     // because it is IN THE ADDRESSED TIER, not because anything here names it.
     // If someone re-implements this as `if (reason === "thread" || ...)`, this is
     // the test that goes red.
-    stub.send(msgFrame(message("msg-assignee-1", { type: "task" }), ["assignee"]));
+    stub.send(msgFrame(message("msg-assignee-1", { type: "text" }), ["assignee"]));
     expect(await surfaced("msg-assignee-1")).toBe(true);
   }, 30_000);
 
