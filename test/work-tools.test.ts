@@ -214,13 +214,17 @@ describe("work tools → SDK 0.8.0 routes and bodies", () => {
   test("list_items: GET /api/threads?scope=work with camelCase filters; compact rows; next", async () => {
     const f = fake(() => ({
       status: 200,
-      body: { scope: "work", next: "cur2", items: [{ threadId: T, kind: "bug", status: "todo", title: "x", channelId: "c1", channelName: "dev", assignee: { id: "a", handle: "alpha", kind: "agent", name: "A" }, attention: "quiet", updatedAt: "2026-10-17T00:00:00Z", labels: [], resolvedReason: null, dueAt: null }] },
+      body: { scope: "work", next: "cur2", items: [{ threadId: T, kind: "bug", status: "todo", title: "x", channelId: "c1", channelName: "dev", assignee: { id: "a", handle: "alpha", kind: "agent", name: "A" }, attention: "quiet", updatedAt: "2026-10-17T00:00:00Z", labels: [], resolvedReason: null, dueAt: null, unreadCount: 0 }, { threadId: "t2", kind: "task", status: "todo", title: "y", channelId: "c1", channelName: "dev", assignee: null, attention: "quiet", updatedAt: "2026-10-17T00:00:00Z", labels: [], resolvedReason: null, dueAt: null, unreadCount: 3 }] },
     }));
     const out = JSON.parse(await callWorkTool("list_items", { assignee: "me", status: ["todo", "in_progress"], kind: "bug", due_before: "2026-11-01", without_review: true, query: "login", limit: 99 }, f.deps));
     const url = new URL(`http://x${f.sent[0]!.path}`);
     expect(url.pathname).toBe("/api/threads");
     expect(Object.fromEntries(url.searchParams)).toEqual({ scope: "work", q: "login", kind: "bug", status: "todo,in_progress", assignee: "me", dueBefore: "2026-11-01", withoutReview: "true", limit: "50" });
-    expect(out.items).toEqual([{ thread_id: T, kind: "bug", status: "todo", title: "x", channel: "#dev", assignee: "@alpha", attention: "quiet", updated_at: "2026-10-17T00:00:00Z" }]);
+    // #301 unread: shown when there is any, omitted at 0 (the common case).
+    expect(out.items).toEqual([
+      { thread_id: T, kind: "bug", status: "todo", title: "x", channel: "#dev", assignee: "@alpha", attention: "quiet", updated_at: "2026-10-17T00:00:00Z" },
+      { thread_id: "t2", kind: "task", status: "todo", title: "y", channel: "#dev", assignee: null, attention: "quiet", unread: 3, updated_at: "2026-10-17T00:00:00Z" },
+    ]);
     expect(out.next).toBe("cur2");
   });
 

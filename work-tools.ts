@@ -548,6 +548,8 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
           ["severity", i.severity ?? undefined],
           ["resolved_reason", i.resolvedReason ?? undefined],
           ["attention", i.attention],
+          // #301: unread for THIS reader, by the thread list's rule (0 omitted: the common case).
+          ["unread", i.unreadCount ? i.unreadCount : undefined],
           ["updated_at", i.updatedAt],
         ])
       );

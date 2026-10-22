@@ -56,7 +56,7 @@ import { readOrphanedAt, decideStaleNotice, staleNoticeText, findInstalledVersio
 import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
-import { Session, createRuntime, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
+import { Session, createRuntime, isApiRequestError, type Api, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
 import { isAddressed, deadline } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
@@ -1951,8 +1951,7 @@ async function apiFetch(
   // callers print only the status), with nothing saying how long to wait — so
   // the natural next move was an immediate retry, which the limiter refuses
   // again. THROWN, so every tool reports it the same way through its own
-  // "X failed:" path; the two background callers (`loadChannelMap`,
-  // `markReadUpTo`) already catch.
+  // "X failed:" path; the background caller (`loadChannelMap`) already catches.
   // A 401 gets ONE retry, then is reported (no loop). What it retries with depends on
   // the challenge (RFC 9449 §7.1 `WWW-Authenticate: DPoP error=…`):
   //   - use_dpop_nonce (+ DPoP-Nonce): same token, the proof carries the nonce (§9);
@@ -2215,28 +2214,41 @@ async function readDeliveries(args: Record<string, unknown>) {
   return { content: [{ type: "text", text }] };
 }
 
-async function markReadUpTo(
-  path: string,
-  fromSeq: number,
-  lastReadSeq: number
-): Promise<{ marked_read_up_to?: number; mark_read_skipped?: string; mark_read_error?: string }> {
-  try {
-    const res = await apiFetch(path, { method: "POST", body: JSON.stringify({ fromSeq, lastReadSeq }) });
-    if (!res.ok) return { mark_read_error: `einweave API error ${res.status}: ${await res.text()}` };
-    const data = (await res.json()) as any;
-    if (data.advanced === false) {
-      return {
-        mark_read_skipped:
-          `not marked: this read started at seq ${fromSeq}, but your read position is ${data.lastReadSeq} — ` +
-          `messages in between were not read. Read from since_seq: ${data.lastReadSeq} to catch up.`,
-      };
+/** An SDK request failure as this file's other API errors read: the status AND the server's text. */
+function apiErrorText(e: unknown): string {
+  if (isApiRequestError(e)) {
+    if (e.status === 429) {
+      return `einweave API rate-limited this agent (429) — wait ${e.retryAfterS ?? "a few"} second(s) before retrying; do not retry immediately.`;
     }
-    // The server's answer, not what was asked: it is the value that stuck after
-    // clamping, and the only honest thing to report.
-    return { marked_read_up_to: Number(data.lastReadSeq) };
-  } catch (err) {
-    return { mark_read_error: String(err) };
+    return `einweave API error ${e.status}: ${typeof e.body === "string" ? e.body : JSON.stringify(e.body)}`;
   }
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** A call through the SDK's REST client (see `SignIn.withApi`), failing with `apiErrorText`. `notFound` names a 404. */
+async function sdkApi<T>(fn: (api: Api) => Promise<T>, notFound?: string): Promise<T> {
+  try {
+    return await creds.withApi(fn);
+  } catch (e) {
+    if (isApiRequestError(e)) throw new Error(e.status === 404 && notFound ? notFound : apiErrorText(e));
+    throw e;
+  }
+}
+
+/** What a read's mark did (SDK `ReadOutcome`), as the read tools report it. */
+function readMark(fromSeq: number, r: ReadOutcome): { marked_read_up_to?: number; mark_read_skipped?: string; mark_read_error?: string } {
+  if (r.readError !== undefined) return { mark_read_error: apiErrorText(r.readError) };
+  if (!r.read) return {};
+  if (r.read.advanced === false) {
+    return {
+      mark_read_skipped:
+        `not marked: this read started at seq ${fromSeq}, but your read position is ${r.read.lastReadSeq} — ` +
+        `messages in between were not read. Read from since_seq: ${r.read.lastReadSeq} to catch up.`,
+    };
+  }
+  // The server's answer, not what was asked: it is the value that stuck after
+  // clamping, and the only honest thing to report.
+  return { marked_read_up_to: Number(r.read.lastReadSeq) };
 }
 
 // Read from package.json rather than restated here. The comment that used to
@@ -3323,21 +3335,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           );
         }
 
-        const params = new URLSearchParams({
-          channel: channelId,
-          limit: String(limit),
-        });
-        if (sinceSeq !== undefined) params.set("sinceSeq", String(sinceSeq));
-        else if (hasSince) params.set("since", since!);
-
-        const res = await apiFetch(`/api/messages?${params}`);
-        // ⚠️ CARRY THE SERVER'S TEXT. A bare status is unactionable for the
-        // model: `since: "yesterday"` is a 400 whose BODY says "Invalid 'since'
-        // timestamp", and the description invites natural language, so that
-        // sentence is the whole clue. Four other call sites in this file
-        // already append the body; this one did not.
-        if (!res.ok) throw new Error(`einweave API error ${res.status}: ${await res.text()}`);
-        const data = (await res.json()) as any;
+        // The read AND its mark, by the SDK's one rule (`messages.read`): it marks only a
+        // contiguous run — since_seq, or a newest page holding the whole channel; never a
+        // full newest page (older ones withheld) nor `since` (a time filter, not a seq).
+        // ⚠️ CARRY THE SERVER'S TEXT (`apiErrorText`). A bare status is unactionable for
+        // the model: `since: "yesterday"` is a 400 whose BODY says "Invalid 'since'
+        // timestamp", and the description invites natural language, so that sentence
+        // is the whole clue.
+        const data = (await sdkApi((api) =>
+          api.messages.read({
+            channel: channelId,
+            limit,
+            ...(sinceSeq !== undefined ? { sinceSeq } : hasSince ? { since } : {}),
+            markRead: args.mark_read !== false,
+          })
+        )) as any;
         const messages = (data.messages ?? []).map((m: any) => ({
           id: m.id,
           // ⚠️ THE CURSOR, AND IT USED TO BE DROPPED HERE. This projection is a
@@ -3466,31 +3478,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           hint = `Caught up. To resume later: read_messages(channel_id: "${channelId}", since_seq: ${nextSinceSeq})`;
         }
 
-        /**
-         * Mark read — ONLY a contiguous read. The cursor means "read everything
-         * up to here", so it may only move over messages this call returned:
-         *   - since_seq: contiguous from since_seq, and the SERVER checks that
-         *     since_seq is not above the stored position (`fromSeq`). ✓
-         *   - newest page that holds the WHOLE channel: contiguous from 0. ✓
-         *   - newest page with older messages withheld: marking would clear the
-         *     ones never returned. ✗
-         *   - `since` (a time filter): not anchored to any seq. ✗
-         * Up to the HIGHEST returned seq, not the last row: the newest page is
-         * ordered by created_at, which can disagree with seq.
-         * The channel ID comes off the rows: the caller may have passed a name,
-         * and `/api/channels/:id/read` takes an id.
-         */
-        const contiguous = sinceSeq !== undefined || (!hasSince && !olderNotReturned);
-        const rawChannelId = (data.messages ?? [])[0]?.channelId;
-        const returnedSeqs = messages.map((m: any) => m.seq).filter((n: unknown) => typeof n === "number");
-        const mark =
-          args.mark_read !== false && contiguous && returnedSeqs.length > 0 && rawChannelId
-            ? await markReadUpTo(
-                `/api/channels/${encodeURIComponent(rawChannelId)}/read`,
-                sinceSeq ?? 0,
-                Math.max(...returnedSeqs)
-              )
-            : {};
+        const mark = readMark(sinceSeq ?? 0, data);
         confirmReturned(messages.map((m: any) => m.id), who);
 
         return {
@@ -3550,14 +3538,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           throw new Error(`since_seq must be a whole number >= 0, got ${JSON.stringify(args.since_seq)}`);
         }
 
-        const params = new URLSearchParams({ limit: String(limit) });
-        if (sinceSeq !== undefined) params.set("sinceSeq", String(sinceSeq));
-        const res = await apiFetch(`/api/threads/${encodeURIComponent(threadId)}/messages?${params}`);
-        if (res.status === 404) {
-          throw new Error(`Thread ${threadId} not found, or not visible to this agent.`);
-        }
-        if (!res.ok) throw new Error(`einweave API error ${res.status}: ${await res.text()}`);
-        const data = (await res.json()) as any;
+        // The read AND its mark, by the SDK's one rule (`threads.read`): the run from
+        // since_seq (or the start) to the last message returned, never further.
+        const data = (await sdkApi(
+          (api) => api.threads.read(threadId, { limit, ...(sinceSeq !== undefined ? { sinceSeq } : {}), markRead: args.mark_read !== false }),
+          `Thread ${threadId} not found, or not visible to this agent.`
+        )) as any;
 
         // An unknown id answers 200 with nothing in it (the server masks, it does
         // not 404, for a non-uuid). The likeliest cause is a message_id passed as
@@ -3569,13 +3555,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           throw new Error(
             `No thread with id ${threadId}. Pass the thread_id shown on a message ` +
               `(inbound, or from read_messages) — a message_id is not a thread_id.`
-          );
-        }
-        // A server that predates paging strips `sinceSeq` and answers the FIRST
-        // page as if it were the requested one. Its tell: no `hasMore` field.
-        if (typeof data.hasMore !== "boolean") {
-          throw new Error(
-            "This einweave server does not support paged thread reads — upgrade the server."
           );
         }
 
@@ -3598,14 +3577,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ...(includeParent ? [Number(data.parent.seq)] : []),
           ...replies.map((r: any) => Number(r.seq)),
         ].filter((n) => Number.isFinite(n));
-        const mark =
-          args.mark_read !== false && returnedSeqs.length > 0
-            ? await markReadUpTo(
-                `/api/threads/${encodeURIComponent(threadId)}/read`,
-                sinceSeq ?? 0,
-                Math.max(...returnedSeqs)
-              )
-            : {};
+        const mark = readMark(sinceSeq ?? 0, data);
         // RFC-015 timeline — the thread's lifecycle history (renames, resolves, answers
         // marked or withdrawn), on the FIRST page only, like the root: it is context.
         // Every page already carries the thread's CURRENT status and answer. A server
@@ -3629,8 +3601,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         // Resume from the highest seq SEEN — on a first page with no replies the
         // server echoes cursor 0, and polling from 0 would resend the root.
         const resumeSeq = Math.max(nextSinceSeq, ...returnedSeqs);
+        // #301: the server keeps THIS reader's position (`thread.readSeq`). A read from the start of
+        // a long thread whose page stops short of it would hand the model replies it has already
+        // read, page after page — so say where the new ones begin, and how to jump there.
+        const readSeq = Number(data.thread?.readSeq);
+        const skipTo =
+          sinceSeq === undefined && hasMore && Number.isInteger(readSeq) && readSeq > Math.max(0, ...returnedSeqs)
+            ? `You have read up to seq ${readSeq}; replies after it are new — read_thread(thread_id: "${threadId}", since_seq: ${readSeq}) skips to them. `
+            : "";
         const hint = hasMore
-          ? `More replies. Next: read_thread(thread_id: "${threadId}", since_seq: ${nextSinceSeq})`
+          ? `${skipTo}More replies. Next: read_thread(thread_id: "${threadId}", since_seq: ${nextSinceSeq})`
           : `Caught up. Reply with reply(channel_id: "${channelId}", thread_id: "${threadId}", text: ...). ` +
             `To check for newer replies later: read_thread(thread_id: "${threadId}", since_seq: ${resumeSeq})`;
 

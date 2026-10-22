@@ -25,6 +25,7 @@ import {
   isAgentClientError,
   isTerminalCredentialError,
   type AgentClientErrorCode,
+  type Api,
   type EnrolOptions,
   type Installation,
   type Runtime,
@@ -335,6 +336,24 @@ export class SignIn {
       return { client: c, ...a };
     } catch (e) {
       throw new Error(describeCredential(this.failed(e), this.d.clientVersion));
+    }
+  }
+
+  /**
+   * Run `fn` against the SDK's REST client — the routes whose RULE lives in the SDK (a read and
+   * its mark, `threads.read` / `messages.read`). A credential failure throws the person's text,
+   * exactly as `httpAuth` does; an HTTP failure stays the SDK's `ApiRequestError`.
+   */
+  async withApi<T>(fn: (api: Api) => Promise<T>): Promise<T> {
+    const problem = this.configError();
+    if (problem) throw new Error(problem);
+    const c = await this.client();
+    if (!c) throw new Error("this machine is not signed in to einweave — run /einweave:login");
+    try {
+      return await fn(c.api);
+    } catch (e) {
+      if (isAgentClientError(e)) throw new Error(describeCredential(this.failed(e), this.d.clientVersion));
+      throw e;
     }
   }
 

@@ -41,6 +41,11 @@ export interface MarkReadResult {
     lastReadSeq: number;
     readAt: string;
 }
+/** What a read-and-mark (`messages.read` / `threads.read`) did with its run: `read` when the POST answered, `readError` when it failed — neither when nothing was to be marked. */
+export interface ReadOutcome {
+    read?: MarkReadResult;
+    readError?: unknown;
+}
 export interface MessageEnvelope {
     id: string;
     channelId: string;
@@ -203,6 +208,8 @@ export interface ThreadMessagesResult {
         answerMessageId: string | null;
         replyCount: number;
         lastSeq: number;
+        /** THIS reader's reply read position: replies above it are unread, and a read must be contiguous from it. */
+        readSeq: number;
         /** RFC-029 G11: a work item's header for THIS reader; null for a conversation kind. */
         work?: ThreadReadWork | null;
     } | null;
@@ -213,6 +220,10 @@ export interface ThreadMessagesResult {
         deliveryReasons?: DeliveryReason[];
     })[];
     hasMore: boolean;
+    /** Replies exist below the first one returned (page into them with `beforeSeq`). */
+    hasOlder?: boolean;
+    /** How many replies lie below the first one returned (exact). */
+    olderCount?: number;
     nextSinceSeq: number;
     agent: string;
 }
@@ -621,6 +632,8 @@ export interface WorkListItem {
     createdAt: string;
     updatedAt: string;
     lastActivityAt: string | null;
+    /** Unread messages for THIS reader — the thread list's rule, so the two agree. */
+    unreadCount: number;
 }
 export interface WorkListResult {
     scope: "work";
@@ -708,6 +721,28 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
                 deliveryReasons?: DeliveryReason[];
             })[];
         }>;
+        /**
+         * Read a page of a channel's roots AND mark what it covered as read — `threads.read`'s rule for a
+         * channel. Marks `(sinceSeq ?? 0, highest seq returned]` ONLY when that run is contiguous:
+         *   - `sinceSeq`: from it (the server refuses the mark if the reader has not reached it). ✓
+         *   - no cursor, a SHORT newest page: it holds the whole channel, so from 0. ✓
+         *   - no cursor, a FULL newest page: older messages may be withheld — marking would clear them. ✗
+         *   - `since` (a time filter): not anchored to a seq. ✗
+         * The highest seq, not the last row: the newest page is ordered by created_at. `markRead: false`
+         * peeks. `limit` is clamped to the server's own bounds (default 50, max 200) and always sent, so
+         * "full page" is judged against the page the server actually served.
+         */
+        read: (p: {
+            channel: string;
+            limit?: number;
+            since?: string;
+            sinceSeq?: number;
+            markRead?: boolean;
+        }) => Promise<{
+            messages: (MessageEnvelope & {
+                deliveryReasons?: DeliveryReason[];
+            })[];
+        } & ReadOutcome>;
         /** Root-only (RFC-012 slice 5.4) — `body` must never carry `threadId`/`parentId`; reply with `threads.reply`. */
         create: (channelId: string, body: SendBody & {
             title?: string;
@@ -744,7 +779,29 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
         messages: (threadId: string, p?: {
             limit?: number;
             sinceSeq?: number;
+            beforeSeq?: number;
+            aroundSeq?: number;
+            around?: "unread";
         }) => Promise<ThreadMessagesResult>;
+        /**
+         * Read a page of a thread AND mark what it covered as read — the one rule for every agent.
+         * `sinceSeq` omitted = from the first reply; `markRead: false` peeks. The read is sent as the
+         * contiguous run `(sinceSeq ?? 0, last reply returned]`: the server advances only if the reader
+         * already reaches `fromSeq` (`read.advanced`), so a page read from the middle of a thread you
+         * have not read up to never marks the gap. An empty first page (no `sinceSeq`, or 0) marks the root alone.
+         * `beforeSeq` pages BACKWARD (the newest page below it, ascending); `aroundSeq` (up to 20 replies
+         * at/below it, then a page above it) and `around: "unread"` (centred on YOUR read position) place
+         * the window. None of the three marks: a window placed elsewhere is not a run from your read
+         * position, so a read of it is a peek — call `read` with `sinceSeq` (or none) to read-and-mark.
+         */
+        read: (threadId: string, p?: {
+            sinceSeq?: number;
+            beforeSeq?: number;
+            aroundSeq?: number;
+            around?: "unread";
+            limit?: number;
+            markRead?: boolean;
+        }) => Promise<ThreadMessagesResult & ReadOutcome>;
         events: (threadId: string) => Promise<{
             events: unknown[];
         }>;
