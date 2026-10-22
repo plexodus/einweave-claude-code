@@ -59,7 +59,6 @@ type State = {
   root: Row | null;
   replies: Row[];
   threadStatus: number; // status for GET /api/threads/:id/messages
-  legacy: boolean; // a server that predates paging: no hasMore/nextSinceSeq
   readStatus: number; // status for POST .../read
   threads: Row[];
   /** Server shape that predates name resolution: no `channelId` echo. */
@@ -80,7 +79,7 @@ function startStub(): Stub {
   const readBodies: { path: string; body: any }[] = [];
   const answerBodies: any[] = [];
   const acks: { ids: string[]; how: string }[] = [];
-  let st: State = { root: null, replies: [], threadStatus: 200, legacy: false, readStatus: 200, threads: [], legacyList: false, answerStatus: 200, answerError: "", events: [], eventsStatus: 200, work: null };
+  let st: State = { root: null, replies: [], threadStatus: 200, readStatus: 200, threads: [], legacyList: false, answerStatus: 200, answerError: "", events: [], eventsStatus: 200, work: null };
   let answer: string | null = null; // the thread's accepted answer
   let cursor = 0; // the stored thread read position
   const agentAuth = createAgentAuthRoutes();
@@ -152,17 +151,18 @@ function startStub(): Stub {
         const after = since === null ? st.replies : st.replies.filter((r) => Number(r.seq) > Number(since));
         const page = after.slice(0, limit);
         const last = page[page.length - 1];
-        const body: any = { parent: st.root, replies: page };
-        if (!st.legacy) {
-          body.thread = {
+        return Response.json({
+          parent: st.root,
+          replies: page,
+          thread: {
             id: THREAD, channelId: CHANNEL_ID, title: "Bug: threaded replies", kind: "question",
             status: answer ? "resolved" : "open", answerMessageId: answer, replyCount: st.replies.length,
+            readSeq: cursor,
             ...(st.work ? { work: st.work } : {}),
-          };
-          body.hasMore = after.length > limit;
-          body.nextSinceSeq = last ? last.seq : Number(since ?? 0);
-        }
-        return Response.json(body);
+          },
+          hasMore: after.length > limit,
+          nextSinceSeq: last ? last.seq : Number(since ?? 0),
+        });
       }
       return new Response("no", { status: 404 });
     },
@@ -313,6 +313,18 @@ describe("read_thread / list_threads", () => {
       { fromSeq: 14, lastReadSeq: 15 },
     ]);
     expect(body.marked_read_up_to).toBe(15);
+  });
+
+  test("#301: a read from the start that stops short of the reader's position says where the new replies begin", async () => {
+    await ok("read_thread", { thread_id: THREAD, limit: 2 }); // read up to 14
+    const again = await ok("read_thread", { thread_id: THREAD, limit: 1 }); // from the start: 13 only
+    expect(again.hint).toContain("You have read up to seq 14");
+    expect(again.hint).toContain(`since_seq: 14) skips to them`);
+    // Not when the page already reaches the position, nor on a since_seq read (it chose where to start).
+    const reached = await ok("read_thread", { thread_id: THREAD, limit: 2 });
+    expect(reached.hint).not.toContain("You have read up to");
+    const fromCursor = await ok("read_thread", { thread_id: THREAD, since_seq: 0, limit: 1 });
+    expect(fromCursor.hint).not.toContain("You have read up to");
   });
 
   test("a read starting ABOVE the stored position is not marked, and says where to catch up", async () => {
@@ -470,14 +482,6 @@ describe("read_thread / list_threads", () => {
     const r = await callTool("read_thread", { thread_id: THREAD });
     expect(r.isError).toBe(true);
     expect(r.text).toContain(THREAD);
-  });
-
-  test("a server that predates paging is refused, not trusted with a cursor", async () => {
-    stub.set({ legacy: true });
-    const r = await callTool("read_thread", { thread_id: THREAD, since_seq: 14 });
-    expect(r.isError).toBe(true);
-    expect(r.text).toContain("does not support paged thread reads");
-    expect(stub.readBodies).toEqual([]);
   });
 
   test("list_threads resolves a channel NAME to its id and reports unread", async () => {

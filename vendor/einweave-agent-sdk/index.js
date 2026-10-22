@@ -889,7 +889,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.8.0";
+var SDK_VERSION = "0.10.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -970,6 +970,13 @@ function createApi(rt, client) {
     const s = p.toString();
     return s ? `?${s}` : "";
   };
+  const markRun = async (path, fromSeq, lastReadSeq) => {
+    try {
+      return { read: await req("POST", path, { body: { fromSeq, lastReadSeq } }) };
+    } catch (readError) {
+      return { readError };
+    }
+  };
   return {
     channels: {
       list: (p = {}) => req("GET", `/api/channels${p.includeArchived ? "?includeArchived=true" : ""}`),
@@ -981,6 +988,16 @@ function createApi(rt, client) {
     },
     messages: {
       list: (p) => req("GET", `/api/messages${qs(p)}`),
+      read: async (p) => {
+        const limit = Math.min(Math.max(Math.trunc(p.limit || 50), 1), 200);
+        const page = await req("GET", `/api/messages${qs({ channel: p.channel, limit, since: p.since, sinceSeq: p.sinceSeq })}`);
+        const contiguous = p.sinceSeq !== undefined || p.since === undefined && page.messages.length < limit;
+        const seqs = page.messages.map((m) => m.seq).filter((n) => typeof n === "number");
+        const channelId = page.messages[0]?.channelId;
+        if (p.markRead === false || !contiguous || seqs.length === 0 || !channelId)
+          return page;
+        return { ...page, ...await markRun(`/api/channels/${encodeURIComponent(channelId)}/read`, p.sinceSeq ?? 0, Math.max(...seqs)) };
+      },
       create: (channelId, body) => req("POST", "/api/messages", { body: { channelId, ...body } }),
       receipts: (ids) => req("GET", `/api/messages/receipts?ids=${ids.map(encodeURIComponent).join(",")}`)
     },
@@ -989,6 +1006,16 @@ function createApi(rt, client) {
       takeable: (p = {}) => req("GET", `/api/threads${qs({ takeable: 1, channel: p.channel, limit: p.limit, cursor: p.cursor })}`),
       hold: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/hold`, { body }),
       messages: (threadId, p = {}) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/messages${qs(p)}`),
+      read: async (threadId, p = {}) => {
+        const id = encodeURIComponent(threadId);
+        const page = await req("GET", `/api/threads/${id}/messages${qs({ sinceSeq: p.sinceSeq, beforeSeq: p.beforeSeq, aroundSeq: p.aroundSeq, around: p.around, limit: p.limit })}`);
+        if (p.markRead === false || p.beforeSeq !== undefined || p.aroundSeq !== undefined || p.around !== undefined)
+          return page;
+        const last = page.replies[page.replies.length - 1]?.seq ?? (!p.sinceSeq ? page.parent?.seq : undefined);
+        if (last === undefined)
+          return page;
+        return { ...page, ...await markRun(`/api/threads/${id}/read`, p.sinceSeq ?? 0, last) };
+      },
       events: (threadId) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/events`),
       reply: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/messages`, { body }),
       markRead: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/read`, { body: body ?? {} }),

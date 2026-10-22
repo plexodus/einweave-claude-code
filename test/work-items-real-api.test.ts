@@ -318,6 +318,39 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     expect(JSON.parse(result.text).status).not.toBe("in_progress");
   });
 
+  test("0.33.0 reads mark on the server: read_thread, read_messages, and list_items unread clears", async () => {
+    const db = new Bun.SQL(dbUrl);
+    try {
+      const threadCursor = async (tid: string) =>
+        (await db`SELECT last_read_seq FROM thread_cursors WHERE principal_id = ${seed.agentId} AND thread_id = ${tid}`)[0]?.last_read_seq;
+      const channelCursor = async () =>
+        (await db`SELECT last_read_seq FROM read_cursors WHERE principal_id = ${seed.agentId} AND channel_id = ${channelId}`)[0]?.last_read_seq;
+
+      // An item of the agent's with a person's reply: unread until read_thread reads it.
+      const tid = await humanTask("Review the read rule", seed.agentId);
+      await human("POST", `/api/threads/${tid}/messages`, { content: "any news?" });
+      const row = async () => JSON.parse((await p.call("list_items", { assignee: "me" })).text).items.find((i: any) => i.thread_id === tid);
+      expect((await row())?.unread ?? 0).toBeGreaterThanOrEqual(1);
+
+      const peek = JSON.parse((await p.call("read_thread", { thread_id: tid, mark_read: false })).text);
+      expect(peek.marked_read_up_to).toBeUndefined();
+      expect(await threadCursor(tid)).toBeUndefined();
+
+      const read = JSON.parse((await p.call("read_thread", { thread_id: tid })).text);
+      expect(typeof read.marked_read_up_to).toBe("number");
+      expect(Number(await threadCursor(tid))).toBe(read.marked_read_up_to);
+      expect((await row())?.unread).toBeUndefined();
+
+      // The channel's roots, from the start (a gap-free run from read position 0).
+      const chan = JSON.parse((await p.call("read_messages", { channel_id: channelId, since_seq: 0 })).text);
+      expect(chan.count).toBeGreaterThan(0);
+      expect(typeof chan.marked_read_up_to).toBe("number");
+      expect(Number(await channelCursor())).toBe(chan.marked_read_up_to);
+    } finally {
+      await db.close();
+    }
+  });
+
   test("claim = update_item assignee: \"me\" on a person's unassigned task", async () => {
     const tid = await humanTask("Prune old preview deployments");
     const r = await p.call("update_item", { thread_id: tid, assignee: "me" });
