@@ -29,6 +29,7 @@ function takeableRow(id: string, title: string, state: "unheld" | "parked" | "he
 function fake(routes: (c: Call) => ApiResult | undefined, over: Partial<HoldsDeps> = {}) {
   const calls: Call[] = [];
   let scope: any = null;
+  const carried: string[] = [];
   const deps: HoldsDeps = {
     api: async (method, path, body) => {
       const c = { method, path, body };
@@ -40,9 +41,13 @@ function fake(routes: (c: Call) => ApiResult | undefined, over: Partial<HoldsDep
     resolveChannelId: async (r) => ({ a: CH_A, b: CH_B }[r] ?? null),
     onScope: (s) => (scope = s),
     currentScope: () => scope,
+    carryNext: (ids) => {
+      for (const id of ids) if (!carried.includes(id)) carried.push(id);
+      return { carried: [...carried], dropped: [] };
+    },
     ...over,
   };
-  return { holds: createHolds(deps), calls, scope: () => scope };
+  return { holds: createHolds(deps), calls, scope: () => scope, carried };
 }
 
 const list3 = (c: Call): ApiResult | undefined =>
@@ -283,6 +288,34 @@ describe("release and handover", () => {
     const text = await f.holds.handover({ ref: T1, to: "5" });
     expect(f.calls.some((c) => c.method === "POST")).toBe(false);
     expect(text).toContain("There is no 5");
+  });
+  test("RFC-028 §11: to next carries a thread this session holds over the next /clear -- no server call, and only a held one", async () => {
+    const f = fake(routes);
+    const text = await f.holds.handover({ ref: "review", to: "next" });
+    expect(f.carried).toEqual([T2]);
+    expect(text).toContain("Handed Review the PR to the next conversation in this window");
+    expect(text).toContain("If the user did not ask for this, tell them in one line.");
+    expect(f.calls.some((c) => c.method === "POST")).toBe(false);
+    // Not held by this session: nothing carried.
+    const other = await f.holds.handover({ ref: T3, to: "NEXT" });
+    expect(other).toContain(`does not hold ${T3}`);
+    expect(f.carried).toEqual([T2]);
+  });
+
+  test("RFC-028 §11: handover all to next carries every held thread; no ref lists them", async () => {
+    const f = fake(routes);
+    expect(await f.holds.handover({ to: "next" })).toContain("1. Fix the build");
+    expect(f.carried).toEqual([]);
+    await f.holds.handover({ ref: "all", to: "next" });
+    expect(f.carried).toEqual([T1, T2]);
+    expect(f.calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  test("RFC-028 §11: a number picks from the list this session showed, and must still be held", async () => {
+    const f = fake(routes);
+    await f.holds.handover({}); // shows 1. Fix the build, 2. Review the PR
+    await f.holds.handover({ ref: "1", to: "next" });
+    expect(f.carried).toEqual([T1]);
   });
 });
 

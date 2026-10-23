@@ -28,7 +28,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-adbbmm3v.js";
+} from "./index-pp6sps7k.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -178,6 +178,8 @@ function stopKindFromClose(outcome) {
     return "gateway-taken-over";
   if (outcome.stop === "kind-not-allowed")
     return "kind-not-allowed";
+  if (outcome.stop === "conversation-replaced")
+    return "conversation-replaced";
   return "revoked";
 }
 
@@ -427,6 +429,7 @@ class Session {
           kind: this.opts.kind,
           ...!this.declaredOnce && this.opts.scope ? { scope: this.opts.scope } : {},
           ...!this.declaredOnce && this.opts.takeover ? { takeover: this.opts.takeover } : {},
+          ...!this.declaredOnce && this.opts.replaces ? { replaces: this.opts.replaces } : {},
           sessionInfo,
           ...supersede ? { supersede: true } : {},
           ...this.opts.interactive !== undefined ? { interactive: this.opts.interactive === true } : {}
@@ -468,7 +471,7 @@ class Session {
         });
         return;
       }
-      if (cls === "too-old" || cls === "session-in-use" || cls === "gateway-taken-over" || cls === "kind-not-allowed") {
+      if (cls === "too-old" || cls === "session-in-use" || cls === "gateway-taken-over" || cls === "kind-not-allowed" || cls === "conversation-replaced") {
         const outcome = closeOutcome(cls, code, reason, { myVersion: this.client.softwareVersion() });
         this.finish({ kind: stopKindFromClose(outcome), close: outcome });
         return;
@@ -796,7 +799,10 @@ class Session {
       advice: p.client,
       ...typeof p.kind === "string" ? { connectionKind: p.kind } : {},
       ...typeof p.scope === "object" && p.scope !== null ? { scope: p.scope } : {},
-      ...Array.isArray(p.holds) ? { holds: p.holds } : {}
+      ...Array.isArray(p.holds) ? { holds: p.holds } : {},
+      ...Array.isArray(p.carried) ? { carried: p.carried } : {},
+      ...Array.isArray(p.released) ? { released: p.released } : {},
+      ...Array.isArray(p.notCarried) ? { notCarried: p.notCarried } : {}
     });
     this.flushAcks();
     this.armReconcile();
@@ -889,7 +895,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.10.0";
+var SDK_VERSION = "0.11.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

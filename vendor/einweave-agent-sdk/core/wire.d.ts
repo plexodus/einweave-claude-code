@@ -66,6 +66,25 @@ export interface Scope {
     mode: "all" | "channels" | "none";
     channelIds?: string[];
 }
+/**
+ * RFC-028 §11: a NEW session's declaration that it replaces a conversation of the same window (a
+ * `/clear`). The server hands the replaced session's threads over: `carry` ones to this session, the
+ * rest released. First connect only.
+ */
+export interface ReplacesDeclaration {
+    /** The session key of the conversation being replaced. */
+    sessionKey: string;
+    reason: "clear";
+    /** Thread ids to hand to this session (at most 64); every other hold of the replaced session is released. */
+    carry?: string[];
+}
+/** A thread a replaced conversation held and the server released (`AuthenticatedPayload.released`). */
+export interface ReleasedThread {
+    threadId: string;
+    title: string | null;
+    channelId: string;
+    channelName: string;
+}
 export interface AuthFrame {
     type: "auth";
     v: typeof PROTOCOL_VERSION;
@@ -80,6 +99,8 @@ export interface AuthFrame {
      * from another window and never moves a lease.
      */
     takeover?: "gateway";
+    /** RFC-028 §11: this session replaces a conversation (a `/clear`). First connect only. */
+    replaces?: ReplacesDeclaration;
     sessionInfo?: SessionInfo;
     /** The DPoP proof for this frame's implicit `GET /ws` (E11). */
     dpop?: unknown;
@@ -138,6 +159,12 @@ export interface AuthenticatedPayload {
     };
     /** RFC-028 D3: the ids of the threads this session holds. */
     holds?: string[];
+    /** RFC-028 §11 (present when the auth declared `replaces`): the threads handed to this session… */
+    carried?: string[];
+    /** …the threads released (this session does not hold them; replies go to the agent's sessions in scope)… */
+    released?: ReleasedThread[];
+    /** …and the `carry` ids that were not carried (not held by the replaced session, or nothing was replaced). */
+    notCarried?: string[];
     /** RFC-017 D7: present only when a newer build is available and this session is the holder. */
     client?: unknown;
 }
@@ -155,7 +182,7 @@ export interface HoldUpdatePayload {
         online: boolean;
         parked: boolean;
     } | null;
-    via: "start" | "reply" | "take" | "handover" | "release" | "settled";
+    via: "start" | "reply" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry";
     by: {
         principalId: string;
         sessionId: string | null;

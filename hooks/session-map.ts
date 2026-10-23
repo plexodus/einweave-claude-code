@@ -19,9 +19,10 @@
  *
  * Invoked as `session-map.ts start|end` from hooks/hooks.json.
  *
- * Writes nothing to stdout: a hook's stdout is injected into the conversation
- * as context. Never throws — a broken mapping must cost a Bridge context, not
- * the user's session start.
+ * Writes nothing to stdout but the one JSON line that hands the conversation the
+ * running server's note (RFC-028 §11: after `/clear`, after a compaction) — a hook's
+ * stdout is injected into the conversation as context. Never throws — a broken
+ * mapping must cost a Bridge context, not the user's session start.
  */
 
 import { procStartOf } from "../proc-start";
@@ -38,6 +39,7 @@ import {
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { askCtl } from "../delivery/ctl-client";
+import type { SessionSource } from "../delivery/ctl-protocol";
 import { ctlSocketPath } from "../delivery/ctl-path";
 import { checkPrivateDir } from "../delivery/private-dir";
 import { resolveStateDir } from "../state-dir";
@@ -49,6 +51,10 @@ const SESSION_ID_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 // the directory.
 const KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 const STDIN_TIMEOUT_MS = 2000;
+// The `session` op answers after the new conversation's first `authenticated` (measured
+// 2026-10-23 on prod, n=11: 0.8-1.8 s from /clear). The server waits up to 5 s for it; this
+// waits a little longer for the answer itself, all under hooks.json's 10 s (stdin ≤ 2 s first).
+const SESSION_OP_TIMEOUT_MS = 6500;
 const SWEEP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // Same rule as the server's SESSION_MAP_DIRS (server.ts). The two must agree,
@@ -411,7 +417,7 @@ async function runStart(
       log(`failed to write ${f}: ${err}`);
     }
   }
-  await tellRunningServer(claudePid, sessionId);
+  await tellRunningServer(claudePid, sessionId, typeof payload.source === "string" ? payload.source : "");
   sweep();
 }
 
@@ -422,13 +428,18 @@ async function runStart(
  * conversation it now serves; it re-keys if the id differs. At a fresh start the server
  * is not listening yet or already has this id — either way nothing happens. Fail open.
  */
-async function tellRunningServer(claudePid: number | null, sessionId: string): Promise<void> {
+async function tellRunningServer(claudePid: number | null, sessionId: string, source: string): Promise<void> {
   if (!claudePid) return;
   const path = ctlSocketPath(resolveStateDir(), claudePid);
+  // What the socket answers goes into the conversation: only from a directory that is ours alone.
   if (!checkPrivateDir(dirname(path)).ok) return;
-  const res = await askCtl(path, { op: "session", id: sessionId });
+  // The server drops a source it does not know; this side sends what Claude Code said.
+  const res = await askCtl(path, { op: "session", id: sessionId, ...(source ? { source: source as SessionSource } : {}) }, SESSION_OP_TIMEOUT_MS);
   if (res?.ok === true && res.op === "session") {
     log(res.rekeyed === true ? `server re-keyed to ${sessionId}` : `server already on ${sessionId}`);
+    if (typeof res.context === "string" && res.context.length > 0) {
+      writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: res.context } }));
+    }
   }
 }
 

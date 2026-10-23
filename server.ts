@@ -60,6 +60,9 @@ import { Session, createRuntime, isApiRequestError, type Api, type ReadOutcome, 
 import { isAddressed, deadline } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
+import { addCarry, takeCarry, readPendingReplace, writePendingReplace, clearPendingReplace } from "./carry-store";
+import { clearNote, holdsNote } from "./clear-note";
+import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
@@ -142,6 +145,10 @@ let connectionKind: ConnectKind = "session";
 // What the server said it stored for this socket (the `authenticated` frame) -- `status` shows it.
 let serverScope: { mode: string; channelIds: string[] } | null = null;
 let serverHolds: string[] = [];
+// RFC-028 §11: the Session whose first connect declared `replaces` (its first `authenticated` answers it).
+let replaceSentBy: Session | null = null;
+// A SessionStart hook waiting for that answer, to hand the note to the conversation itself.
+let noteWaiter: { key: string; resolve: (note: string | null) => void } | null = null;
 
 // Set by `connect`/`disconnect` before they touch anything SESSION_KEY-keyed.
 // Tools are answerable before SESSION_KEY (and the wantConnected it is read
@@ -1294,7 +1301,7 @@ function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<Pend
     tracker,
     toNotice: pendingNotice,
     log: (line) => process.stderr.write(line + "\n"),
-    onSession: rekeyTo,
+    onSession: onSessionStart,
     ...(takeover ? { takeover: true } : {}),
   };
 }
@@ -1315,12 +1322,18 @@ let openGen = 0;
  * re-keys instead of taking the old conversation's session the moment it is free.
  * Cheap: one file read under the already-known Claude pid (mappedConversationOf), no `ps`.
  */
-function conversationMovedTo(): string | null {
+function conversationMovedTo(): ConversationMapping | null {
   if (SESSION_KEY_REGEX.test(SESSION_KEY_OVERRIDE) || !sessionKeySettled) return null;
   const pid = myIdentity().claudePid;
   if (pid === null) return null;
-  const id = mappedConversationOf(pid);
-  return id && id !== SESSION_KEY ? id : null;
+  const m = mappedConversationOf(pid);
+  return m && m.id !== SESSION_KEY ? m : null;
+}
+
+/** A session-map record: the conversation, and the SessionStart `source` that wrote it ("" = unknown). */
+interface ConversationMapping {
+  id: string;
+  source: string;
 }
 
 /**
@@ -1329,11 +1342,13 @@ function conversationMovedTo(): string | null {
  * ancestor, found and validated once at startup, so it is alive and it is ours — a record
  * naming it with another pid inside is not, and is ignored.
  */
-function mappedConversationOf(pid: number): string | null {
+function mappedConversationOf(pid: number): ConversationMapping | null {
   for (const dir of SESSION_MAP_DIRS) {
     try {
       const m = JSON.parse(readFileSync(join(dir, `pid-${pid}.json`), "utf8")) as Record<string, unknown>;
-      if (m.claudePid === pid && typeof m.sessionId === "string" && SESSION_KEY_REGEX.test(m.sessionId)) return m.sessionId;
+      if (m.claudePid === pid && typeof m.sessionId === "string" && SESSION_KEY_REGEX.test(m.sessionId)) {
+        return { id: m.sessionId, source: typeof m.source === "string" ? m.source : "" };
+      }
     } catch {}
   }
   return null;
@@ -1370,7 +1385,7 @@ function keyCheckedLock(inner: SessionLockHandle): SessionLockHandle {
     async acquire(opts) {
       const moved = conversationMovedTo();
       if (moved) {
-        queueMicrotask(() => rekeyTo(moved));
+        queueMicrotask(() => rekeyTo(moved.id, moved.source));
         return "standby";
       }
       return inner.acquire(opts);
@@ -1492,7 +1507,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
   if (superseded && !opts.takeover) return null;
   const moved = conversationMovedTo();
   if (moved) {
-    rekeyTo(moved); // opens the new conversation's session itself
+    rekeyTo(moved.id, moved.source); // opens the new conversation's session itself
     return null;
   }
   const gen = ++openGen;
@@ -1534,6 +1549,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
   }
   const info = await getSessionInfoForAuth();
   const startingScope = connectionKind === "session" && !scopeSetHere ? await startingScopeFromEnv() : null;
+  const replace = readPendingReplace(STATE_DIR, SESSION_KEY); // RFC-028 §11 (recordReplace)
   if (gen !== openGen || lock !== myLock || !wantConnected || shuttingDown) {
     disposeStaleLock(myLock, myKey); // overtaken (see openGen), or no longer wanted
     return null;
@@ -1553,6 +1569,8 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
     // RFC-028 D2: moving the gateway lease is its own, one-time act of a person -- never a retry's
     // and never implied by the session-lock takeover (the SDK says it on this first connect only).
     ...(opts.gatewayTakeover && connectionKind === "gateway" ? { takeover: "gateway" as const } : {}),
+    // First connect only (the SDK); answered by the first `authenticated` (announceReplace).
+    ...(replace ? { replaces: { sessionKey: replace.from, reason: "clear" as const, ...(replace.carry.length > 0 ? { carry: replace.carry } : {}) } } : {}),
     seqStore,
     lock: keyCheckedLock(myLock),
     sessionInfo: authSessionInfo,
@@ -1562,6 +1580,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
   });
   created = s;
   session = s;
+  replaceSentBy = replace ? s : null;
   standbyHolder = null;
   updateProcState(STATE_DIR, process.pid, "disconnected");
   void (async () => {
@@ -1602,6 +1621,11 @@ function onStatus(st: SessionStatus): void {
       myContextId = st.contextId ?? "";
       serverScope = st.scope ?? null;
       serverHolds = st.holds ?? [];
+      if (replaceSentBy && replaceSentBy === session) {
+        replaceSentBy = null;
+        clearPendingReplace(STATE_DIR, SESSION_KEY);
+        void announceReplace(SESSION_KEY, st);
+      }
       // Read-tool acks that found no Session go to this one — if it is the same profile and agent.
       if (session) returnedAcks.flush(session, { profile: PROFILE_LABEL, agentId });
       noteServerAdvice(st.advice);
@@ -1813,6 +1837,88 @@ function restartConnection(): void {
 }
 
 /**
+ * RFC-028 §11: `/clear` left conversation `from` for `to`. The new conversation's first connect
+ * declares `replaces` (openSession reads the file): `from`'s holds handed to "next" are carried,
+ * the rest released, instead of staying on a session nobody will speak in again. A file, so a
+ * window that connects only later (or restarts first) still declares it. If `from` itself never
+ * got to declare ITS predecessor (a disconnected window cleared twice), that passes on: the
+ * server matches by session key, and only the oldest one ever held anything.
+ */
+function recordReplace(from: string, to: string): void {
+  try {
+    const prev = readPendingReplace(STATE_DIR, from);
+    const carry = [...new Set([...(prev?.carry ?? []), ...takeCarry(STATE_DIR, from)])];
+    writePendingReplace(STATE_DIR, to, { from: prev?.from ?? from, carry });
+    if (prev) clearPendingReplace(STATE_DIR, from);
+  } catch (err) {
+    process.stderr.write(`einweave channel: could not record the /clear handover (${err}); the previous conversation keeps its threads\n`);
+  }
+}
+
+/** The ctl `session` op (SessionStart): re-key, and the note this conversation starts with, if any. */
+async function onSessionStart(id: string, source: SessionSource | undefined): Promise<{ rekeyed: boolean; context: string | null }> {
+  const rekeyed = rekeyTo(id, source);
+  if (rekeyed && source === "clear" && wantConnected && readPendingReplace(STATE_DIR, id)) {
+    return { rekeyed, context: await waitForNote(id) };
+  }
+  if (!rekeyed && source === "compact" && authenticated && serverHolds.length > 0) {
+    const titled = await withTimeout(holds.titlesOf(serverHolds), CLEAR_NOTE_WAIT_MS).catch(() => null);
+    return { rekeyed, context: holdsNote(titled ?? serverHolds.map((t) => ({ id: t, title: null }))) };
+  }
+  return { rekeyed, context: null };
+}
+
+// Measured 2026-10-23 (prod, n=11): /clear → the new session registered in 0.8-1.8 s.
+const CLEAR_NOTE_WAIT_MS = 5000;
+
+/** The /clear note for `key`, once its first `authenticated` answered — or null after the wait (it then goes as a notice). */
+function waitForNote(key: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    noteWaiter?.resolve(null);
+    const me = { key, resolve };
+    noteWaiter = me;
+    setTimeout(() => {
+      if (noteWaiter !== me) return;
+      noteWaiter = null;
+      resolve(null);
+    }, CLEAR_NOTE_WAIT_MS).unref?.();
+  });
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms).unref?.())]);
+}
+
+/**
+ * The first `authenticated` after a `replaces` declaration: what this conversation holds now and
+ * what was released. To the waiting SessionStart hook, else (window connected later, hook gave
+ * up) as a channel notice. `holds` (not `carried`) for what this session holds: if the answer to
+ * the declaring connect was lost, the SDK declares again and the server answers that a no-op --
+ * the released list is then gone, but the holds are still right (review F7).
+ */
+async function announceReplace(key: string, st: { holds?: string[]; released?: Array<{ threadId: string; title: string | null; channelName: string }>; notCarried?: string[] }): Promise<void> {
+  let note: string | null = null;
+  try {
+    const held = st.holds ?? [];
+    const titled = held.length > 0 ? await withTimeout(holds.titlesOf(held), CLEAR_NOTE_WAIT_MS).catch(() => null) : [];
+    note = clearNote({
+      held: titled ?? held.map((t) => ({ id: t, title: null })),
+      released: (st.released ?? []).map((r) => ({ id: r.threadId, title: r.title, channel: r.channelName })),
+      notCarried: st.notCarried ?? [],
+    });
+  } catch (err) {
+    process.stderr.write(`einweave channel: /clear note failed: ${err}\n`);
+  }
+  if (noteWaiter?.key === key) {
+    const w = noteWaiter;
+    noteWaiter = null;
+    w.resolve(note);
+  } else if (note && SESSION_KEY === key) {
+    notifyModel(note, "status");
+  }
+}
+
+/**
  * RFC-028 B4: one conversation = one Bridge session. `/clear` and an interactive `/resume`
  * switch Claude Code to another conversation WITHOUT restarting this server, which would
  * otherwise keep the key it was spawned with (measured 2026-10-11: 13 h on the previous
@@ -1823,11 +1929,13 @@ function restartConnection(): void {
  * Returns whether it re-keys. Never with an operator override, before the key is settled,
  * for an id the server would reject, or for the id already in use.
  */
-function rekeyTo(conversationId: string): boolean {
+function rekeyTo(conversationId: string, source = ""): boolean {
   if (SESSION_KEY_REGEX.test(SESSION_KEY_OVERRIDE)) return false;
   if (!sessionKeySettled || shuttingDown) return false;
   if (!SESSION_KEY_REGEX.test(conversationId) || conversationId === SESSION_KEY) return false;
   const from = SESSION_KEY;
+  // RFC-028 §11: only a /clear replaces the conversation (resume/startup/compact declare nothing).
+  if (source === "clear") recordReplace(from, conversationId);
   SESSION_KEY = conversationId;
   SESSION_KEY_IS_CONVERSATION_ID = true;
   // Everything keyed by the session key now reads the new conversation's files.
@@ -2267,7 +2375,7 @@ const mcp = new Server(
       "",
       "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post.",
       "",
-      "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
+      "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear releases this conversation's threads unless they were handed to next first (handover(ref, to: \"next\"), or /einweave:carry); hand them to next when the user is handing work to a fresh conversation. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
       "Message types: text (default), question, code, status, response.",
       "",
@@ -2620,12 +2728,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "handover",
       description:
-        "RFC-028: move a thread this session holds to another session of this agent -- in two steps. Step 1: ref picks the thread (no ref lists what this session holds). Step 2: with only the thread, the agent's other sessions are listed; call again with to = N (from that list), a session id, or part of its label. The server acts by id; a stale number is never guessed.",
+        "RFC-028: move a thread this session holds to another session of this agent -- in two steps. Step 1: ref picks the thread (no ref lists what this session holds). Step 2: with only the thread, the agent's other sessions are listed; call again with to = N (from that list), a session id, or part of its label. The server acts by id; a stale number is never guessed. to = \"next\" hands it to the next conversation in this window instead: /clear then carries it there (ref = \"all\" carries every thread this session holds).",
       inputSchema: {
         type: "object",
         properties: {
           ref: { type: "string", description: "The thread: N | link | thread id | words from the title. Omit to list the threads you hold." },
-          to: { type: "string", description: "The session to hand it to: N from the session list | session id | part of its label." },
+          to: { type: "string", description: "The session to hand it to: N from the session list | session id | part of its label | next (the conversation after the next /clear in this window)." },
         },
       },
     },
@@ -2783,6 +2891,7 @@ const holds = createHolds({
   },
   mySessionId: () => myContextId,
   myAgentId: () => agentId,
+  carryNext: (threadIds) => addCarry(STATE_DIR, SESSION_KEY, threadIds),
   resolveChannelId: async (ref) => {
     try {
       return (await resolveChannelRef(ref)).channelId;
