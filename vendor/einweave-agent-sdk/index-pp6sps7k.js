@@ -40,7 +40,8 @@ var TERMINAL = new Set([
   "too-old",
   "session-in-use",
   "gateway-taken-over",
-  "kind-not-allowed"
+  "kind-not-allowed",
+  "conversation-replaced"
 ]);
 function isTerminal(cls) {
   return TERMINAL.has(cls);
@@ -73,6 +74,8 @@ function classifyClose(code, reason) {
         return "transient";
       if (reason === "session already connected")
         return "session-in-use";
+      if (reason === "conversation replaced")
+        return "conversation-replaced";
       const prefix = reasonPrefix(reason);
       if (prefix === "session superseded")
         return "superseded";
@@ -146,6 +149,8 @@ function closeOutcome(cls, code, reason, opts = {}) {
       return { ...base, stop: "gateway-taken-over", ...detailOf(reason) };
     case "kind-not-allowed":
       return { ...base, stop: "kind-not-allowed", ...detailOf(reason) };
+    case "conversation-replaced":
+      return { ...base, stop: "conversation-replaced" };
     case "too-old": {
       const i = reason?.indexOf(": ") ?? -1;
       return { ...base, stop: "too-old", ...i !== -1 ? { remedy: reason.slice(i + 2) } : {} };

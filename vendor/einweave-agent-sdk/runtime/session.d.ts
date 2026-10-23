@@ -25,12 +25,12 @@
  * v3 (RFC-028 sessions, SDK 0.7.0): every connection DECLARES its `kind` (required; the server
  * never infers one) — a `gateway` (the agent's one triage connection, held by a lease), a
  * `session` (work session) or an `observer` (read-only copies). `scope` (a work session's channels
- * for UNHELD work) and `takeover: "gateway"` ride the auth frame of the FIRST connect only: after
+ * for UNHELD work), `takeover: "gateway"` and `replaces` ride the auth frame of the FIRST connect only: after
  * it authenticated, a reconnect re-declares just the kind, so a scope changed since
  * (`api.sessions.setScope`) is not reverted and a takeover is never repeated by a transient close.
  * `supersede` is unchanged — this GRANT from another window — and NEVER implies a takeover.
  */
-import { type AckHow, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type HoldUpdatePayload, type InvalidSessionPayload, type Scope, type SessionInfo } from "../core";
+import { type AckHow, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type HoldUpdatePayload, type InvalidSessionPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionInfo } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 import type { LockHolderInfo, SeqStore, SessionLock } from "./store";
@@ -62,9 +62,9 @@ export interface ReceiptEvent {
     firstSeen?: boolean;
     at?: string;
 }
-export type StopKind = "superseded" | "too-old" | "revoked" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "credential" | "drain";
+export type StopKind = "superseded" | "too-old" | "revoked" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced" | "credential" | "drain";
 /** Why this `Session` will never reconnect again. `close` is present for the WS-close stop
- * classes (superseded / too-old / revoked / session-in-use / gateway-taken-over / kind-not-allowed); `credential` for a terminal
+ * classes (superseded / too-old / revoked / session-in-use / gateway-taken-over / kind-not-allowed / conversation-replaced); `credential` for a terminal
  * `AgentClient` mint failure (installation gone, refused, …). */
 export interface SessionStop {
     kind: StopKind;
@@ -86,6 +86,10 @@ export type SessionStatus = {
         channelIds: string[];
     };
     holds?: string[];
+    /** RFC-028 §11 — after `replaces`: threads handed to this session, threads released, `carry` ids not carried. */
+    carried?: string[];
+    released?: ReleasedThread[];
+    notCarried?: string[];
 } | {
     kind: "closed";
     code?: number;
@@ -148,6 +152,13 @@ export interface SessionOptions {
      */
     takeover?: "gateway";
     /**
+     * RFC-028 §11: this session REPLACES a conversation of the same window (a `/clear`): the server
+     * hands over the replaced session's threads — those in `carry` to this session, every other hold
+     * released — and moves its gateway lease. Never revokes it: `/resume` reopens it, holdless.
+     * First connect only, like `scope` / `takeover`; the result is in the `authenticated` status.
+     */
+    replaces?: ReplacesDeclaration;
+    /**
      * RFC-029 D13: a person is at this connection (their window) — a work item its session holds is
      * never flagged quiet or stuck, and its header says "in @person's session". Sent on EVERY auth
      * (unlike `scope` / `takeover`); omitted = not interactive. The Claude plugin sends `true` for
@@ -204,7 +215,7 @@ export declare class Session {
     private reconnectAttempt;
     private lastClose;
     private authenticatedAt;
-    /** The starting `scope` / `takeover` are said once: until the first `authenticated`, never after. */
+    /** The starting `scope` / `takeover` / `replaces` are said once: until the first `authenticated`, never after. */
     private declaredOnce;
     private remintedAfter4001;
     /** The CURRENT socket's own credential — updated by `sendReauth` too, so a close
