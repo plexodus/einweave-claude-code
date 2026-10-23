@@ -114,4 +114,11 @@ describe("describeClose", () => {
     expect(describeClose("kind-not-allowed", 4008, "kind not allowed")).toContain("manager");
     expect(describeClose("gateway-in-use", 4008, undefined)).toContain("in use (");
   });
+
+  test("RFC-028 §11: conversation-replaced says a /clear moved on, and how to connect this one again", () => {
+    const t = describeClose("conversation-replaced", 4008, "conversation replaced");
+    expect(t).toContain("/clear");
+    expect(t).toContain("/einweave:connect");
+    expect(t).not.toContain("login");
+  });
 });

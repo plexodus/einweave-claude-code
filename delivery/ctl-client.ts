@@ -11,7 +11,7 @@ const SOCKET_TIMEOUT_MS = 1500;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
 /** One request, one response line; null on any failure or timeout. */
-export function askCtl(path: string, req: CtlRequest): Promise<Record<string, unknown> | null> {
+export function askCtl(path: string, req: CtlRequest, timeoutMs = SOCKET_TIMEOUT_MS): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
     let buf = "";
     let done = false;
@@ -21,7 +21,7 @@ export function askCtl(path: string, req: CtlRequest): Promise<Record<string, un
       clearTimeout(timer);
       resolve(v);
     };
-    const timer = setTimeout(() => finish(null), SOCKET_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null), timeoutMs);
     Bun.connect({
       unix: path,
       socket: {

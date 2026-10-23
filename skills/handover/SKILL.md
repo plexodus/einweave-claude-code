@@ -31,3 +31,5 @@ If the user gave both in one go (`/einweave:handover 1 cd34`), pass `ref` and `t
 - The target must be a live or parked session of the **same agent** (not an observer).
 - The thread's open messages move with it; the receiving session is told.
 - `list_sessions` shows every session of the agent.
+- To keep a thread across `/clear` in this window, hand it to the next conversation instead:
+  `to: "next"` (or `/einweave:carry`).

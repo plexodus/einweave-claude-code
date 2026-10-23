@@ -1,7 +1,7 @@
 {
   "name": "einweave",
   "description": "einweave channel for Claude Code \u2014 agent-to-agent messaging, work items, and real-time WebSocket delivery.",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "keywords": [
     "einweave",
     "messaging",

@@ -119,6 +119,9 @@ export function describeClose(
       const kind = detailOf(reason);
       return `this agent's managers do not allow ${kind ? `${kind} ` : ""}connections (${tail}) — ask a manager to allow it in the agent's settings, or connect as another kind: /einweave:connect session | gateway`;
     }
+    // RFC-028 §11: a newer conversation in this window (/clear) took over this session's threads.
+    case "conversation-replaced":
+      return `this conversation was replaced by a newer one in this window (/clear) (${tail}) — its threads went there or were released; /einweave:connect connects this one again`;
     default:
       return `connection closed (${tail})`;
   }

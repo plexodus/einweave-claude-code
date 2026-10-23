@@ -28,7 +28,7 @@
 import { chmodSync, lstatSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Socket, UnixSocketListener } from "bun";
-import { parseCtlRequest, type CtlResponse } from "./ctl-protocol";
+import { parseCtlRequest, type CtlResponse, type SessionSource } from "./ctl-protocol";
 import { MissedTracker } from "./missed";
 import { checkPrivateDir, ensurePrivateDir } from "./private-dir";
 import { missedNotice, type NoticeEntry } from "./notice";
@@ -50,10 +50,11 @@ export interface CtlServerOptions<E extends { id: string }> {
   /** Bind even if another process answers on the path (the session-lock holder). */
   takeover?: boolean;
   /**
-   * SessionStart reported the conversation id Claude Code now runs. Returns whether the
-   * server re-keys to it (it does the re-key itself, asynchronously). Absent: never.
+   * SessionStart reported the conversation id Claude Code now runs, and why (`source`).
+   * Answers whether the server re-keys to it (it does the re-key itself) and the note for the
+   * conversation, if any — possibly after the new session's first auth. Absent: never.
    */
-  onSession?: (conversationId: string) => boolean;
+  onSession?: (conversationId: string, source: SessionSource | undefined) => Promise<{ rekeyed: boolean; context: string | null }>;
 }
 
 /** Why no socket is open — `status` names it; "the pid was not found" is a different cause. */
@@ -130,7 +131,7 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
   const now = o.now ?? Date.now;
   const stats: CtlStats = { lastHookAt: null, confirmed: 0 };
 
-  const handle = (line: string): CtlResponse => {
+  const handle = async (line: string): Promise<CtlResponse> => {
     const req = parseCtlRequest(line);
     if (!req) return { ok: false, error: "bad request" };
     stats.lastHookAt = now();
@@ -140,8 +141,10 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
         return { ok: true, op: "stop" };
       case "pending":
         return { ok: true, op: "pending", entries: o.pending.list().map(o.toNotice) };
-      case "session":
-        return { ok: true, op: "session", rekeyed: o.onSession?.(req.id) ?? false };
+      case "session": {
+        const r = (await o.onSession?.(req.id, req.source)) ?? { rekeyed: false, context: null };
+        return { ok: true, op: "session", rekeyed: r.rekeyed, context: r.context };
+      }
       case "prompt": {
         let confirmed = false;
         if (req.id) {
@@ -183,15 +186,20 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
           if (s.data.buf.length > MAX_LINE) return void s.end();
           const nl = s.data.buf.indexOf("\n");
           if (nl < 0) return;
-          let res: CtlResponse;
-          try {
-            res = handle(s.data.buf.slice(0, nl));
-          } catch (err) {
-            o.log(`einweave delivery: control request failed: ${err instanceof Error ? err.message : String(err)}`);
-            res = { ok: false, error: "internal" };
-          }
-          s.write(JSON.stringify(res) + "\n");
-          s.end();
+          const line = s.data.buf.slice(0, nl);
+          s.data.buf = "";
+          void handle(line)
+            .catch((err): CtlResponse => {
+              o.log(`einweave delivery: control request failed: ${err instanceof Error ? err.message : String(err)}`);
+              return { ok: false, error: "internal" };
+            })
+            .then((res) => {
+              // The `session` op answers after an await: the hook may have given up and closed by now.
+              try {
+                s.write(JSON.stringify(res) + "\n");
+                s.end();
+              } catch {}
+            });
         },
       },
     });

@@ -35,6 +35,9 @@ function startStub() {
   const authKeys: string[] = [];
   const authLabels: Array<string | undefined> = [];
   const authScopes: unknown[] = [];
+  const authReplaces: unknown[] = [];
+  /** Held threads an auth WITHOUT `replaces` reports (a session that already holds work). */
+  let plainHolds: string[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -48,6 +51,11 @@ function startStub() {
       if (req.method === "PUT" && url.pathname === "/api/sessions/me/scope") return Response.json({ scope: await req.json() });
       if (url.pathname === "/api/channels") return Response.json({ channels: [{ id: CHANNEL_ID, name: "general" }] });
       if (url.pathname === "/api/deliveries") return Response.json({ entries: [] });
+      // RFC-028 §11: `handover to: next` reads what this session holds, with titles.
+      if (url.pathname === "/api/agents/bellman/sessions") {
+        return Response.json({ sessions: [{ id: "ctx-under-test", label: null, kind: "session", scope: { mode: "all", channelIds: [] }, state: "live", online: true, holds: [THREAD] }] });
+      }
+      if (url.pathname === `/api/threads/${THREAD}/messages`) return Response.json({ thread: { id: THREAD, title: "Fix the build" }, messages: [] });
       return new Response("no", { status: 404 });
     },
     websocket: {
@@ -61,7 +69,19 @@ function startStub() {
           authKeys.push(String(frame.sessionInfo?.sessionKey ?? ""));
           authLabels.push(frame.sessionInfo?.sessionLabel);
           authScopes.push(frame.scope);
-          ws.send(JSON.stringify({ v: 2, type: "authenticated", payload: { agentId: "bellman", agentName: "Bellman", contextId: "ctx-under-test" } }));
+          authReplaces.push(frame.replaces);
+          // RFC-028 §11, as the server answers it: carried threads are held now, every other one released.
+          const r = frame.replaces;
+          const carried: string[] = r ? (r.carry ?? []).filter((t: string) => t === THREAD) : [];
+          const replaced = r
+            ? {
+                holds: carried,
+                carried,
+                released: carried.includes(THREAD) ? [] : [{ threadId: THREAD, title: "Fix the build", channelId: CHANNEL_ID, channelName: "general" }],
+                notCarried: (r.carry ?? []).filter((t: string) => t !== THREAD),
+              }
+            : plainHolds.length > 0 ? { holds: plainHolds } : {};
+          ws.send(JSON.stringify({ v: 2, type: "authenticated", payload: { agentId: "bellman", agentName: "Bellman", contextId: "ctx-under-test", ...replaced } }));
         }
       },
       close(ws) { sockets.delete(ws); },
@@ -79,6 +99,9 @@ function startStub() {
     authLabels: () => [...authLabels],
     /** The `scope` each auth frame carried (undefined = none), in order. */
     authScopes: () => [...authScopes],
+    /** The `replaces` each auth frame carried (undefined = none), in order. */
+    authReplaces: () => [...authReplaces],
+    holdOnAuth: (ids: string[]) => (plainHolds = ids),
     liveSockets: () => sockets.size,
     /** Push a message entry to every connected socket, as the server's `message` frame. */
     pushMessage(id: string, content = "hello") {
@@ -186,6 +209,10 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
 
   /** The real SessionStart hook, as Claude Code runs it after `/clear` (source "clear"). */
   async function runSessionStart(sessionId: string, source = "clear") {
+    return (await runSessionStartFull(sessionId, source)).err;
+  }
+  /** …and what it printed to stdout (the hook JSON that hands the conversation a note). */
+  async function runSessionStartFull(sessionId: string, source = "clear") {
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       EINWEAVE_STATE_DIR: dir,
@@ -197,10 +224,106 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     const proc = Bun.spawn(["bun", SESSION_MAP_HOOK, "start"], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env });
     proc.stdin.write(JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, source }));
     proc.stdin.end();
-    const err = await new Response(proc.stderr).text();
+    const [err, out] = await Promise.all([new Response(proc.stderr).text(), new Response(proc.stdout).text()]);
     await proc.exited;
-    return err;
+    return { err, out };
   }
+  /** /clear to `sessionId`, retried until the running server answered the hook. */
+  async function clearTo(sessionId: string, source = "clear") {
+    let r = { err: "", out: "" };
+    const end = Date.now() + 10_000;
+    while (Date.now() < end && !/re-keyed/.test(r.err)) {
+      r = await runSessionStartFull(sessionId, source);
+      if (!/re-keyed/.test(r.err)) await Bun.sleep(100);
+    }
+    expect(r.err).toMatch(new RegExp(`server re-keyed to ${sessionId}`));
+    return r;
+  }
+  const contextOf = (out: string): string | null => {
+    const line = out.split("\n").find((l) => l.startsWith("{"));
+    return line ? JSON.parse(line).hookSpecificOutput?.additionalContext ?? null : null;
+  };
+  async function call(p: ReturnType<typeof Bun.spawn>, name: string, args: Record<string, unknown>): Promise<string> {
+    const id = nextId++;
+    send(p, { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    await waitFor(() => lines(p).some((m) => m.id === id), 8000, name);
+    return lines(p).find((m) => m.id === id).result.content[0].text;
+  }
+
+  test("RFC-028 §11: /clear declares `replaces` for the old conversation, and the hook hands the new one the note (released)", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    expect(stub.authReplaces()[0]).toBeUndefined();
+    const r = await clearTo("sess-0302");
+    const i = stub.authKeys().indexOf("sess-0302");
+    expect(stub.authReplaces()[i]).toEqual({ sessionKey: "sess-0301", reason: "clear" });
+    const note = contextOf(r.out);
+    expect(note).toContain("fresh conversation after /clear");
+    expect(note).toContain(`#general "Fix the build" (${THREAD})`);
+    // Declared once: the file is gone, so a reconnect or a restart never declares it again.
+    expect(existsSync(join(dir, "replaces", "sess-0302.json"))).toBe(false);
+  }, 40_000);
+
+  test("RFC-028 §11: handover to next, then /clear: the thread is carried and the note says this session holds it", async () => {
+    const p = await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    expect(await call(p, "handover", { ref: THREAD, to: "next" })).toContain("Handed Fix the build to the next conversation");
+    const r = await clearTo("sess-0302");
+    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toEqual({ sessionKey: "sess-0301", reason: "clear", carry: [THREAD] });
+    const note = contextOf(r.out)!;
+    expect(note).toContain(`This session holds`);
+    expect(note).toContain(`"Fix the build" (${THREAD})`);
+    expect(note).not.toContain("Released");
+    // Used once.
+    expect(existsSync(join(dir, "carry", "sess-0301.json"))).toBe(false);
+  }, 40_000);
+
+  test("RFC-028 §11: a re-key that is not a /clear (resume) declares nothing and hands no note", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    const r = await clearTo("sess-0302", "resume");
+    await waitFor(() => stub.authKeys().includes("sess-0302"), 10_000, "auth under the new key");
+    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toBeUndefined();
+    expect(contextOf(r.out)).toBeNull();
+  }, 40_000);
+
+  test("RFC-028 §11: cleared TWICE while disconnected: the connect declares the conversation that held the threads", async () => {
+    const p = await boot(false);
+    await Bun.sleep(500);
+    await clearTo("sess-0302");
+    await clearTo("sess-0303");
+    await call(p, "connect", {});
+    await waitFor(() => stub.authKeys().includes("sess-0303"), 10_000, "auth under the newest key");
+    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0303")]).toEqual({ sessionKey: "sess-0301", reason: "clear" });
+  }, 40_000);
+
+  test("RFC-028 §11 step 6: after a compaction the hook restates what this session holds", async () => {
+    stub.holdOnAuth([THREAD]);
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    let r = { err: "", out: "" };
+    const end = Date.now() + 10_000;
+    while (Date.now() < end && !/server already on/.test(r.err)) r = await runSessionStartFull("sess-0301", "compact");
+    const note = contextOf(r.out)!;
+    expect(note).toContain("this session holds these threads");
+    expect(note).toContain(`"Fix the build" (${THREAD})`);
+  }, 30_000);
+
+  test("RFC-028 §11: a window cleared while disconnected declares it when it connects, and the note comes as a notice", async () => {
+    const p = await boot(false);
+    await Bun.sleep(500);
+    const r = await clearTo("sess-0302");
+    expect(contextOf(r.out)).toBeNull(); // nobody to ask yet
+    expect(stub.authCount()).toBe(0);
+    await call(p, "connect", {});
+    await waitFor(() => stub.authKeys().includes("sess-0302"), 10_000, "auth under the new key");
+    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toEqual({ sessionKey: "sess-0301", reason: "clear" });
+    await waitFor(
+      () => lines(p).some((m) => m.method === "notifications/claude/channel" && String(m.params?.content).includes("fresh conversation after /clear")),
+      5000,
+      "the note as a channel notice"
+    );
+  }, 40_000);
 
   test("RFC-028 B4: /clear re-keys the RUNNING server — the new conversation authenticates as its own session", async () => {
     await boot(true);

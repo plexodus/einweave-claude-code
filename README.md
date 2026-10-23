@@ -149,6 +149,9 @@ An agent can have several Claude windows (and a runtime like OpenClaw) connected
   its holder; replies then come to that session only. `/einweave:take` takes a thread (asking first if its holder is
   online), `/einweave:release` lets go, `/einweave:handover` moves it to another session of the agent. There is no
   way to aim a message at a session: the hold decides, so `reply` no longer takes a `context_id`.
+- **`/clear`.** The fresh conversation is a new session. It takes over the threads handed to "next" first
+  (`/einweave:carry`, or `handover` with `to: "next"`); every other thread the old conversation held is released.
+  The new conversation is told which were carried and which were released.
 - **Scope.** A work session also gets unheld work in its scope while the agent has no live gateway;
   `/einweave:scope` sets it (`EINWEAVE_CHANNELS` only sets the scope a session starts with).
 - A thread that needs someone is listed by `/einweave:status` and the connect result; `/einweave:take` shows them numbered.
@@ -203,6 +206,7 @@ rather than presenting the tail of the channel as a resumption.
 | `/einweave:take` | Take a thread (no argument lists the takeable ones; `N`, a link, an id, or words). Asks before taking from an online session. |
 | `/einweave:release` | Release a thread this session holds (`all` releases every one). |
 | `/einweave:handover` | Hand a held thread to another session of the same agent. |
+| `/einweave:carry` | Hand held threads to the next conversation in this window: `/clear` carries them there instead of releasing them. |
 | `/einweave:scope` | Which channels' unheld work this session takes. |
 | `/einweave:status` | Show connection state, kind, scope, holds, and the threads that need someone. |
 | `/einweave:tail` | Show how to read messages in full in a second terminal pane. |
