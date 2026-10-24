@@ -457,7 +457,7 @@ async function probeWire(base: string, ek: string): Promise<Record<string, unkno
   const wsProof = (token: string, htu = wsHtu(base)) => dpopProof(k1.signer, clock, { htm: "GET", htu, accessToken: token });
   const errors = (s: Sock) => s.frames.filter((f) => f.type === "error").map((f) => f.data?.message ?? f.message ?? null);
   const s1 = await openSocket(base);
-  s1.send({ type: "auth", v: 2, kind: "session", token: at, dpop: await wsProof(at) });
+  s1.send({ type: "auth", v: 2, kind: "session", lastSeq: 0, token: at, dpop: await wsProof(at) });
   await s1.wait(() => s1.frames.some((f) => f.type === "authenticated") || s1.closed() !== null);
   out.ws_auth = { authenticated: s1.frames.some((f) => f.type === "authenticated"), closed: s1.closed() };
   const m3 = await mint({ state: S2 });
@@ -466,11 +466,13 @@ async function probeWire(base: string, ek: string): Promise<Record<string, unkno
   await s1.wait(() => s1.frames.some((f) => f.type === "reauthenticated") || s1.closed() !== null);
   out.ws_reauth = { reauthenticated: s1.frames.some((f) => f.type === "reauthenticated"), closed: s1.closed() };
   for (const [name, frame] of [
-    ["ws_auth_no_proof", { type: "auth", v: 2, kind: "session", token: m3.json.access_token }],
-    ["ws_auth_wrong_htu", { type: "auth", v: 2, kind: "session", token: m3.json.access_token, dpop: await wsProof(m3.json.access_token, `${base}/api/ws`) }],
-    ["ws_auth_http_proof", { type: "auth", v: 2, kind: "session", token: m3.json.access_token, dpop: await resProof("GET", "/api/channels", m3.json.access_token) }],
+    ["ws_auth_no_proof", { type: "auth", v: 2, kind: "session", lastSeq: 0, token: m3.json.access_token }],
+    ["ws_auth_wrong_htu", { type: "auth", v: 2, kind: "session", lastSeq: 0, token: m3.json.access_token, dpop: await wsProof(m3.json.access_token, `${base}/api/ws`) }],
+    ["ws_auth_http_proof", { type: "auth", v: 2, kind: "session", lastSeq: 0, token: m3.json.access_token, dpop: await resProof("GET", "/api/channels", m3.json.access_token) }],
     // RFC-027 §5: a v1 frame (no `v`) is refused as a client too old — the cutover's one gate.
     ["ws_auth_v1", { type: "auth", token: m3.json.access_token, dpop: await wsProof(m3.json.access_token) }],
+    // bridge #305: AuthFrame requires lastSeq — refused as malformed, before the credential is judged.
+    ["ws_auth_no_last_seq", { type: "auth", v: 2, kind: "session", token: m3.json.access_token, dpop: await wsProof(m3.json.access_token) }],
   ] as const) {
     const s = await openSocket(base);
     s.send(frame);
@@ -481,7 +483,7 @@ async function probeWire(base: string, ek: string): Promise<Record<string, unkno
   s1.close();
   await s1.wait(() => s1.closed() !== null);
   const s2 = await openSocket(base);
-  s2.send({ type: "auth", v: 2, kind: "session", token: m3.json.access_token, dpop: await wsProof(m3.json.access_token) });
+  s2.send({ type: "auth", v: 2, kind: "session", lastSeq: 0, token: m3.json.access_token, dpop: await wsProof(m3.json.access_token) });
   await s2.wait(() => s2.frames.some((f) => f.type === "authenticated") || s2.closed() !== null);
   s2.send({ type: "reauth", token: m3.json.access_token, dpop: await wsProof(m3.json.access_token, `${base}/api/ws`) });
   await s2.wait(() => s2.closed() !== null);
@@ -518,7 +520,7 @@ async function probeWire(base: string, ek: string): Promise<Record<string, unkno
 
   // ── a copy: a stale state LOCKS (E6d/E8) ──
   const s3 = await openSocket(base);
-  s3.send({ type: "auth", v: 2, kind: "session", token: after.json.access_token, dpop: await wsProof(after.json.access_token) });
+  s3.send({ type: "auth", v: 2, kind: "session", lastSeq: 0, token: after.json.access_token, dpop: await wsProof(after.json.access_token) });
   await s3.wait(() => s3.frames.some((f) => f.type === "authenticated") || s3.closed() !== null);
   out.mint_stale_state_locks = oauth(await mint({ state: S1 }));
   await s3.wait(() => s3.closed() !== null);

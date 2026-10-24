@@ -1,23 +1,10 @@
-/**
- * The WS wire shapes, kept in one place so `Session` (S1.3) and every consumer
- * read them from a single definition rather than re-guessing the frame layout at
- * each call site — the exact failure mode RFC-018 §1 calls out in the dead
- * `openclaw-bridge-plugin` ("drifted in six places").
- *
- * Transcribed from the server's real shapes (protocol v2, RFC-027): `packages/api/src/ws.ts`
- * (`SessionInfo`, the `auth`/`reauth`/`ack`/`pong` inputs, `authenticated`, `message`,
- * `thread_event`, `action_request`, `catchup`, `invalid_session`), `ws-frame.ts` (the envelope)
- * and `routing.ts` (`DeliveryReason`, `ADDRESSED_REASONS`/`BROADCAST_REASONS`, `isAddressed`).
- * `fixtures/frames/*.json` are captured from a live server, so a change to either side
- * without the other shows up there.
- */
 /** The server picked THIS agent specifically — never suppressible by a client. */
 export declare const ADDRESSED_REASONS: readonly ["target", "assignee", "mention", "thread"];
 /** A standing subscription matched — a client MAY narrow this tier. */
 export declare const BROADCAST_REASONS: readonly ["channel", "member", "type", "tag"];
 export type DeliveryReason = (typeof ADDRESSED_REASONS)[number] | (typeof BROADCAST_REASONS)[number];
-/** True if the server picked this recipient specifically (mirrors routing.ts). */
-export declare function isAddressed(reasons: Iterable<DeliveryReason> | undefined): boolean;
+/** True if the server picked this recipient specifically. */
+export declare const isAddressed: (reasons: Iterable<string> | undefined) => boolean;
 /** The protocol this SDK speaks. A server that wants another closes 4008 "client too old". */
 export declare const PROTOCOL_VERSION: 2;
 /**
@@ -33,26 +20,8 @@ export interface Envelope<T = unknown> {
     ts: number;
     payload: T;
 }
-/** Never sequenced, never buffered, never replayed (packages/api/src/ws-frame.ts). */
+/** Never sequenced, never buffered, never replayed. */
 export declare const CONTROL_FRAME_TYPES: readonly ["authenticated", "reauthenticated", "error", "auth_required", "ping", "pong", "invalid_session", "drain"];
-/**
- * What a client tells the server about itself on the auth frame (`ws.ts`'s
- * `SessionInfo`, the fields a Bridge caller controls — `clientName` etc. name the
- * TERMINAL, not the software; `softwareId`/`clientVersion` name the BUILD, RFC-017
- * D5).
- */
-export interface SessionInfo {
-    clientName?: string;
-    hostName?: string;
-    repoName?: string;
-    worktreeName?: string;
-    branchName?: string;
-    headShortSha?: string;
-    sessionLabel?: string;
-    sessionKey?: string;
-    clientVersion?: string;
-    softwareId?: string;
-}
 /**
  * What a connection declares it is. REQUIRED on the auth frame — the server never infers
  * one, and a frame without it is refused 4008 "client too old". `gateway`: the agent's one
@@ -61,238 +30,442 @@ export interface SessionInfo {
  */
 export declare const CONNECTION_KINDS: readonly ["gateway", "session", "observer"];
 export type ConnectionKind = (typeof CONNECTION_KINDS)[number];
-/** Which channels' UNHELD work a work session takes (D6). `channelIds` only with `mode: "channels"`. */
-export interface Scope {
-    mode: "all" | "channels" | "none";
-    channelIds?: string[];
-}
-/**
- * RFC-028 §11: a NEW session's declaration that it replaces a conversation of the same window (a
- * `/clear`). The server hands the replaced session's threads over: `carry` ones to this session, the
- * rest released. First connect only.
- */
-export interface ReplacesDeclaration {
-    /** The session key of the conversation being replaced. */
-    sessionKey: string;
-    reason: "clear";
-    /** Thread ids to hand to this session (at most 64); every other hold of the replaced session is released. */
-    carry?: string[];
-}
-/** A thread a replaced conversation held and the server released (`AuthenticatedPayload.released`). */
-export interface ReleasedThread {
-    threadId: string;
-    title: string | null;
-    channelId: string;
-    channelName: string;
-}
-export interface AuthFrame {
-    type: "auth";
-    v: typeof PROTOCOL_VERSION;
-    token: string;
-    /** RFC-028 D1: what this connection is. Required. */
-    kind: ConnectionKind;
-    /** RFC-028 D6: the starting scope of a work session; omitted = keep the grant's stored scope. */
-    scope?: Scope;
-    /**
-     * RFC-028 D2: move the agent's gateway lease from a LIVE gateway to this connection (the old one is
-     * closed "gateway taken over"). Its own intent — never implied by `supersede`, which is this grant
-     * from another window and never moves a lease.
-     */
-    takeover?: "gateway";
-    /** RFC-028 §11: this session replaces a conversation (a `/clear`). First connect only. */
-    replaces?: ReplacesDeclaration;
-    sessionInfo?: SessionInfo;
-    /** The DPoP proof for this frame's implicit `GET /ws` (E11). */
-    dpop?: unknown;
-    /** RFC-017 D3: take over this session grant from a socket that already holds it. */
-    supersede?: boolean;
-    /**
-     * RFC-029 D13: a person is at this connection (their window), so a work item it holds is never
-     * flagged quiet or stuck. Re-declared on EVERY auth; absent (or anything but `true`) = false.
-     */
-    interactive?: boolean;
-    /** The last seq this client has durably stored for THIS grant; 0 = a fresh start (RFC-027 D5). */
-    lastSeq: number;
-}
-export interface ReauthFrame {
-    type: "reauth";
-    token: string;
-    dpop?: unknown;
-}
 /**
  * RFC-027 D4. `model` ONLY on evidence the model received the entry (a host receipt,
  * or a read tool that returned it) — never on transport. `dismissed`: the client decided
  * not to surface it; it never lights ✓✓.
  */
-export type AckHow = "model" | "dismissed";
-export interface AckFrame {
-    type: "ack";
-    ids: string[];
-    how: AckHow;
-}
-/** The server's cap on ids in one ack frame (ws.ts `MAX_ACK_IDS`); more are sent in chunks. */
+export type AckHow = AckFrame["how"];
+/** The server's cap on ids in one ack frame; more are sent in chunks. */
 export declare const MAX_ACK_IDS = 500;
-/** Answers a server `ping`. `lastSeq` (what the client has STORED) trims the server's buffer; it never marks anything seen. */
-export interface PongFrame {
-    type: "pong";
-    lastSeq: number;
-}
-export interface AuthenticatedPayload {
-    agentId: string;
-    agentName: string;
-    /** This agent's current @handle in its own tenant, or null if it holds none. */
-    handle: string | null;
-    /** This session's GRANT id — the address other sessions target, and the id on its sends. */
-    contextId: string;
-    protocol: number;
-    heartbeatMs: number;
-    replayBudget: {
-        broadcasts: number;
-        chars: number;
+/** The three accountable kinds (L1) — what a session's model owes (D3). */
+export declare const ENTRY_KINDS: readonly ["message", "action_request", "thread_event"];
+export type EntryKind = (typeof ENTRY_KINDS)[number];
+/**
+ * The numeric WS close codes the server sends, named so nothing above this layer
+ * hard-codes a magic number. `policy` (4008) carries every REASON
+ * `./reconnect-policy.ts`'s `classifyClose` distinguishes — the code alone never
+ * tells them apart; the reason (or its PREFIX) does.
+ */
+export declare const WS_CLOSE_CODES: {
+    readonly authTimeout: 4006;
+    readonly invalidToken: 4001;
+    readonly deregisteredOrArchived: 4003;
+    readonly tooManySessions: 4007;
+    readonly policy: 4008;
+    readonly tokenExpired: 4009;
+    readonly grantCheckFailed: 1011;
+    readonly membershipRevoked: 4004;
+    readonly tenantSwitched: 4005;
+    readonly goingAway: 1001;
+    readonly policyViolation: 1008;
+};
+/** Every close reason the server sends — the whole text, or the PREFIX before `: <detail>`. */
+export declare const WS_CLOSE_REASONS: {
+    readonly tooManySessions: "Too many sessions";
+    readonly invalidToken: "Invalid token";
+    readonly authTimeout: "Authentication timeout";
+    readonly tokenExpired: "token expired";
+    readonly grantCheckFailed: "grant check failed";
+    readonly sessionEvicted: "session evicted";
+    readonly deregistered: "deregistered";
+    readonly workspaceArchived: "workspace archived";
+    readonly heartbeatMissed: "heartbeat missed";
+    readonly sessionInUse: "session already connected";
+    readonly gatewayTakenOver: "gateway taken over";
+    readonly gatewayInUse: "gateway in use";
+    readonly kindNotAllowed: "kind not allowed";
+    readonly invalidScope: "invalid scope";
+    readonly invalidReplaces: "invalid replaces";
+    readonly invalidAuth: "invalid auth";
+    readonly conversationReplaced: "conversation replaced";
+    readonly sessionStopped: "session stopped";
+    readonly sessionRevoked: "session revoked";
+    readonly installationRevoked: "installation revoked";
+    readonly installationLocked: "installation locked";
+    readonly sessionSuperseded: "session superseded";
+    readonly clientTooOld: "client too old";
+    readonly clientBlocked: "client version withdrawn";
+    readonly membershipRevoked: "membership revoked";
+    readonly tenantSwitched: "tenant switched";
+    readonly serverShuttingDown: "server shutting down";
+    readonly slowConsumer: "slow consumer";
+};
+declare const WIRE: {
+    sessionInfo: {
+        clientVersion?: string | undefined;
+        clientName?: string | undefined;
+        hostName?: string | undefined;
+        repoName?: string | undefined;
+        worktreeName?: string | undefined;
+        branchName?: string | undefined;
+        headShortSha?: string | undefined;
+        sessionLabel?: string | undefined;
+        sessionKey?: string | undefined;
+        softwareId?: string | undefined;
     };
-    /** RFC-028: what this connection declared (stored on its grant). */
-    kind?: ConnectionKind;
-    /** RFC-028 D6: this session's scope (`channelIds` empty unless `mode: "channels"`). */
-    scope?: {
+    scope: {
+        channelIds?: string[] | undefined;
         mode: "all" | "channels" | "none";
-        channelIds: string[];
     };
-    /** RFC-028 D3: the ids of the threads this session holds. */
-    holds?: string[];
-    /** RFC-028 §11 (present when the auth declared `replaces`): the threads handed to this session… */
-    carried?: string[];
-    /** …the threads released (this session does not hold them; replies go to the agent's sessions in scope)… */
-    released?: ReleasedThread[];
-    /** …and the `carry` ids that were not carried (not held by the replaced session, or nothing was replaced). */
-    notCarried?: string[];
-    /** RFC-017 D7: present only when a newer build is available and this session is the holder. */
-    client?: unknown;
+    replaces: {
+        carry?: string[] | undefined;
+        reason: "clear";
+        sessionKey: string;
+    };
+    released: {
+        title: string | null;
+        channelId: string;
+        threadId: string;
+        channelName: string;
+    };
+    auth: {
+        interactive?: unknown;
+        scope?: {
+            channelIds?: string[] | undefined;
+            mode: "all" | "channels" | "none";
+        } | undefined;
+        takeover?: "gateway" | undefined;
+        replaces?: {
+            carry?: string[] | undefined;
+            reason: "clear";
+            sessionKey: string;
+        } | undefined;
+        sessionInfo?: {
+            clientVersion?: string | undefined;
+            clientName?: string | undefined;
+            hostName?: string | undefined;
+            repoName?: string | undefined;
+            worktreeName?: string | undefined;
+            branchName?: string | undefined;
+            headShortSha?: string | undefined;
+            sessionLabel?: string | undefined;
+            sessionKey?: string | undefined;
+            softwareId?: string | undefined;
+        } | undefined;
+        dpop?: unknown;
+        supersede?: boolean | undefined;
+        type: "auth";
+        kind: "gateway" | "session" | "observer";
+        v: 2;
+        token: string;
+        lastSeq: number;
+    };
+    reauth: {
+        dpop?: unknown;
+        type: "reauth";
+        token: string;
+    };
+    ack: {
+        type: "ack";
+        ids: string[];
+        how: "model" | "dismissed";
+    };
+    pong: {
+        type: "pong";
+        lastSeq: number;
+    };
+    authenticated: {
+        client?: {
+            pending_minimum?: string | undefined;
+            minimum_from?: string | undefined;
+            minimum: string;
+            recommended: string;
+            advice: string;
+        } | undefined;
+        carried?: string[] | undefined;
+        released?: {
+            title: string | null;
+            channelId: string;
+            threadId: string;
+            channelName: string;
+        }[] | undefined;
+        notCarried?: string[] | undefined;
+        handle: string | null;
+        kind: "gateway" | "session" | "observer";
+        agentId: string;
+        agentName: string;
+        contextId: string;
+        scope: {
+            mode: "all" | "channels" | "none";
+            channelIds: string[];
+        };
+        holds: string[];
+        protocol: 2;
+        heartbeatMs: number;
+        replayBudget: {
+            broadcasts: number;
+            chars: number;
+        };
+    };
+    hold_update: {
+        agentId: string;
+        threadId: string;
+        holder: {
+            online: boolean;
+            label: string | null;
+            parked: boolean;
+            id: string;
+        } | null;
+        via: "start" | "reply" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry";
+        by: {
+            principalId: string;
+            sessionId: string | null;
+        };
+    };
+    error: {
+        message: string;
+    };
+    wireMessage: {
+        type?: string | undefined;
+        agentId?: string | null | undefined;
+        userId?: string | null | undefined;
+        agentName?: string | null | undefined;
+        senderType?: "agent" | "human" | undefined;
+        senderName?: string | undefined;
+        senderHandle?: string | null | undefined;
+        metadata?: string | null | undefined;
+        isRoot?: boolean | undefined;
+        seq?: number | undefined;
+        senderProvenance?: string | undefined;
+        senderContextLabel?: string | null | undefined;
+        mentions?: {
+            kind: "agent" | "human" | null;
+            principalId: string;
+            handleAtSend: string | null;
+            currentHandle: string | null;
+            displayName: string | null;
+        }[] | undefined;
+        id: string;
+        channelId: string;
+        content: string;
+        threadId: string | null;
+        createdAt: string;
+        senderContextId: string | null;
+    };
+    message: {
+        redelivery?: boolean | undefined;
+        message: {
+            type?: string | undefined;
+            agentId?: string | null | undefined;
+            userId?: string | null | undefined;
+            agentName?: string | null | undefined;
+            senderType?: "agent" | "human" | undefined;
+            senderName?: string | undefined;
+            senderHandle?: string | null | undefined;
+            metadata?: string | null | undefined;
+            isRoot?: boolean | undefined;
+            seq?: number | undefined;
+            senderProvenance?: string | undefined;
+            senderContextLabel?: string | null | undefined;
+            mentions?: {
+                kind: "agent" | "human" | null;
+                principalId: string;
+                handleAtSend: string | null;
+                currentHandle: string | null;
+                displayName: string | null;
+            }[] | undefined;
+            id: string;
+            channelId: string;
+            content: string;
+            threadId: string | null;
+            createdAt: string;
+            senderContextId: string | null;
+        };
+        deliveryReasons: ("target" | "assignee" | "mention" | "thread" | "channel" | "member" | "type" | "tag")[];
+    };
+    thread_event: {
+        work: {
+            text: string;
+        } | null;
+        id: string;
+        status: string | null;
+        channelId: string;
+        threadId: string;
+        redelivery?: boolean | undefined;
+        action: string;
+        detail: {
+            [x: string]: unknown;
+        } | null;
+        actorId: string | null;
+        occurredAt: string;
+        names: {
+            [x: string]: string;
+        };
+    };
+    actor: {
+        actorType: "agent" | "human" | "system" | "external";
+    };
+    action_request: {
+        redelivery?: boolean | undefined;
+        params: unknown;
+        id: string;
+        action: string;
+    };
+    catchup: {
+        channels: {
+            channelId: string;
+            count: number;
+        }[];
+    };
+    invalid_session: {
+        resumable: false;
+        lost: {
+            frames: number;
+            from: number | null;
+        };
+    };
+    drain: {
+        in_ms?: number | undefined;
+    };
+    receipt: {
+        firstSeen?: boolean | undefined;
+        at: string;
+        state: "sent" | "seen";
+        agentId: string;
+        contextId: string;
+        messageId: string;
+        contextLabel: string | null;
+    };
+};
+type _SessionInfo = typeof WIRE.sessionInfo;
+/**
+ * What a client tells the server about itself on the auth frame — `clientName` etc. name the
+ * TERMINAL, not the software; `softwareId`/`clientVersion` name the BUILD (RFC-017 D5).
+ */
+export interface SessionInfo extends _SessionInfo {
 }
+type _Scope = typeof WIRE.scope;
+/** Which channels' UNHELD work a work session takes (RFC-028 D6). `channelIds` only with `mode: "channels"`. */
+export interface Scope extends _Scope {
+}
+type _Replaces = typeof WIRE.replaces;
+/**
+ * RFC-028 §11: a NEW session's declaration that it replaces a conversation of the same window (a
+ * `/clear`). The server hands the replaced session's threads over: `carry` ones (at most 64) to this
+ * session, the rest released. First connect only.
+ */
+export interface ReplacesDeclaration extends _Replaces {
+}
+type _ReleasedThread = typeof WIRE.released;
+/** A thread a replaced conversation held and the server released (`AuthenticatedPayload.released`). */
+export interface ReleasedThread extends _ReleasedThread {
+}
+type _AuthFrame = typeof WIRE.auth;
+/**
+ * The first frame on a socket. `kind` is required (RFC-028 D1); `scope` omitted = keep the grant's
+ * stored scope; `takeover: "gateway"` moves the agent's gateway lease from a LIVE gateway (never
+ * implied by `supersede`, which is this grant from another window); `interactive: true` = a person is
+ * at this connection (RFC-029 D13, re-declared on every auth); `lastSeq` = the last seq this client
+ * durably stored for THIS grant, 0 = a fresh start (RFC-027 D5).
+ */
+export interface AuthFrame extends _AuthFrame {
+}
+type _ReauthFrame = typeof WIRE.reauth;
+export interface ReauthFrame extends _ReauthFrame {
+}
+type _AckFrame = typeof WIRE.ack;
+export interface AckFrame extends _AckFrame {
+}
+type _PongFrame = typeof WIRE.pong;
+/** Answers a server `ping`. `lastSeq` (what the client has STORED) trims the server's buffer; it never marks anything seen. */
+export interface PongFrame extends _PongFrame {
+}
+type _AuthenticatedPayload = typeof WIRE.authenticated;
+/**
+ * The server accepted the auth. `contextId` is this session's GRANT id (the address other sessions
+ * target, the id on its sends); `kind`/`scope`/`holds` what it holds now (RFC-028); `carried` /
+ * `released` / `notCarried` only when the auth declared `replaces`; `client` only when a newer build
+ * is available and this session is the holder (RFC-017 D7).
+ */
+export interface AuthenticatedPayload extends _AuthenticatedPayload {
+}
+type _HoldUpdatePayload = typeof WIRE.hold_update;
 /**
  * RFC-028 D8: a thread's hold changed hands. `holder` is the new holder, `null` when released.
  * Sent to the session it left and the one it reached (and to the agent's managers' web sockets);
  * a non-turn status — it asks the model for nothing.
  */
-export interface HoldUpdatePayload {
-    threadId: string;
-    agentId: string;
-    holder: {
-        id: string;
-        label: string | null;
-        online: boolean;
-        parked: boolean;
-    } | null;
-    via: "start" | "reply" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry";
-    by: {
-        principalId: string;
-        sessionId: string | null;
-    };
+export interface HoldUpdatePayload extends _HoldUpdatePayload {
 }
-export interface ErrorPayload {
-    message: string;
+type _ErrorPayload = typeof WIRE.error;
+export interface ErrorPayload extends _ErrorPayload {
 }
+type _WireMessage = typeof WIRE.wireMessage;
 /**
- * One message, identical for every recipient (`broadcastMessage`'s `messageData`).
- * The reason it reached THIS session travels beside it, never inside it.
+ * One message, identical for every recipient. The reason it reached THIS session travels beside
+ * it, never inside it. `senderContextId`: the sending session's grant id, or null for a person / a
+ * session-less send.
  */
-export interface WireMessage {
-    id: string;
-    channelId: string;
-    agentId?: string | null;
-    userId?: string | null;
-    agentName?: string | null;
-    senderType?: "agent" | "human";
-    senderName?: string;
-    /** The sender's @handle in the workspace. */
-    senderHandle?: string | null;
-    content: string;
-    type?: string;
-    metadata?: string | null;
-    threadId: string | null;
-    isRoot?: boolean;
-    seq?: number;
-    createdAt: string;
-    /** The sending session's grant id, or null for a person / a session-less send. */
-    senderContextId: string | null;
-    senderProvenance?: string;
-    senderContextLabel?: string | null;
+export interface WireMessage extends _WireMessage {
 }
+type _MessagePayload = typeof WIRE.message;
 /** `redelivery: true` when a frame of this entry was sent before (a resume, or a reconcile). */
-export interface MessagePayload {
-    message: WireMessage;
-    deliveryReasons: DeliveryReason[];
-    redelivery?: boolean;
+export interface MessagePayload extends _MessagePayload {
 }
+type _ThreadEventPayload = typeof WIRE.thread_event;
 /**
  * RFC-029 §6: a work item changed, as it happened (one `thread_events` row) — sent to the agents
  * it concerns (assignee, previous assignee, requester, followers, a `needs_input` recipient),
- * never to its actor. Server source: `packages/api/src/work/header.ts` `threadEventPayload`.
+ * never to its actor.
  *
- * `status` is the item's status NOW (at send time — a resume shows today's), `work.text` the
- * item's header rendered by the server (G11: the SDK stays zero-dep and renders nothing; a
- * plugin prints this text). Both null when the thread is no longer a work item.
+ * `action` is an open set (`assigned` · `status` · `progress` · `needs_input` · `stuck` · …);
+ * `detail` the event's own, per action. `status` is the item's status NOW (at send time — a resume
+ * shows today's), `work.text` its header rendered by the server (G11: the SDK renders nothing).
+ * Both null when the thread is no longer a work item. `names`: principal id → how to name it; print
+ * these, never the raw id (an id absent here is printed as is).
  */
-export interface ThreadEventPayload {
-    id: string;
-    threadId: string;
-    channelId: string;
-    /**
-     * `assigned` · `unassigned` · `status` · `plan` · `progress` · `needs_input` · `input_answered` ·
-     * `result` · `failed` · `resolve` · `reopen` · `fields` · `stuck` · `parent_resolved` ·
-     * `child_resolved` · … — an open set (`@einweave/threads` `THREAD_EVENT_ACTIONS`).
-     */
-    action: string;
-    /**
-     * The event's own detail, per action. E.g. `stuck`: `{holder: <agent id>, session: <grant id>,
-     * since: <the holder's last heartbeat ISO | null>}`; `assigned`: `{from, to, …}`.
-     */
-    detail: Record<string, unknown> | null;
-    /** Null for the server itself (a sweep, a departure). */
-    actorId: string | null;
-    actorType: "agent" | "human" | "system" | (string & {});
-    occurredAt: string;
-    status: string | null;
-    work: {
-        text: string;
-    } | null;
-    /**
-     * Principal id → how to name it (`@handle` in this workspace, else the name, else
-     * "a removed agent" / "a removed person"): `actorId` and the principals in `detail` of the
-     * events an agent is sent — `assigned` / `unassigned` `from`/`to`, `needs_input.to[]`,
-     * `input_answered.by`, `reopen.assignee`, `stuck.holder`. Print these, never the raw id.
-     * The same for every recipient (reader-independent); an id absent here is printed as is.
-     */
-    names: Record<string, string>;
-    redelivery?: boolean;
+export interface ThreadEventPayload extends _ThreadEventPayload {
+    /** Null `actorId` = the server itself. Open: a value a later server adds is not an error. */
+    actorType: (typeof WIRE.actor)["actorType"] | (string & {});
 }
-export interface ActionRequestPayload {
-    id: string;
-    action: string;
-    params: unknown;
-    redelivery?: boolean;
+type _ActionRequestPayload = typeof WIRE.action_request;
+export interface ActionRequestPayload extends _ActionRequestPayload {
 }
+type _CatchupPayload = typeof WIRE.catchup;
 /** Broadcasts over the resume budget arrive as counts per channel, never bodies (D5). */
-export interface CatchupPayload {
-    channels: {
-        channelId: string;
-        count: number;
-    }[];
+export interface CatchupPayload extends _CatchupPayload {
 }
+type _InvalidSessionPayload = typeof WIRE.invalid_session;
 /** The resume could not be honoured; the socket stays open as a FRESH session (D5). */
-export interface InvalidSessionPayload {
-    resumable: false;
-    lost: {
-        frames: number;
-        from: number | null;
-    };
+export interface InvalidSessionPayload extends _InvalidSessionPayload {
 }
+type _DrainPayload = typeof WIRE.drain;
 /** The server is about to go away: resume on a new socket (D6). */
-export interface DrainPayload {
-    in_ms?: number;
+export interface DrainPayload extends _DrainPayload {
 }
-/** The three accountable kinds (L1) — what a session's model owes (D3). */
-export type EntryKind = "message" | "thread_event" | "action_request";
-/** `GET /api/deliveries` — the same payloads the frames carry, one keyset page of them. */
+type _ReceiptPayload = typeof WIRE.receipt;
+/** A message's receipt — for the channels this agent receives, and always for its own sends. */
+export interface ReceiptPayload extends _ReceiptPayload {
+}
+/** The server frames this SDK acts on, discriminated on `type` (any other type is ignored). */
+export type AgentFrame = (Envelope<AuthenticatedPayload> & {
+    type: "authenticated";
+}) | (Envelope<Record<string, never>> & {
+    type: "ping";
+}) | (Envelope<MessagePayload> & {
+    type: "message";
+}) | (Envelope<ThreadEventPayload> & {
+    type: "thread_event";
+}) | (Envelope<ActionRequestPayload> & {
+    type: "action_request";
+}) | (Envelope<CatchupPayload> & {
+    type: "catchup";
+}) | (Envelope<InvalidSessionPayload> & {
+    type: "invalid_session";
+}) | (Envelope<DrainPayload> & {
+    type: "drain";
+}) | (Envelope<HoldUpdatePayload> & {
+    type: "hold_update";
+}) | (Envelope<ReceiptPayload> & {
+    type: "receipt";
+}) | (Envelope<ErrorPayload> & {
+    type: "error";
+});
+/**
+ * `GET /api/deliveries` — the same payloads the frames carry, one keyset page of them. Hand-typed
+ * until the HTTP shapes move onto the protocol (its entries carry `id`, not the protocol's `entryId`).
+ */
 export interface DeliveriesResponse {
     entries: {
         kind: EntryKind;
@@ -303,19 +476,4 @@ export interface DeliveriesResponse {
     /** Opaque cursor for the next page (`?after=`); null on the last one. Absent from a pre-paging server = null. */
     next?: string | null;
 }
-/**
- * The numeric WS close codes the server sends, named so nothing above this layer
- * hard-codes a magic number. `policy` (4008) carries every REASON
- * `./reconnect-policy.ts`'s `classifyClose` distinguishes (revoked / superseded /
- * too-old / evicted) — the code alone never tells them apart; the reason PREFIX
- * does.
- */
-export declare const WS_CLOSE_CODES: {
-    readonly authTimeout: 4006;
-    readonly invalidToken: 4001;
-    readonly deregisteredOrArchived: 4003;
-    readonly tooManySessions: 4007;
-    readonly policy: 4008;
-    readonly tokenExpired: 4009;
-    readonly grantCheckFailed: 1011;
-};
+export {};
