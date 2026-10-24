@@ -1,6 +1,10 @@
-// src/core/wire.ts
+// ../protocol/src/v2/vocab.ts
+var PROTOCOL_VERSION = 2;
+var MAX_ACK_IDS = 500;
+var CONTROL_FRAME_TYPES = ["authenticated", "reauthenticated", "error", "auth_required", "ping", "pong", "invalid_session", "drain"];
 var ADDRESSED_REASONS = ["target", "assignee", "mention", "thread"];
 var BROADCAST_REASONS = ["channel", "member", "type", "tag"];
+var DELIVERY_REASONS = [...ADDRESSED_REASONS, ...BROADCAST_REASONS];
 var ADDRESSED = new Set(ADDRESSED_REASONS);
 function isAddressed(reasons) {
   if (!reasons)
@@ -10,28 +14,99 @@ function isAddressed(reasons) {
       return true;
   return false;
 }
-var PROTOCOL_VERSION = 2;
-var CONTROL_FRAME_TYPES = [
-  "authenticated",
-  "reauthenticated",
-  "error",
-  "auth_required",
-  "ping",
-  "pong",
-  "invalid_session",
-  "drain"
-];
 var CONNECTION_KINDS = ["gateway", "session", "observer"];
-var MAX_ACK_IDS = 500;
-var WS_CLOSE_CODES = {
+var ENTRY_KINDS = ["message", "action_request", "thread_event"];
+
+// ../protocol/src/v2/close.ts
+var CLOSE_CODES = {
   authTimeout: 4006,
   invalidToken: 4001,
   deregisteredOrArchived: 4003,
   tooManySessions: 4007,
   policy: 4008,
   tokenExpired: 4009,
-  grantCheckFailed: 1011
+  grantCheckFailed: 1011,
+  membershipRevoked: 4004,
+  tenantSwitched: 4005,
+  goingAway: 1001,
+  policyViolation: 1008
 };
+var CLOSE_REASONS = {
+  tooManySessions: "Too many sessions",
+  invalidToken: "Invalid token",
+  authTimeout: "Authentication timeout",
+  tokenExpired: "token expired",
+  grantCheckFailed: "grant check failed",
+  sessionEvicted: "session evicted",
+  deregistered: "deregistered",
+  workspaceArchived: "workspace archived",
+  heartbeatMissed: "heartbeat missed",
+  sessionInUse: "session already connected",
+  gatewayTakenOver: "gateway taken over",
+  gatewayInUse: "gateway in use",
+  kindNotAllowed: "kind not allowed",
+  invalidScope: "invalid scope",
+  invalidReplaces: "invalid replaces",
+  invalidAuth: "invalid auth",
+  conversationReplaced: "conversation replaced",
+  sessionStopped: "session stopped",
+  sessionRevoked: "session revoked",
+  installationRevoked: "installation revoked",
+  installationLocked: "installation locked",
+  sessionSuperseded: "session superseded",
+  clientTooOld: "client too old",
+  clientBlocked: "client version withdrawn",
+  membershipRevoked: "membership revoked",
+  tenantSwitched: "tenant switched",
+  serverShuttingDown: "server shutting down",
+  slowConsumer: "slow consumer"
+};
+var CLOSE_CODE_OF = {
+  tooManySessions: CLOSE_CODES.tooManySessions,
+  invalidToken: CLOSE_CODES.invalidToken,
+  authTimeout: CLOSE_CODES.authTimeout,
+  tokenExpired: CLOSE_CODES.tokenExpired,
+  grantCheckFailed: CLOSE_CODES.grantCheckFailed,
+  sessionEvicted: CLOSE_CODES.policy,
+  deregistered: CLOSE_CODES.deregisteredOrArchived,
+  workspaceArchived: CLOSE_CODES.deregisteredOrArchived,
+  heartbeatMissed: CLOSE_CODES.policy,
+  sessionInUse: CLOSE_CODES.policy,
+  gatewayTakenOver: CLOSE_CODES.policy,
+  gatewayInUse: CLOSE_CODES.policy,
+  kindNotAllowed: CLOSE_CODES.policy,
+  invalidScope: CLOSE_CODES.policy,
+  invalidReplaces: CLOSE_CODES.policy,
+  invalidAuth: CLOSE_CODES.policy,
+  conversationReplaced: CLOSE_CODES.policy,
+  sessionStopped: CLOSE_CODES.policy,
+  sessionRevoked: CLOSE_CODES.policy,
+  installationRevoked: CLOSE_CODES.policy,
+  installationLocked: CLOSE_CODES.policy,
+  sessionSuperseded: CLOSE_CODES.policy,
+  clientTooOld: CLOSE_CODES.policy,
+  clientBlocked: CLOSE_CODES.policy,
+  membershipRevoked: CLOSE_CODES.membershipRevoked,
+  tenantSwitched: CLOSE_CODES.tenantSwitched,
+  serverShuttingDown: CLOSE_CODES.goingAway,
+  slowConsumer: CLOSE_CODES.policyViolation
+};
+
+// src/core/wire.ts
+var ADDRESSED_REASONS2 = ADDRESSED_REASONS;
+var BROADCAST_REASONS2 = BROADCAST_REASONS;
+var isAddressed2 = isAddressed;
+var PROTOCOL_VERSION2 = PROTOCOL_VERSION;
+var CONTROL_FRAME_TYPES2 = CONTROL_FRAME_TYPES;
+var CONNECTION_KINDS2 = CONNECTION_KINDS;
+var MAX_ACK_IDS2 = MAX_ACK_IDS;
+var ENTRY_KINDS2 = ENTRY_KINDS;
+var WS_CLOSE_CODES = CLOSE_CODES;
+var WS_CLOSE_REASONS = CLOSE_REASONS;
+function shape() {
+  return;
+}
+var WIRE = shape();
 
 // src/core/reconnect-policy.ts
 var TERMINAL = new Set([
@@ -68,24 +143,24 @@ function classifyClose(code, reason) {
     case WS_CLOSE_CODES.deregisteredOrArchived:
       return "credential";
     case WS_CLOSE_CODES.policy: {
-      if (reason === "session evicted")
+      if (reason === WS_CLOSE_REASONS.sessionEvicted)
         return "evicted";
-      if (reason === "heartbeat missed")
+      if (reason === WS_CLOSE_REASONS.heartbeatMissed)
         return "transient";
-      if (reason === "session already connected")
+      if (reason === WS_CLOSE_REASONS.sessionInUse)
         return "session-in-use";
-      if (reason === "conversation replaced")
+      if (reason === WS_CLOSE_REASONS.conversationReplaced)
         return "conversation-replaced";
       const prefix = reasonPrefix(reason);
-      if (prefix === "session superseded")
+      if (prefix === WS_CLOSE_REASONS.sessionSuperseded)
         return "superseded";
-      if (prefix === "client too old" || prefix === "client version withdrawn")
+      if (prefix === WS_CLOSE_REASONS.clientTooOld || prefix === WS_CLOSE_REASONS.clientBlocked)
         return "too-old";
-      if (prefix === "gateway in use")
+      if (prefix === WS_CLOSE_REASONS.gatewayInUse)
         return "gateway-in-use";
-      if (prefix === "gateway taken over")
+      if (prefix === WS_CLOSE_REASONS.gatewayTakenOver)
         return "gateway-taken-over";
-      if (prefix === "kind not allowed")
+      if (prefix === WS_CLOSE_REASONS.kindNotAllowed)
         return "kind-not-allowed";
       return "revoked";
     }
@@ -121,9 +196,9 @@ function isNewerThan(other, mine) {
   return false;
 }
 var REVOKED_STOP = {
-  "session revoked": "session-revoked",
-  "installation revoked": "installation-revoked",
-  "installation locked": "installation-locked"
+  [WS_CLOSE_REASONS.sessionRevoked]: "session-revoked",
+  [WS_CLOSE_REASONS.installationRevoked]: "installation-revoked",
+  [WS_CLOSE_REASONS.installationLocked]: "installation-locked"
 };
 function detailOf(reason) {
   const i = reason?.indexOf(": ") ?? -1;
@@ -1945,4 +2020,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS, BROADCAST_REASONS, isAddressed, PROTOCOL_VERSION, CONTROL_FRAME_TYPES, CONNECTION_KINDS, MAX_ACK_IDS, WS_CLOSE_CODES, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };

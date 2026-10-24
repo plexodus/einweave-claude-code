@@ -30,7 +30,7 @@
  * (`api.sessions.setScope`) is not reverted and a takeover is never repeated by a transient close.
  * `supersede` is unchanged — this GRANT from another window — and NEVER implies a takeover.
  */
-import { type AckHow, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type HoldUpdatePayload, type InvalidSessionPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionInfo } from "../core";
+import { type AckHow, type AuthenticatedPayload, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type HoldUpdatePayload, type InvalidSessionPayload, type ReceiptPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionInfo } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 import type { LockHolderInfo, SeqStore, SessionLock } from "./store";
@@ -52,16 +52,8 @@ export type SessionClient = Pick<AgentClient, "apiUrl" | "sessionKey" | "softwar
         readonly deliveries: Pick<Api["deliveries"], "list">;
     };
 };
-/** The server's `receipt` frame payload (api ws.ts `broadcastReceiptEvent`). */
-export interface ReceiptEvent {
-    messageId: string;
-    agentId: string;
-    contextId: string;
-    contextLabel: string | null;
-    state: string;
-    firstSeen?: boolean;
-    at?: string;
-}
+/** The server's `receipt` frame payload. */
+export type ReceiptEvent = ReceiptPayload;
 export type StopKind = "superseded" | "too-old" | "revoked" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced" | "credential" | "drain";
 /** Why this `Session` will never reconnect again. `close` is present for the WS-close stop
  * classes (superseded / too-old / revoked / session-in-use / gateway-taken-over / kind-not-allowed / conversation-replaced); `credential` for a terminal
@@ -78,13 +70,10 @@ export type SessionStatus = {
     handle: string | null;
     /** This session's grant id — the address others target, and the id on its sends. */
     contextId: string | null;
-    advice?: unknown;
+    advice?: AuthenticatedPayload["client"];
     /** RFC-028: what the server stored for this connection, its scope, and the threads it holds. */
     connectionKind?: ConnectionKind;
-    scope?: {
-        mode: Scope["mode"];
-        channelIds: string[];
-    };
+    scope?: AuthenticatedPayload["scope"];
     holds?: string[];
     /** RFC-028 §11 — after `replaces`: threads handed to this session, threads released, `carry` ids not carried. */
     carried?: string[];
@@ -119,7 +108,7 @@ export type SessionStatus = {
     kind: "hold_update";
     update: HoldUpdatePayload;
 }
-/** A receipt for a message this agent sent (✓ sent / ✓✓ seen) — display-only, never an entry. */
+/** A message's receipt (✓ sent / ✓✓ seen) — always for this agent's own sends; display-only, never an entry. */
  | {
     kind: "receipt";
     receipt: ReceiptEvent;

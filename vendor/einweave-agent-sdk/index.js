@@ -8,6 +8,7 @@ import {
   MAX_ACK_IDS,
   PROTOCOL_VERSION,
   TokenClient,
+  WS_CLOSE_REASONS,
   apiOrigin,
   assertNever,
   classifyClose,
@@ -28,7 +29,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-pp6sps7k.js";
+} from "./index-ehj93yga.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -476,9 +477,9 @@ class Session {
         this.finish({ kind: stopKindFromClose(outcome), close: outcome });
         return;
       }
-      if (cls === "revoked" && reason === "session revoked")
+      if (cls === "revoked" && reason === WS_CLOSE_REASONS.sessionRevoked)
         this.client.sessionRevoked(this.sockGrant?.sessionId ?? null);
-      if (cls === "revoked" && (reason === "installation revoked" || reason === "installation locked")) {
+      if (cls === "revoked" && (reason === WS_CLOSE_REASONS.installationRevoked || reason === WS_CLOSE_REASONS.installationLocked)) {
         this.client.installationRevoked(this.sockGrant?.installationId ?? null).catch(() => "absent").then((r) => {
           if (this.ws !== null && this.ws !== sock)
             return;
@@ -690,7 +691,7 @@ class Session {
       if (this.stopped)
         return { delivered };
       for (const e of res.entries ?? []) {
-        const entry = entryFrom(e.kind, e.payload, true);
+        const entry = entryFrom({ type: e.kind, payload: e.payload }, true);
         if (entry && this.deliver(entry))
           delivered++;
       }
@@ -710,27 +711,31 @@ class Session {
     for (const e of res.entries ?? []) {
       if (!e || typeof e.payload !== "object" || e.payload === null)
         continue;
-      const entry = entryFrom(e.kind, e.payload, e.payload.redelivery === true);
+      const entry = entryFrom({ type: e.kind, payload: e.payload });
       if (entry)
         entries.push(entry);
     }
     return { entries, next: typeof res.next === "string" ? res.next : null };
   }
   onFrame(raw) {
-    let env;
+    let parsed;
     try {
-      env = JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch {
       return;
     }
-    if (env?.v !== PROTOCOL_VERSION || typeof env.type !== "string")
+    if (typeof parsed !== "object" || parsed === null)
+      return;
+    const env = parsed;
+    if (env.v !== PROTOCOL_VERSION || typeof env.type !== "string")
       return;
     if (typeof env.seq === "number" && Number.isSafeInteger(env.seq))
       this.noteSeq(env.seq);
-    const p = env.payload ?? {};
+    if (typeof env.payload !== "object" || env.payload === null)
+      return;
     switch (env.type) {
       case "authenticated":
-        this.handleAuthenticated(p);
+        this.handleAuthenticated(env.payload);
         return;
       case "ping":
         this.sendJson({ type: "pong", lastSeq: this.seq.saved });
@@ -738,17 +743,17 @@ class Session {
       case "message":
       case "thread_event":
       case "action_request": {
-        const entry = entryFrom(env.type, p, p.redelivery === true);
+        const entry = entryFrom(env);
         if (entry)
           this.deliver(entry);
         return;
       }
       case "catchup":
-        this.emitStatus({ kind: "catchup", channels: Array.isArray(p.channels) ? p.channels : [] });
+        this.emitStatus({ kind: "catchup", channels: Array.isArray(env.payload.channels) ? env.payload.channels : [] });
         return;
       case "invalid_session": {
         this.seq = { ...this.seq, last: 0, saved: 0, epoch: this.seq.epoch + 1 };
-        const lost = p.lost ?? { frames: 0, from: null };
+        const lost = env.payload.lost ?? { frames: 0, from: null };
         this.emitStatus({ kind: "invalid_session", lost });
         return;
       }
@@ -766,16 +771,16 @@ class Session {
         return;
       }
       case "hold_update":
-        if (typeof p.threadId === "string")
-          this.emitStatus({ kind: "hold_update", update: p });
+        if (typeof env.payload.threadId === "string")
+          this.emitStatus({ kind: "hold_update", update: env.payload });
         return;
       case "receipt":
-        if (typeof p.messageId === "string" && typeof p.state === "string")
-          this.emitStatus({ kind: "receipt", receipt: p });
+        if (typeof env.payload.messageId === "string" && typeof env.payload.state === "string")
+          this.emitStatus({ kind: "receipt", receipt: env.payload });
         return;
       case "error":
-        if (typeof p.message === "string" && p.message)
-          this.emitStatus({ kind: "server_error", message: p.message });
+        if (typeof env.payload.message === "string" && env.payload.message)
+          this.emitStatus({ kind: "server_error", message: env.payload.message });
         return;
       default:
         return;
@@ -865,22 +870,21 @@ class Session {
     }
   }
 }
-function entryFrom(kind, p, redelivery) {
-  if (kind === "message") {
-    const { message, deliveryReasons } = p;
-    if (!message || typeof message.id !== "string")
+function entryFrom(f, redelivery = f.payload.redelivery === true) {
+  switch (f.type) {
+    case "message": {
+      const { message, deliveryReasons } = f.payload;
+      if (!message || typeof message.id !== "string")
+        return null;
+      return { kind: "message", id: message.id, redelivery, message: { ...message, deliveryReasons: Array.isArray(deliveryReasons) ? deliveryReasons : [] } };
+    }
+    case "thread_event":
+      return typeof f.payload.id === "string" ? { kind: "thread_event", id: f.payload.id, redelivery, event: f.payload } : null;
+    case "action_request":
+      return typeof f.payload.id === "string" ? { kind: "action_request", id: f.payload.id, redelivery, action: f.payload } : null;
+    default:
       return null;
-    return { kind: "message", id: message.id, redelivery, message: { ...message, deliveryReasons: Array.isArray(deliveryReasons) ? deliveryReasons : [] } };
   }
-  if (kind === "thread_event") {
-    const event = p;
-    return typeof event.id === "string" ? { kind: "thread_event", id: event.id, redelivery, event } : null;
-  }
-  if (kind === "action_request") {
-    const action = p;
-    return typeof action.id === "string" ? { kind: "action_request", id: action.id, redelivery, action } : null;
-  }
-  return null;
 }
 function pendingMeta(entry) {
   const base = { id: entry.id, kind: entry.kind, pushedAt: null, redelivery: entry.redelivery };
@@ -895,7 +899,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.11.0";
+var SDK_VERSION = "0.12.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

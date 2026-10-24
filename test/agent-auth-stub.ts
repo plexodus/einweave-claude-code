@@ -772,6 +772,12 @@ export function startAuthStub(opts: StubOptions = {}) {
             core.stats.refusals.push("ws:v1");
             return core.closeLikeServer(ws, 4008, "client too old: open /plugin → Installed → einweave → Update now, then /reload-plugins");
           }
+          // bridge #305, as the server: the protocol's AuthFrame requires `lastSeq` (0 = a fresh
+          // start), and a malformed frame is refused BEFORE the credential is judged.
+          if (!Number.isSafeInteger(f.lastSeq) || f.lastSeq < 0) {
+            core.stats.refusals.push("ws:invalid-auth");
+            return core.closeLikeServer(ws, 4008, "invalid auth: /lastSeq");
+          }
           core.stats.authDeclared.push({ kind: f.kind, scope: f.scope, takeover: f.takeover });
           core.stats.authInteractive.push(f.interactive);
           const forced = core.takeForcedAuthClose();
