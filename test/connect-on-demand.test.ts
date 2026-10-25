@@ -62,16 +62,15 @@ describe("connect-on-demand: unconfigured startup", () => {
  * session-rename-tool.test.ts's `authFrameWithStore`) and watch for the "auth"
  * frame — that is the only externally observable proof a connect happened.
  *
- * SESSION_KEY resolution itself burns up to SESSION_MAP_WAIT_MS (3s, see
- * server.ts's `resolveSessionKey`) before falling through to
- * CLAUDE_CODE_SESSION_ID, since the ancestry-walk lookup is always tried
- * regardless of whether an SSE port is present. So a "connects" case can take
- * a few seconds to produce its auth frame, and a "does not connect" case must
- * be given at least that long before "no frame yet" can be read as "chose not
- * to" rather than "still resolving".
+ * SESSION_KEY resolution waits up to SESSION_MAP_WAIT_MS before falling through
+ * to CLAUDE_CODE_SESSION_ID (see server.ts's `resolveSessionKey`). In production
+ * that is 3 s; test/preload.ts sets it to 0, so resolution here is one ancestry
+ * walk. A "does not connect" case must still outlast resolution plus the connect
+ * it would have made before "no frame yet" can be read as "chose not to" — these
+ * windows were 3 s longer while every spawn paid the full wait (2026-10-25).
  */
 const CONNECT_SESSION_KEY = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-const NO_CONNECT_WINDOW_MS = 6_000;
+const NO_CONNECT_WINDOW_MS = 3_000;
 const CONNECT_DEADLINE_MS = 15_000;
 
 function startAuthStub() {
@@ -202,13 +201,16 @@ describe("connect-on-demand: wantConnected startup gate", () => {
  * tools read/write `connectStateFileFor(STATE_DIR, SESSION_KEY)` using
  * whatever SESSION_KEY *currently* holds, and that starts at a random
  * FALLBACK_SESSION_KEY until resolveSessionKey() settles it to
- * CLAUDE_CODE_SESSION_ID — which, per server.ts's resolveSessionKey(), takes
- * up to SESSION_MAP_WAIT_MS (3s) even when there is nothing to find (no
- * session-map hook, no SSE port). Every test below sleeps past that window
- * before making its first tool call, so the state file it inspects is
- * guaranteed to be the one keyed by the CLAUDE_CODE_SESSION_ID it set.
+ * CLAUDE_CODE_SESSION_ID — which takes up to SESSION_MAP_WAIT_MS even when there
+ * is nothing to find (no session-map hook, no SSE port): 3 s in production, 0
+ * under test/preload.ts. Every test below sleeps past that window before making
+ * its first tool call, so the state file it inspects is guaranteed to be the one
+ * keyed by the CLAUDE_CODE_SESSION_ID it set. Finding 2 below runs with the
+ * production wait and so uses PROD_SESSION_KEY_SETTLE_MS.
  */
-const SESSION_KEY_SETTLE_MS = 4_000;
+const SESSION_KEY_SETTLE_MS = 1_000;
+const PROD_SESSION_KEY_SETTLE_MS = 4_000;
+const PROD_NO_CONNECT_WINDOW_MS = 6_000;
 
 function startToolStub() {
   const authFrames: any[] = [];
@@ -545,7 +547,9 @@ describe("connect-on-demand: Finding 2 — pre-settle connect/disconnect intent"
     const key = "50000000-0000-0000-0000-000000000001";
     const dir = mkdtempSync(join(tmpdir(), "cod-presettle-"));
     const stub = startToolStub();
-    const env = { ...connectToolEnv(dir, stub.port, key), EINWEAVE_AUTOCONNECT: "1" };
+    // The PRODUCTION wait, not preload's 0: this test is about the ~3 s pre-settle window,
+    // and with no window there is nothing for the early disconnect to race.
+    const env = { ...connectToolEnv(dir, stub.port, key), EINWEAVE_AUTOCONNECT: "1", EINWEAVE_TEST_SESSION_MAP_WAIT_MS: "3000" };
     const transport = new StdioClientTransport({ command: "bun", args: [SERVER], env });
     const client = new Client({ name: "test-client", version: "0.0.0" }, { capabilities: {} });
     try {
@@ -557,7 +561,7 @@ describe("connect-on-demand: Finding 2 — pre-settle connect/disconnect intent"
 
       // Give resolution, the (would-be, buggy) startup overwrite, and any
       // resulting connect attempt time to play out.
-      await Bun.sleep(SESSION_KEY_SETTLE_MS + NO_CONNECT_WINDOW_MS);
+      await Bun.sleep(PROD_SESSION_KEY_SETTLE_MS + PROD_NO_CONNECT_WINDOW_MS);
 
       expect(
         stub.authFrame(),
