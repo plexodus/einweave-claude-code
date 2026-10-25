@@ -16,25 +16,31 @@ const CH_GENERAL = "02000000-0000-7000-8000-00000000000a";
 const CH_OPS = "02000000-0000-7000-8000-00000000000b";
 const T1 = "01990000-0000-7000-8000-000000000001";
 const T2 = "01990000-0000-7000-8000-000000000002";
+const T3 = "01990000-0000-7000-8000-000000000003";
 const SIB = "00000000-0000-7000-8000-00000000bbbb";
 const CHANNELS = [{ id: CH_GENERAL, name: "general" }, { id: CH_OPS, name: "ops" }];
 
 type Call = { method: string; path: string; body: any };
 
 /** A server for the hold endpoints; `calls` records what the plugin asked. */
-function holdApi(over: { holderOnline?: boolean } = {}) {
+function holdApi(over: { holderOnline?: boolean; oldServer?: boolean } = {}) {
   const calls: Call[] = [];
   const api = async (req: Request, url: URL): Promise<Response | undefined> => {
     let body: any = null;
     if (req.method !== "GET") body = await req.json().catch(() => null);
     calls.push({ method: req.method, path: url.pathname + url.search, body });
     if (req.method === "GET" && url.pathname === "/api/threads" && url.searchParams.get("takeable") === "1") {
+      // A server that predates include=channel ignores the key: no channel tier, no counts.
+      const channelTier = url.searchParams.get("include") === "channel" && over.oldServer !== true;
       return Response.json({
         threads: [
           { thread: { id: T1, title: "Fix the build" }, channel: { id: CH_GENERAL, name: "general" }, hold: { state: "unheld", holder: null }, why: "addressed" },
           { thread: { id: T2, title: "Review the PR" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "held", holder: { id: SIB, label: "Bellman #cd34", online: true, parked: false } }, why: "participant" },
+          ...(channelTier ? [{ thread: { id: T3, title: "Release notes" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "unheld", holder: null }, why: "channel" }] : []),
         ],
         next: null,
+        // Deliberately not what the rows add up to: the notice must print the server's counts, not count rows.
+        ...(channelTier ? { counts: { forYou: 4, channel: 7 } } : {}),
       });
     }
     if (req.method === "POST" && /^\/api\/threads\/[^/]+\/hold$/.test(url.pathname)) {
@@ -83,7 +89,8 @@ describe("the hold verbs, over HTTP", () => {
       const listed = await text(client, "list_threads", { takeable: true });
       expect(listed).toContain("1. #general · Fix the build — unheld");
       expect(listed).toContain("2. #ops · Review the PR — held by Bellman #cd34 (online)");
-      expect(h.calls.at(-1)!.path).toBe("/api/threads?takeable=1");
+      expect(listed).toContain("3. #ops · Release notes — unheld, new posts in a channel you follow");
+      expect(h.calls.at(-1)!.path).toBe("/api/threads?takeable=1&include=channel");
 
       // A status and a connect in between must not move what "2" means (they used to rewrite the remembered list).
       await status(client);
@@ -136,8 +143,9 @@ describe("the hold verbs, over HTTP", () => {
       expect(s.threads_that_need_someone).not.toContain("Review the PR"); // held by a live sibling: nobody needs to pick it up
       expect(await connect(client, {})).toContain("Threads that need someone");
       // Scope none (the default): nothing unheld is pushed, so the window is told how much waits.
-      expect(s.threads_that_need_someone.split("\n")[0]).toBe("Scope none · 1 unowned · /einweave:take");
-      expect(await connect(client, {})).toContain("Scope none · 1 unowned · /einweave:take");
+      expect(s.threads_that_need_someone.split("\n")[0]).toBe("Scope none · 4 for you · 7 new in your channels · /einweave:take");
+      expect(s.threads_that_need_someone).toContain("- #ops · Release notes — unheld, new posts in a channel you follow");
+      expect(await connect(client, {})).toContain("Scope none · 4 for you · 7 new in your channels · /einweave:take");
       // A glance is not a list to pick from: take lists, and only THEN do numbers mean something.
       expect(await text(client, "take", { ref: "1" })).toContain("There is no 1");
       await text(client, "take", {});
@@ -145,6 +153,18 @@ describe("the hold verbs, over HTTP", () => {
       expect(h.calls.at(-1)).toMatchObject({ path: `/api/threads/${T1}/hold` });
     }, { api: h.api });
   }, 60_000);
+});
+
+describe("an older server (no include=channel)", () => {
+  test("the notice falls back to the first-page unowned count", async () => {
+    const h = holdApi({ oldServer: true });
+    await setup({}, async (client) => {
+      expect(await until(async () => (await status(client)).websocket === "connected", 15_000)).toBe(true);
+      const s = await status(client);
+      expect(s.threads_that_need_someone.split("\n")[0]).toBe("Scope none · 1 unowned · /einweave:take");
+      expect(s.threads_that_need_someone).not.toContain("Release notes");
+    }, { api: h.api });
+  }, 40_000);
 });
 
 describe("hold_update is a status, not a turn", () => {

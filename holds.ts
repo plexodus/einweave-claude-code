@@ -81,8 +81,11 @@ interface TakeableRow {
   thread: { id: string; title: string };
   channel: { id: string; name: string };
   hold: { state: "unheld" | "parked" | "held"; holder: { id: string; label: string | null; online: boolean; parked: boolean } | null };
-  why: "addressed" | "participant";
+  why: "addressed" | "participant" | "channel";
 }
+
+/** Unheld + parked threads per tier, from the server (`include=channel`); null from a server that predates it. */
+export type TakeableCounts = { forYou: number; channel: number };
 
 interface SessionRow {
   id: string;
@@ -104,7 +107,7 @@ function describeTakeable(r: TakeableRow): string {
       : h.state === "parked"
         ? `parked (${nameOf(h.holder?.label, h.holder?.id ?? "")} is offline)`
         : `held by ${nameOf(h.holder?.label, h.holder?.id ?? "")} (online)`;
-  return `#${r.channel.name} · ${r.thread.title} — ${state}, ${r.why === "addressed" ? "addressed to you" : "you took part"}`;
+  return `#${r.channel.name} · ${r.thread.title} — ${state}, ${r.why === "addressed" ? "addressed to you" : r.why === "participant" ? "you took part" : "new posts in a channel you follow"}`;
 }
 
 function errorText(res: ApiResult): string {
@@ -122,15 +125,19 @@ export function createHolds(deps: HoldsDeps) {
     return items.map((t, i) => `${i + 1}. ${t}`).join("\n");
   }
 
-  async function fetchTakeable(p: { channel?: string; limit?: number; cursor?: string }): Promise<{ rows: TakeableRow[]; next: string | null }> {
-    const q = new URLSearchParams({ takeable: "1" });
+  async function fetchTakeable(p: { channel?: string; limit?: number; cursor?: string }): Promise<{ rows: TakeableRow[]; next: string | null; counts: TakeableCounts | null }> {
+    // include=channel adds threads with unread posts in channels this agent follows, after the addressed ones.
+    // A server that predates it ignores the key and sends neither those rows nor `counts`.
+    const q = new URLSearchParams({ takeable: "1", include: "channel" });
     if (p.channel) q.set("channel", p.channel);
     if (p.limit) q.set("limit", String(p.limit));
     if (p.cursor) q.set("cursor", p.cursor);
     const res = await deps.api("GET", `/api/threads?${q}`);
     if (res.status === 404) throw new Error(`Channel ${p.channel} not found, or not visible to this agent.`);
     if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
-    return { rows: (res.body?.threads ?? []) as TakeableRow[], next: typeof res.body?.next === "string" ? res.body.next : null };
+    const c = res.body?.counts;
+    const counts = c && Number.isInteger(c.forYou) && Number.isInteger(c.channel) ? { forYou: c.forYou, channel: c.channel } : null;
+    return { rows: (res.body?.threads ?? []) as TakeableRow[], next: typeof res.body?.next === "string" ? res.body.next : null, counts };
   }
 
   /** Show the takeable list (and remember it: the numbers refer to THIS list from now on). */
@@ -138,7 +145,7 @@ export function createHolds(deps: HoldsDeps) {
     const { rows, next } = await fetchTakeable(p);
     memory = { kind: "takeable", items: rows.map((r) => ({ id: r.thread.id, label: r.thread.title })) };
     const lead = p.lead ? `${p.lead}\n\n` : "";
-    if (rows.length === 0) return `${lead}No threads to take: nothing open is addressed to this agent or has it taking part, outside what this session already holds.`;
+    if (rows.length === 0) return `${lead}No threads to take: nothing open is addressed to this agent, has it taking part or has new posts in a channel it follows, outside what this session already holds.`;
     return (
       `${lead}Threads this session could take (pick with take N, a link, an id, or words from the title):\n` +
       numbered(rows.map(describeTakeable)) +
@@ -245,8 +252,8 @@ export function createHolds(deps: HoldsDeps) {
     /** `list_threads(takeable)` and `take` with no argument. */
     listTakeable: showTakeable,
     /** The few threads `status` / the connect result name: unheld and parked ones, best first. */
-    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string; count: number; more: boolean }> {
-      const { rows, next } = await fetchTakeable({ limit: 10 });
+    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string; count: number; more: boolean; counts: TakeableCounts | null }> {
+      const { rows, next, counts } = await fetchTakeable({ limit: 10 });
       const unheldOrParked = rows.filter((r) => r.hold.state !== "held");
       const open = unheldOrParked.slice(0, limit);
       // Deliberately NOT remembered and NOT numbered: `take N` means the list `take` itself showed last, and a
@@ -258,6 +265,8 @@ export function createHolds(deps: HoldsDeps) {
         // Of the first page only: `more` says the server has another page, so the count is a floor.
         count: unheldOrParked.length,
         more: next !== null,
+        // Exact, all pages: prefer these when the server sends them.
+        counts,
       };
     },
 

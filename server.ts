@@ -2698,7 +2698,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           takeable: {
             type: "boolean",
             description:
-              "RFC-028: instead list the open threads THIS SESSION could take -- addressed to this agent or ones it posted in, not held by this session -- unheld first, then parked, then held by another live session. Numbered; `take N` refers to this list. channel_id is optional with takeable (default: all this agent's channels).",
+              "RFC-028: instead list the open threads THIS SESSION could take -- addressed to this agent or ones it posted in, then ones with unread posts in channels it follows; not held by this session -- within each, unheld first, then parked, then held by another live session. Numbered; `take N` refers to this list. channel_id is optional with takeable (default: all this agent's channels).",
           },
           limit: { type: "number", description: "With takeable: page size (default 10, max 50)." },
           cursor: { type: "string", description: "With takeable: the `next` cursor of the previous page." },
@@ -2950,7 +2950,12 @@ async function needSomeoneText(): Promise<string> {
   try {
     const r = await holds.needSomeone(5);
     // Scope none pushes nothing unheld here, so say how much waits -- even when it is nothing.
-    const lead = serverScope?.mode === "none" ? `Scope none · ${r.count}${r.more ? "+" : ""} unowned · /einweave:take` : "";
+    const lead =
+      serverScope?.mode !== "none"
+        ? ""
+        : r.counts
+          ? `Scope none · ${r.counts.forYou} for you · ${r.counts.channel} new in your channels · /einweave:take`
+          : `Scope none · ${r.count}${r.more ? "+" : ""} unowned · /einweave:take`;
     return [lead, r.text].filter(Boolean).join("\n");
   } catch {
     return "";
