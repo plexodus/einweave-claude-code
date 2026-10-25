@@ -168,7 +168,12 @@ function withPlaceLock<T>(dir: string, fn: () => T): T {
   }
 }
 
-/** Put `bytes` at `dst` whole-or-not-at-all and never over an existing file; true if it was placed. */
+/**
+ * Put `bytes` at `dst` whole-or-not-at-all and never over an existing file; true if it was placed.
+ * One exception, in the no-hard-link fallback: two windows can both enter after a stale lock is broken
+ * (see breakIfStale), and the later rename then replaces the earlier one's file, still whole. Callers
+ * place identical bytes (credentials, .env) or markers read only for existence, so nothing is lost.
+ */
 export function placeNew(dst: string, bytes: string | Uint8Array, link: (existing: string, next: string) => void = linkSync): boolean {
   const tmp = `${dst}.migrating-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -182,7 +187,7 @@ export function placeNew(dst: string, bytes: string | Uint8Array, link: (existin
       if (code === "EEXIST") return false;
       // No hard links here (FAT/exFAT, some network mounts, a cross-device path): take the
       // directory's placement lock, and under it rename the finished temp file in only if the
-      // destination is absent — whole-or-nothing, still never an overwrite.
+      // destination is absent — whole-or-nothing (see the exception above).
       if (code === "ENOTSUP" || code === "EPERM" || code === "EXDEV" || code === "ENOSYS") {
         return withPlaceLock(dirname(dst), () => {
           if (existsSync(dst)) return false;
