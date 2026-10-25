@@ -22,7 +22,7 @@ describe("the auth frame declares a kind", () => {
   test("a window is a work session by default: kind session, no takeover", async () => {
     await setup({}, async (client, _n, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 15_000)).toBe(true);
-      expect(stub.stats.authDeclared[0]).toEqual({ kind: "session" });
+      expect(stub.stats.authDeclared[0]).toEqual({ kind: "session", scope: { mode: "none" } }); // no EINWEAVE_CHANNELS: scope none (RFC-028 §11, 2026-10-25)
       // RFC-029 D13 / G3: a Claude Code window is a person's — `interactive: true` on the auth frame.
       expect(stub.stats.authInteractive[0]).toBe(true);
       expect(await until(async () => (await status(client)).websocket === "connected", 5_000)).toBe(true);
@@ -95,7 +95,7 @@ describe("connect: kind and takeover map onto the frame", () => {
       // And back: a person demotes it explicitly.
       await connect(client, { kind: "session" });
       expect(await until(() => stub.stats.authDeclared.length >= 3, 10_000)).toBe(true);
-      expect(stub.stats.authDeclared[2]).toEqual({ kind: "session" });
+      expect(stub.stats.authDeclared[2]).toEqual({ kind: "session", scope: { mode: "none" } }); // no EINWEAVE_CHANNELS: scope none (RFC-028 §11, 2026-10-25)
       expect(kindFile(dir)).toBe("session");
     });
   }, 60_000);
@@ -173,7 +173,7 @@ describe("the three new close classes say the right remedy, never 'login'", () =
       const before = stub.stats.authDeclared.length;
       await connect(client, {});
       expect(await until(() => stub.stats.authDeclared.length > before, 10_000)).toBe(true);
-      expect(stub.stats.authDeclared[before]).toEqual({ kind: "session" });
+      expect(stub.stats.authDeclared[before]).toEqual({ kind: "session", scope: { mode: "none" } }); // no EINWEAVE_CHANNELS: scope none (RFC-028 §11, 2026-10-25)
     });
   }, 60_000);
 
@@ -209,7 +209,7 @@ describe("kind precedence and persistence", () => {
       const before = stub.stats.authDeclared.length;
       await withPlugin(stub, dir, { EINWEAVE_CONNECTION_KIND: "gateway" }, async () => {
         expect(await until(() => stub.stats.authDeclared.length > before, 20_000)).toBe(true);
-        expect(stub.stats.authDeclared[before]).toEqual({ kind: "session" });
+        expect(stub.stats.authDeclared[before]).toEqual({ kind: "session", scope: { mode: "none" } }); // no EINWEAVE_CHANNELS: scope none (RFC-028 §11, 2026-10-25)
       });
     } finally {
       stub.stop();

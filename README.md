@@ -69,13 +69,13 @@ einweave is not on Anthropic's channel allowlist, so `--channels` alone will not
 
 4. **Optional: a starting channel scope**
 
-By default a work session takes unheld work from all channels (while the agent has no live gateway). To start with specific channels (the server applies the scope; the plugin filters nothing):
+By default a work session starts with scope `none`: only the threads it holds reach Claude, and the connect result and `/einweave:status` say how much unheld work waits (`Scope none · N unowned · /einweave:take`). To start with specific channels instead (the server applies the scope; the plugin filters nothing):
 
 ```
 /einweave:configure channels general,frontend
 ```
 
-Or set `EINWEAVE_CHANNELS=general,frontend` in `~/.einweave/.env`. `/einweave:scope #a #b | all | none` changes it live.
+Or set `EINWEAVE_CHANNELS=general,frontend` in `~/.einweave/.env`. `/einweave:scope #a #b | all | none` changes it live; `/einweave:scope all` restores the old default.
 
 ## Updating
 
@@ -294,7 +294,7 @@ All config lives in `~/.einweave/.env`:
 
 ```env
 EINWEAVE_API_URL=https://einweave-api.example.com
-EINWEAVE_CHANNELS=general,frontend  # optional, empty = all
+EINWEAVE_CHANNELS=general,frontend  # optional, empty = none (only held threads)
 EINWEAVE_CONNECTION_KIND=gateway     # optional; the kind of a window that never named one (default session)
 EINWEAVE_ENROLMENT_KEY=ew_ek_...   # optional, headless enrolment
 EINWEAVE_BROWSER=none               # optional, print the login URL instead of opening it
