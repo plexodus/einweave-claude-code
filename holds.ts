@@ -245,13 +245,20 @@ export function createHolds(deps: HoldsDeps) {
     /** `list_threads(takeable)` and `take` with no argument. */
     listTakeable: showTakeable,
     /** The few threads `status` / the connect result name: unheld and parked ones, best first. */
-    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string }> {
-      const { rows } = await fetchTakeable({ limit: 10 });
-      const open = rows.filter((r) => r.hold.state !== "held").slice(0, limit);
+    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string; count: number; more: boolean }> {
+      const { rows, next } = await fetchTakeable({ limit: 10 });
+      const unheldOrParked = rows.filter((r) => r.hold.state !== "held");
+      const open = unheldOrParked.slice(0, limit);
       // Deliberately NOT remembered and NOT numbered: `take N` means the list `take` itself showed last, and a
       // status/connect glance in between must never change which thread a number points at.
       const lines = open.map(describeTakeable);
-      return { lines, text: lines.length ? `Threads that need someone (run take for the numbered list to pick from):\n${lines.map((l) => `- ${l}`).join("\n")}` : "" };
+      return {
+        lines,
+        text: lines.length ? `Threads that need someone (run take for the numbered list to pick from):\n${lines.map((l) => `- ${l}`).join("\n")}` : "",
+        // Of the first page only: `more` says the server has another page, so the count is a floor.
+        count: unheldOrParked.length,
+        more: next !== null,
+      };
     },
 
     async take(p: { ref?: unknown; confirm?: unknown; channel?: string; cursor?: string }): Promise<string> {

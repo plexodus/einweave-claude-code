@@ -135,6 +135,9 @@ describe("the hold verbs, over HTTP", () => {
       expect(s.threads_that_need_someone).toContain("- #general · Fix the build — unheld");
       expect(s.threads_that_need_someone).not.toContain("Review the PR"); // held by a live sibling: nobody needs to pick it up
       expect(await connect(client, {})).toContain("Threads that need someone");
+      // Scope none (the default): nothing unheld is pushed, so the window is told how much waits.
+      expect(s.threads_that_need_someone.split("\n")[0]).toBe("Scope none · 1 unowned · /einweave:take");
+      expect(await connect(client, {})).toContain("Scope none · 1 unowned · /einweave:take");
       // A glance is not a list to pick from: take lists, and only THEN do numbers mean something.
       expect(await text(client, "take", { ref: "1" })).toContain("There is no 1");
       await text(client, "take", {});
@@ -183,16 +186,27 @@ describe("EINWEAVE_CHANNELS is the starting scope (RFC-028 D6)", () => {
     }, { channels: CHANNELS });
   }, 60_000);
 
-  test("no EINWEAVE_CHANNELS: no scope is sent (the server keeps the grant's); a gateway sends none either", async () => {
+  test("no EINWEAVE_CHANNELS: a work session starts with scope none (it takes no unheld work); a gateway sends no scope", async () => {
     await setup({}, async (_c, _n, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 15_000)).toBe(true);
-      expect(stub.stats.authDeclared[0]).toEqual({ kind: "session" });
+      expect(stub.stats.authDeclared[0]).toEqual({ kind: "session", scope: { mode: "none" } });
     }, { channels: CHANNELS });
     await setup({ EINWEAVE_CHANNELS: "general", EINWEAVE_CONNECTION_KIND: "gateway" }, async (_c, _n, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 15_000)).toBe(true);
       expect(stub.stats.authDeclared[0]).toEqual({ kind: "gateway" });
     }, { channels: CHANNELS });
   }, 60_000);
+
+  test("the scope-none line appears only when the scope is none: a session scoped to channels gets the list without it", async () => {
+    const h = holdApi();
+    await setup({ EINWEAVE_CHANNELS: "general" }, async (client) => {
+      expect(await until(async () => (await status(client)).websocket === "connected", 15_000)).toBe(true);
+      const s = await status(client);
+      expect(s.threads_that_need_someone).toContain("- #general · Fix the build — unheld");
+      expect(s.threads_that_need_someone).not.toContain("Scope none");
+      expect(await connect(client, {})).not.toContain("Scope none");
+    }, { api: h.api, channels: CHANNELS });
+  }, 40_000);
 
   test("a scope a person set with the scope tool is not put back by a later reopen", async () => {
     const h = holdApi();

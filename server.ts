@@ -1479,11 +1479,13 @@ function applyStartingScopeWhenMapLoads(): void {
 
 /**
  * EINWEAVE_CHANNELS (names or ids) as the starting scope for the FIRST auth frame, or null (nothing to send). The
- * server stores it on the grant (RFC-028 D6). After a SUCCESSFUL list load: some resolve -> those (the rest named to
- * the model); none -> `none`, loudly. If the list cannot be loaded -> null now, and the scope is set when it loads.
+ * server stores it on the grant (RFC-028 D6). Unset -> `none`: a Claude Code window takes only the threads it holds
+ * and is told how much unheld work waits (the server default stays `all`; this is the client's choice, 2026-10-25).
+ * After a SUCCESSFUL list load: some resolve -> those (the rest named to the model); none -> `none`, loudly. If the
+ * list cannot be loaded -> null now, and the scope is set when it loads.
  */
 async function startingScopeFromEnv(): Promise<StartScope | null> {
-  if (STARTING_SCOPE_CHANNELS.length === 0) return null;
+  if (STARTING_SCOPE_CHANNELS.length === 0) return { mode: "none" };
   if (STARTING_SCOPE_CHANNELS.length > MAX_SCOPE_CHANNELS) {
     notifyModel(`⚠️ EINWEAVE_CHANNELS lists ${STARTING_SCOPE_CHANNELS.length} channels; a scope holds at most ${MAX_SCOPE_CHANNELS}. No starting scope was set (the session keeps the scope it had) -- shorten the list or use /einweave:scope.`, "status");
     return null;
@@ -2946,7 +2948,10 @@ const workDeps: WorkDeps = {
 async function needSomeoneText(): Promise<string> {
   if (!authenticated || creds.configError()) return "";
   try {
-    return (await holds.needSomeone(5)).text;
+    const r = await holds.needSomeone(5);
+    // Scope none pushes nothing unheld here, so say how much waits -- even when it is nothing.
+    const lead = serverScope?.mode === "none" ? `Scope none · ${r.count}${r.more ? "+" : ""} unowned · /einweave:take` : "";
+    return [lead, r.text].filter(Boolean).join("\n");
   } catch {
     return "";
   }

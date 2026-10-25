@@ -33,8 +33,8 @@ Read both config values and give the user the full picture:
    (profile, credential `installation` / `none`, installation name,
    `key_storage`, `key_thumbprint`). If it carries a `problem`, show that too.
 
-3. **Starting scope** — check `EINWEAVE_CHANNELS`. Show the channels or "all
-   channels" if empty. (This is only the scope a session starts with; `/einweave:scope` changes it live.)
+3. **Starting scope** — check `EINWEAVE_CHANNELS`. Show the channels, or "none (only
+   threads this session holds)" if empty. (This is only the scope a session starts with; `/einweave:scope` changes it live.)
 
 4. **What next** — based on state:
    - No URL → *"Run `/einweave:configure <url>` to set up einweave."*
