@@ -1,4 +1,4 @@
-export type CloseClass = "transient" | "expired" | "evicted" | "session-cap" | "credential" | "revoked" | "superseded" | "too-old" | "session-in-use" | "gateway-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced";
+export type CloseClass = "transient" | "expired" | "evicted" | "session-cap" | "credential" | "revoked" | "superseded" | "too-old" | "session-in-use" | "gateway-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced" | "protocol-unsupported";
 export declare function classifyClose(code: number | undefined, reason?: string): CloseClass;
 /**
  * Delay before reconnect attempt `attempt` (1-based), or `null` = do not
@@ -19,7 +19,7 @@ export interface HolderIdentity {
     cwd?: string;
 }
 /** The stable, data-only reason a consumer switches on to pick its OWN wording (D4). */
-export type StopReason = "session-revoked" | "installation-revoked" | "installation-locked" | "policy-unknown" | "superseded" | "too-old" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced";
+export type StopReason = "session-revoked" | "installation-revoked" | "installation-locked" | "policy-unknown" | "superseded" | "too-old" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced" | "protocol-unsupported";
 /**
  * The data `describeClose`'s prose used to encode (D4: "turned into data"). Always
  * carries `class`/`code`/`reason`/`retry`; the terminal classes (`revoked`,
@@ -50,7 +50,7 @@ export interface CloseOutcome {
     remedy?: string;
     /**
      * `gateway-in-use` (the holder's label), `gateway-taken-over` (the TAKER's label) and
-     * `kind-not-allowed` (the refused kind): the text after the reason's first ": ", verbatim.
+     * `kind-not-allowed` (the refused kind) and `protocol-unsupported` (`server speaks v2, client sent v9`): the text after the reason's first ": ", verbatim.
      */
     detail?: string;
 }

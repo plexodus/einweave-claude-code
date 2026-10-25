@@ -96,7 +96,7 @@ import {
   userAgent,
   viewport,
   wsHtu
-} from "../index-ehj93yga.js";
+} from "../index-8n6g869q.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,

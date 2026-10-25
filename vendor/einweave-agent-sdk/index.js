@@ -29,7 +29,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-ehj93yga.js";
+} from "./index-8n6g869q.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -181,6 +181,8 @@ function stopKindFromClose(outcome) {
     return "kind-not-allowed";
   if (outcome.stop === "conversation-replaced")
     return "conversation-replaced";
+  if (outcome.stop === "protocol-unsupported")
+    return "protocol-unsupported";
   return "revoked";
 }
 
@@ -321,7 +323,7 @@ class Session {
     this.finish({ kind: "drain" });
   }
   wsUrl() {
-    return `${this.client.apiUrl().replace(/^http/, "ws")}/ws`;
+    return `${this.client.apiUrl().replace(/^http/, "ws")}/ws?v=${PROTOCOL_VERSION}`;
   }
   emitStatus(s) {
     this.statusChannel.push(s);
@@ -472,7 +474,7 @@ class Session {
         });
         return;
       }
-      if (cls === "too-old" || cls === "session-in-use" || cls === "gateway-taken-over" || cls === "kind-not-allowed" || cls === "conversation-replaced") {
+      if (cls === "too-old" || cls === "session-in-use" || cls === "gateway-taken-over" || cls === "kind-not-allowed" || cls === "conversation-replaced" || cls === "protocol-unsupported") {
         const outcome = closeOutcome(cls, code, reason, { myVersion: this.client.softwareVersion() });
         this.finish({ kind: stopKindFromClose(outcome), close: outcome });
         return;
@@ -727,7 +729,7 @@ class Session {
     if (typeof parsed !== "object" || parsed === null)
       return;
     const env = parsed;
-    if (env.v !== PROTOCOL_VERSION || typeof env.type !== "string")
+    if (env.v !== undefined && env.v !== PROTOCOL_VERSION || typeof env.type !== "string")
       return;
     if (typeof env.seq === "number" && Number.isSafeInteger(env.seq))
       this.noteSeq(env.seq);
@@ -801,6 +803,8 @@ class Session {
       agentName: this.agentName,
       handle: typeof p.handle === "string" ? p.handle : null,
       contextId: this.myContextId,
+      ...typeof p.protocol === "number" ? { protocol: p.protocol } : {},
+      ...Array.isArray(p.capabilities) ? { capabilities: p.capabilities.filter((c) => typeof c === "string") } : {},
       advice: p.client,
       ...typeof p.kind === "string" ? { connectionKind: p.kind } : {},
       ...typeof p.scope === "object" && p.scope !== null ? { scope: p.scope } : {},
@@ -899,7 +903,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.12.0";
+var SDK_VERSION = "0.13.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

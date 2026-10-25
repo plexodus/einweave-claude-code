@@ -121,4 +121,12 @@ describe("describeClose", () => {
     expect(t).toContain("/einweave:connect");
     expect(t).not.toContain("login");
   });
+
+  test("protocol PR D: protocol-unsupported blames the server, never asks for a plugin update", () => {
+    const t = describeClose("protocol-unsupported", 4008, "protocol unsupported: server speaks v2, client sent v3");
+    expect(t).toContain("server is older");
+    expect(t).toContain("server speaks v2, client sent v3");
+    expect(t).not.toContain("connection closed");
+    expect(t).not.toMatch(/update (the|this) plugin|\/plugin|login/);
+  });
 });
