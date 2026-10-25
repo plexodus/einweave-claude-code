@@ -241,8 +241,10 @@ const SESSION_MAP_DIRS = [
 
 // The hook and this process are started concurrently in unspecified order, so
 // a missing mapping is not yet an answer. Bounded hard: a plugin that waits on
-// a hook that isn't installed must still come up.
-const SESSION_MAP_WAIT_MS = 3000;
+// a hook that isn't installed must still come up. The test suite runs without the
+// hook, so every spawned plugin paid the full 3 s (2026-10-25: ~75% of a 20-min
+// suite); test/preload.ts sets 0, and tests of the wait itself set it back.
+const SESSION_MAP_WAIT_MS = testKnob("EINWEAVE_TEST_SESSION_MAP_WAIT_MS", (n) => Number.isInteger(n) && n >= 0) ?? 3000;
 const SESSION_MAP_POLL_MS = 100;
 
 
@@ -392,9 +394,10 @@ async function resolveSessionKey(): Promise<{ key: string; source: string }> {
   }
 
   // The hook and this process start concurrently in unspecified order, so a
-  // missing mapping is not yet an answer — but only wait when there is a key to
-  // wait on. Without an SSE port no mapping can ever be found, and burning 3s
-  // on a lookup that cannot succeed just delays the first connect.
+  // missing mapping is not yet an answer: this ALWAYS waits up to
+  // SESSION_MAP_WAIT_MS, because the pid key below is available everywhere `ps`
+  // is. Only a setup with no hook (hooks disabled, a bare MCP entry) pays the
+  // whole wait; tools stay answerable meanwhile.
   // Two keys, tried in order of how widely they work.
   //
   // 1. pid — the Claude Code CLI process that owns us, found by walking our own
@@ -4128,6 +4131,9 @@ await mcp.connect(new StdioServerTransport());
 // takeover` always wins, and every failure path fails OPEN — never lock a session out.
 // A process that loses does NOT exit (the MCP host does not respawn one that does).
 
+// The grace a draining socket and an in-flight mint get before exit. Every spawned
+// plugin in the test suite paid it on close; test/preload.ts shortens it.
+const SHUTDOWN_GRACE_MS = testKnob("EINWEAVE_TEST_SHUTDOWN_GRACE_MS", (n) => Number.isInteger(n) && n >= 0) ?? 1000;
 let shuttingDown = false;
 function shutdown(): void {
   if (shuttingDown) return;
@@ -4141,7 +4147,7 @@ function shutdown(): void {
   // Detached — the exit below does not wait on a feed client.
   void feedTap?.stop();
   // A mint cut off here has left its attempt on disk: the next start replays it (E6b).
-  void Bun.sleep(1000).finally(() => {
+  void Bun.sleep(SHUTDOWN_GRACE_MS).finally(() => {
     creds.stop();
     process.exit(0);
   });
