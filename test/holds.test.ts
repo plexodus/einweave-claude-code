@@ -345,6 +345,8 @@ describe("scope: channel names become ids and the server stores them", () => {
     const f = fake(() => undefined, { currentScope: () => ({ mode: "all", channelIds: [] }) });
     expect(await f.holds.scope({})).toBe(describeScope({ mode: "all", channelIds: [] }));
     expect(describeScope(null)).toContain("not known yet");
+    // None is not a list of channels: it must not say "unheld work in these".
+    expect(describeScope({ mode: "none", channelIds: [] })).toBe("Scope: no channel -- no unheld work reaches this session (take lists what waits); threads it holds always arrive.");
   });
 });
 

@@ -469,5 +469,9 @@ function scopeShort(scope: { mode: string; channelIds: string[] }): string {
 
 export function describeScope(scope: { mode: string; channelIds: string[] } | null, changed = false): string {
   if (!scope) return "Scope: not known yet (this session has not authenticated).";
-  return `${changed ? "Scope set. " : ""}Scope: ${scopeShort(scope)} -- unheld work in these reaches this session while the agent has no live gateway; threads it holds always arrive.`;
+  const reach =
+    scope.mode === "none"
+      ? "no unheld work reaches this session (take lists what waits)"
+      : "unheld work in these reaches this session while the agent has no live gateway";
+  return `${changed ? "Scope set. " : ""}Scope: ${scopeShort(scope)} -- ${reach}; threads it holds always arrive.`;
 }
