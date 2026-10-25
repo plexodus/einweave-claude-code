@@ -122,6 +122,10 @@ export function describeClose(
     // RFC-028 §11: a newer conversation in this window (/clear) took over this session's threads.
     case "conversation-replaced":
       return `this conversation was replaced by a newer one in this window (/clear) (${tail}) — its threads went there or were released; /einweave:connect connects this one again`;
+    // Protocol PR D: this plugin speaks a newer protocol than the server. Updating the plugin
+    // cannot help — the server is behind (or was rolled back).
+    case "protocol-unsupported":
+      return `the einweave server is older than this plugin speaks (${tail}) — wait for the server update, or pin the previous plugin; /einweave:connect tries again`;
     default:
       return `connection closed (${tail})`;
   }

@@ -56,6 +56,7 @@ var CLOSE_REASONS = {
   sessionSuperseded: "session superseded",
   clientTooOld: "client too old",
   clientBlocked: "client version withdrawn",
+  protocolUnsupported: "protocol unsupported",
   membershipRevoked: "membership revoked",
   tenantSwitched: "tenant switched",
   serverShuttingDown: "server shutting down",
@@ -86,6 +87,7 @@ var CLOSE_CODE_OF = {
   sessionSuperseded: CLOSE_CODES.policy,
   clientTooOld: CLOSE_CODES.policy,
   clientBlocked: CLOSE_CODES.policy,
+  protocolUnsupported: CLOSE_CODES.policy,
   membershipRevoked: CLOSE_CODES.membershipRevoked,
   tenantSwitched: CLOSE_CODES.tenantSwitched,
   serverShuttingDown: CLOSE_CODES.goingAway,
@@ -116,7 +118,8 @@ var TERMINAL = new Set([
   "session-in-use",
   "gateway-taken-over",
   "kind-not-allowed",
-  "conversation-replaced"
+  "conversation-replaced",
+  "protocol-unsupported"
 ]);
 function isTerminal(cls) {
   return TERMINAL.has(cls);
@@ -162,6 +165,8 @@ function classifyClose(code, reason) {
         return "gateway-taken-over";
       if (prefix === WS_CLOSE_REASONS.kindNotAllowed)
         return "kind-not-allowed";
+      if (prefix === WS_CLOSE_REASONS.protocolUnsupported)
+        return "protocol-unsupported";
       return "revoked";
     }
     case WS_CLOSE_CODES.tokenExpired:
@@ -226,6 +231,8 @@ function closeOutcome(cls, code, reason, opts = {}) {
       return { ...base, stop: "kind-not-allowed", ...detailOf(reason) };
     case "conversation-replaced":
       return { ...base, stop: "conversation-replaced" };
+    case "protocol-unsupported":
+      return { ...base, stop: "protocol-unsupported", ...detailOf(reason) };
     case "too-old": {
       const i = reason?.indexOf(": ") ?? -1;
       return { ...base, stop: "too-old", ...i !== -1 ? { remedy: reason.slice(i + 2) } : {} };

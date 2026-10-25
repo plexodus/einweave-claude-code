@@ -54,9 +54,9 @@ export type SessionClient = Pick<AgentClient, "apiUrl" | "sessionKey" | "softwar
 };
 /** The server's `receipt` frame payload. */
 export type ReceiptEvent = ReceiptPayload;
-export type StopKind = "superseded" | "too-old" | "revoked" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced" | "credential" | "drain";
+export type StopKind = "superseded" | "too-old" | "revoked" | "session-in-use" | "gateway-taken-over" | "kind-not-allowed" | "conversation-replaced" | "protocol-unsupported" | "credential" | "drain";
 /** Why this `Session` will never reconnect again. `close` is present for the WS-close stop
- * classes (superseded / too-old / revoked / session-in-use / gateway-taken-over / kind-not-allowed / conversation-replaced); `credential` for a terminal
+ * classes (superseded / too-old / revoked / session-in-use / gateway-taken-over / kind-not-allowed / conversation-replaced / protocol-unsupported); `credential` for a terminal
  * `AgentClient` mint failure (installation gone, refused, …). */
 export interface SessionStop {
     kind: StopKind;
@@ -70,6 +70,9 @@ export type SessionStatus = {
     handle: string | null;
     /** This session's grant id — the address others target, and the id on its sends. */
     contextId: string | null;
+    /** Protocol PR D: the version the server negotiated, and what it offers on it. Absent from a server before PR D. */
+    protocol?: number;
+    capabilities?: string[];
     advice?: AuthenticatedPayload["client"];
     /** RFC-028: what the server stored for this connection, its scope, and the threads it holds. */
     connectionKind?: ConnectionKind;
@@ -263,6 +266,7 @@ export declare class Session {
     ack(ids: Iterable<string>, how: AckHow): void;
     /** Graceful shutdown: stop reconnecting, close the socket cleanly, resolve `closed()`. */
     drain(): Promise<void>;
+    /** Protocol PR D: the version is declared at connect; the server echoes it in `authenticated.protocol`. */
     private wsUrl;
     private emitStatus;
     private clearWatchdog;

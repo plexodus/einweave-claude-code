@@ -86,6 +86,7 @@ export declare const WS_CLOSE_REASONS: {
     readonly sessionSuperseded: "session superseded";
     readonly clientTooOld: "client too old";
     readonly clientBlocked: "client version withdrawn";
+    readonly protocolUnsupported: "protocol unsupported";
     readonly membershipRevoked: "membership revoked";
     readonly tenantSwitched: "tenant switched";
     readonly serverShuttingDown: "server shutting down";
@@ -191,7 +192,8 @@ declare const WIRE: {
             channelIds: string[];
         };
         holds: string[];
-        protocol: 2;
+        protocol: number;
+        capabilities: string[];
         heartbeatMs: number;
         replayBudget: {
             broadcasts: number;
