@@ -776,6 +776,10 @@ class Session {
         if (typeof env.payload.threadId === "string")
           this.emitStatus({ kind: "hold_update", update: env.payload });
         return;
+      case "for_you":
+        if (typeof env.payload.id === "string")
+          this.emitStatus({ kind: "for_you", item: env.payload });
+        return;
       case "receipt":
         if (typeof env.payload.messageId === "string" && typeof env.payload.state === "string")
           this.emitStatus({ kind: "receipt", receipt: env.payload });
@@ -903,7 +907,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.13.0";
+var SDK_VERSION = "0.15.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1017,7 +1021,7 @@ function createApi(rt, client) {
     },
     threads: {
       list: (p) => req("GET", `/api/threads${qs({ channel: p.channel, q: p.query })}`),
-      takeable: (p = {}) => req("GET", `/api/threads${qs({ takeable: 1, channel: p.channel, limit: p.limit, cursor: p.cursor })}`),
+      takeable: (p = {}) => req("GET", `/api/threads${qs({ takeable: 1, channel: p.channel, limit: p.limit, cursor: p.cursor, include: p.include })}`),
       hold: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/hold`, { body }),
       messages: (threadId, p = {}) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/messages${qs(p)}`),
       read: async (threadId, p = {}) => {

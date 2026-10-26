@@ -1,12 +1,12 @@
 /**
- * RFC-028 §11 /clear carries or releases, against the REAL einweave API — the plugin 0.34.0
- * release gate. The plugin's own code (server.ts over stdio, the vendored SDK 0.11.0) and the
- * real SessionStart hook against a real `packages/api` process (bridge #303 or later) on a
- * scratch Postgres database: a /clear carries what was handed to "next", releases the rest, and
- * the hook hands the new conversation the note; a /resume moves nothing.
+ * RFC-028 §11 /clear keeps the window's threads, against the REAL einweave API — the plugin
+ * 0.37.0 release gate. The plugin's own code (server.ts over stdio, the vendored SDK 0.14.0) and
+ * the real SessionStart hook against a real `packages/api` process (bridge #320 or later) on a
+ * scratch Postgres database: a /clear carries every thread (`carry: "all"`), and the hook hands
+ * the new conversation the note; a /resume moves nothing.
  *
  * ── HOW TO RUN IT ─────────────────────────────────────────────────────────────────────
- *   EINWEAVE_API_DIR=<bridge checkout with #303>/packages/api bun test test/clear-carry-real-api.test.ts
+ *   EINWEAVE_API_DIR=<bridge checkout with #320>/packages/api bun test test/clear-carry-real-api.test.ts
  *   EINWEAVE_TEST_PG_ADMIN_URL defaults to the server repo's test container (:5433).
  *
  * ⚠️ It SKIPS when EINWEAVE_API_DIR is unset — and then proves nothing. Set and unreachable,
@@ -208,26 +208,21 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-028 §11 /clear against the real 
     if (dir) rmSync(dir, { recursive: true, force: true });
   }, 30_000);
 
-  test("/clear carries what was handed to next, releases the rest, and the hook tells the new conversation; /resume moves nothing", async () => {
+  test("/clear carries every thread the conversation holds, and the hook tells the new conversation; /resume moves nothing", async () => {
     // Two threads this conversation starts, so its session holds both.
     const keep = JSON.parse((await call("create_item", { channel_id: CHANNEL, kind: "discussion", title: "Keep working on the deploy" })).text).thread_id as string;
     const drop = JSON.parse((await call("create_item", { channel_id: CHANNEL, kind: "discussion", title: "Old log question" })).text).thread_id as string;
     expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c1", [drop]: "clear-c1" });
 
-    const h = await call("handover", { ref: keep, to: "next" });
-    expect(h.isError, h.text).toBe(false);
-    expect(h.text).toContain("to the next conversation in this window");
-    expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c1", [drop]: "clear-c1" }); // nothing moves before the /clear
-
     const t0 = Date.now();
     const clear = await sessionStart("clear-c2", "clear");
     expect(clear.err).toContain("server re-keyed to clear-c2");
-    expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c2", [drop]: null });
+    expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c2", [drop]: "clear-c2" });
     const note = clear.context;
     expect(note, `no note from the hook (${Date.now() - t0} ms):\n${clear.err}\n${log.slice(-2000)}`).not.toBeNull();
-    expect(note).toContain("This session holds");
+    expect(note).toContain("It holds 2 threads carried from the previous conversation");
     expect(note).toContain(`"Keep working on the deploy" (${keep})`);
-    expect(note).toContain(`#${CHANNEL} "Old log question" (${drop})`);
+    expect(note).toContain(`"Old log question" (${drop})`);
     expect(await until(connected, 10_000)).toBe(true);
 
     // /resume of the old conversation: no replaces — the old session comes back holdless, nothing moves.
@@ -235,6 +230,6 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-028 §11 /clear against the real 
     expect(resume.err).toContain("server re-keyed to clear-c1");
     expect(resume.context).toBeNull();
     expect(await until(connected, 10_000)).toBe(true);
-    expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c2", [drop]: null });
+    expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c2", [drop]: "clear-c2" });
   }, 60_000);
 });

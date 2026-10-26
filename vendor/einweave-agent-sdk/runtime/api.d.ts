@@ -125,12 +125,20 @@ export interface TakeableThread {
             parked: boolean;
         }) | null;
     };
-    why: "addressed" | "participant";
+    /** `channel`: unread in a channel the agent subscribes to — only with `include: "channel"`. */
+    why: "addressed" | "participant" | "channel";
+    /** With `include: "channel"`: the agent is not a member of the channel (a subscribed public one) -- take needs membership, so join first. */
+    joinRequired?: boolean;
 }
 export interface TakeableResult {
     threads: TakeableThread[];
     /** Opaque cursor for the next page (`cursor`); null on the last one. */
     next: string | null;
+    /** With `include: "channel"` only (absent from an older server): unheld + parked rows per tier, all pages. */
+    counts?: {
+        forYou: number;
+        channel: number;
+    };
 }
 /** `POST /api/threads/:id/hold` (RFC-028 D3/D8). */
 export type HoldRequest = {
@@ -763,11 +771,14 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
          * RFC-028 D8: the open threads this session could take — addressed to the agent or posted in by it, not held
          * by this session: unheld › parked › held by another live session, newest first, cursor-paged (default 10).
          * `channel` narrows to one channel; omitted = across the agent's channels. Agents only.
+         * `include: "channel"` adds, after those, the threads with something unread in a subscribed channel
+         * (`why: "channel"`) and `counts` — for a session in scope `none`. An older server ignores it.
          */
         takeable: (p?: {
             channel?: string;
             limit?: number;
             cursor?: string;
+            include?: "channel";
         }) => Promise<TakeableResult>;
         /**
          * RFC-028 D3: `take` | `release` | `handover {to}` on a thread's hold. An agent acts for its calling
