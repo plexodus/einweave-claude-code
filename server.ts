@@ -2954,7 +2954,8 @@ async function needSomeoneText(): Promise<string> {
       serverScope?.mode !== "none"
         ? ""
         : r.counts
-          ? `Scope none · ${r.counts.forYou} for you · ${r.counts.channel} new in your channels · /einweave:take`
+          ? // The channel segment only when there is something: a worker follows no channel, so a 0 there is permanent noise.
+            `Scope none · ${r.counts.forYou} for you${r.counts.channel > 0 ? ` · ${r.counts.channel} new in your channels` : ""} · /einweave:take`
           : `Scope none · ${r.count}${r.more ? "+" : ""} unowned · /einweave:take`;
     return [lead, r.text].filter(Boolean).join("\n");
   } catch {

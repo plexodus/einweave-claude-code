@@ -82,6 +82,8 @@ interface TakeableRow {
   channel: { id: string; name: string };
   hold: { state: "unheld" | "parked" | "held"; holder: { id: string; label: string | null; online: boolean; parked: boolean } | null };
   why: "addressed" | "participant" | "channel";
+  /** With include=channel: not a member of the channel -- take needs membership (join_channel first). */
+  joinRequired?: boolean;
 }
 
 /** Unheld + parked threads per tier, from the server (`include=channel`); null from a server that predates it. */
@@ -107,7 +109,7 @@ function describeTakeable(r: TakeableRow): string {
       : h.state === "parked"
         ? `parked (${nameOf(h.holder?.label, h.holder?.id ?? "")} is offline)`
         : `held by ${nameOf(h.holder?.label, h.holder?.id ?? "")} (online)`;
-  return `#${r.channel.name} · ${r.thread.title} — ${state}, ${r.why === "addressed" ? "addressed to you" : r.why === "participant" ? "you took part" : "new posts in a channel you follow"}`;
+  return `#${r.channel.name} · ${r.thread.title} — ${state}, ${r.why === "addressed" ? "addressed to you" : r.why === "participant" ? "you took part" : "new posts in a channel you follow"}${r.joinRequired ? ` -- join #${r.channel.name} to take it` : ""}`;
 }
 
 function errorText(res: ApiResult): string {

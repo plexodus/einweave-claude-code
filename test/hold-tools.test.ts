@@ -23,7 +23,7 @@ const CHANNELS = [{ id: CH_GENERAL, name: "general" }, { id: CH_OPS, name: "ops"
 type Call = { method: string; path: string; body: any };
 
 /** A server for the hold endpoints; `calls` records what the plugin asked. */
-function holdApi(over: { holderOnline?: boolean; oldServer?: boolean } = {}) {
+function holdApi(over: { holderOnline?: boolean; oldServer?: boolean; channelCount?: number } = {}) {
   const calls: Call[] = [];
   const api = async (req: Request, url: URL): Promise<Response | undefined> => {
     let body: any = null;
@@ -36,11 +36,11 @@ function holdApi(over: { holderOnline?: boolean; oldServer?: boolean } = {}) {
         threads: [
           { thread: { id: T1, title: "Fix the build" }, channel: { id: CH_GENERAL, name: "general" }, hold: { state: "unheld", holder: null }, why: "addressed" },
           { thread: { id: T2, title: "Review the PR" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "held", holder: { id: SIB, label: "Bellman #cd34", online: true, parked: false } }, why: "participant" },
-          ...(channelTier ? [{ thread: { id: T3, title: "Release notes" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "unheld", holder: null }, why: "channel" }] : []),
+          ...(channelTier ? [{ thread: { id: T3, title: "Release notes" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "unheld", holder: null }, why: "channel", joinRequired: true }] : []),
         ],
         next: null,
         // Deliberately not what the rows add up to: the notice must print the server's counts, not count rows.
-        ...(channelTier ? { counts: { forYou: 4, channel: 7 } } : {}),
+        ...(channelTier ? { counts: { forYou: 4, channel: over.channelCount ?? 7 } } : {}),
       });
     }
     if (req.method === "POST" && /^\/api\/threads\/[^/]+\/hold$/.test(url.pathname)) {
@@ -89,7 +89,7 @@ describe("the hold verbs, over HTTP", () => {
       const listed = await text(client, "list_threads", { takeable: true });
       expect(listed).toContain("1. #general · Fix the build — unheld");
       expect(listed).toContain("2. #ops · Review the PR — held by Bellman #cd34 (online)");
-      expect(listed).toContain("3. #ops · Release notes — unheld, new posts in a channel you follow");
+      expect(listed).toContain("3. #ops · Release notes — unheld, new posts in a channel you follow -- join #ops to take it");
       expect(h.calls.at(-1)!.path).toBe("/api/threads?takeable=1&include=channel");
 
       // A status and a connect in between must not move what "2" means (they used to rewrite the remembered list).
@@ -153,6 +153,16 @@ describe("the hold verbs, over HTTP", () => {
       expect(h.calls.at(-1)).toMatchObject({ path: `/api/threads/${T1}/hold` });
     }, { api: h.api });
   }, 60_000);
+});
+
+describe("the scope-none notice with nothing new in followed channels", () => {
+  test("drops the channel segment instead of saying 0", async () => {
+    const h = holdApi({ channelCount: 0 });
+    await setup({}, async (client) => {
+      expect(await until(async () => (await status(client)).websocket === "connected", 15_000)).toBe(true);
+      expect((await status(client)).threads_that_need_someone.split("\n")[0]).toBe("Scope none · 4 for you · /einweave:take");
+    }, { api: h.api });
+  }, 40_000);
 });
 
 describe("an older server (no include=channel)", () => {
