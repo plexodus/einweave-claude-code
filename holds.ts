@@ -70,11 +70,6 @@ export interface HoldsDeps {
   onScope(scope: { mode: string; channelIds: string[] }): void;
   /** The scope the server last reported for this session, if any. */
   currentScope(): { mode: string; channelIds: string[] } | null;
-  /**
-   * RFC-028 §11: hand threads to the next conversation in this window (the next `/clear` carries
-   * them). Returns everything now carried and what did not fit.
-   */
-  carryNext(threadIds: string[]): { carried: string[]; dropped: string[] };
 }
 
 interface TakeableRow {
@@ -176,18 +171,6 @@ export function createHolds(deps: HoldsDeps) {
         const title = res.status === 200 ? res.body?.thread?.title : undefined;
         return { id, title: typeof title === "string" && title ? title : null };
       })
-    );
-  }
-
-  /** `handover to: next`: no server call -- the next `/clear` declares it (RFC-028 §11). */
-  function carry(items: ListItem[]): string {
-    const { carried, dropped } = deps.carryNext(items.map((i) => i.id));
-    const names = items.filter((i) => !dropped.includes(i.id)).map((i) => i.label).join(", ");
-    return (
-      `Handed ${names} to the next conversation in this window: the next /clear gives ${items.length === 1 ? "it" : "them"} to the conversation that follows (this session keeps ${items.length === 1 ? "it" : "them"} until then; the list expires in 24 h). ` +
-      `${carried.length} thread(s) are now carried.` +
-      (dropped.length > 0 ? ` Not carried (at most 64): ${dropped.join(", ")}.` : "") +
-      " If the user did not ask for this, tell them in one line."
     );
   }
 
@@ -349,29 +332,11 @@ export function createHolds(deps: HoldsDeps) {
 
     titlesOf,
 
-    /** Step 1 picks the thread, step 2 (`to`) the session. `to: "next"` carries it over the next /clear. */
+    /** Step 1 picks the thread, step 2 (`to`) the session. */
     async handover(p: { ref?: unknown; to?: unknown }): Promise<string> {
       const ref = parseRef(p.ref);
-      const toNext = typeof p.to === "string" && /^next$/i.test(p.to.trim());
-      if (toNext) {
-        // The thread must be one this session holds now: only those can be carried.
-        if (ref.kind === "none") return await showHeld(undefined, "handover");
-        const held = await heldNow();
-        if (ref.kind === "all") return held.length === 0 ? "This session holds no threads." : carry(held);
-        if (ref.kind === "index") {
-          const item = fromMemory("held", ref.n);
-          if (!item) return await showHeld(`There is no ${ref.n} in the list this session last showed (none shown, another kind of list, or it is shorter). Nothing was handed over.`, "handover");
-          return held.some((h) => h.id === item.id) ? carry([item]) : `This session no longer holds ${item.label}. Nothing was handed over.`;
-        }
-        if (ref.kind === "id") {
-          const item = held.find((h) => h.id === ref.id);
-          return item ? carry([item]) : `This session does not hold ${ref.id}. Nothing was handed over.`;
-        }
-        const found = matches(held, ref.text);
-        if (found.length === 0) return await showHeld(`This session holds no thread matching "${ref.text}". Nothing was handed over.`, "handover");
-        if (found.length > 1) return showMatches("held", found, ref.text, "handover");
-        return carry([found[0]!]);
-      }
+      // 0.34-0.36 carried a thread over /clear with `to: "next"`; /clear keeps them all now.
+      if (typeof p.to === "string" && /^next$/i.test(p.to.trim())) return "Nothing to hand over: /clear keeps this window's threads, and the next conversation is told which it holds.";
       const to = parseRef(p.to);
       let thread: ListItem | null = null;
       if (ref.kind === "none") {

@@ -51,7 +51,7 @@ function startStub() {
       if (req.method === "PUT" && url.pathname === "/api/sessions/me/scope") return Response.json({ scope: await req.json() });
       if (url.pathname === "/api/channels") return Response.json({ channels: [{ id: CHANNEL_ID, name: "general" }] });
       if (url.pathname === "/api/deliveries") return Response.json({ entries: [] });
-      // RFC-028 §11: `handover to: next` reads what this session holds, with titles.
+      // RFC-028 §11: what this session holds, with titles.
       if (url.pathname === "/api/agents/bellman/sessions") {
         return Response.json({ sessions: [{ id: "ctx-under-test", label: null, kind: "session", scope: { mode: "all", channelIds: [] }, state: "live", online: true, holds: [THREAD] }] });
       }
@@ -70,15 +70,16 @@ function startStub() {
           authLabels.push(frame.sessionInfo?.sessionLabel);
           authScopes.push(frame.scope);
           authReplaces.push(frame.replaces);
-          // RFC-028 §11, as the server answers it: carried threads are held now, every other one released.
+          // RFC-028 §11, as the server answers it: carried threads (`"all"`: every one the replaced
+          // conversation held, here THREAD) are held now, every other one released.
           const r = frame.replaces;
-          const carried: string[] = r ? (r.carry ?? []).filter((t: string) => t === THREAD) : [];
+          const carried: string[] = !r ? [] : r.carry === "all" ? [THREAD] : (r.carry ?? []).filter((t: string) => t === THREAD);
           const replaced = r
             ? {
                 holds: carried,
                 carried,
                 released: carried.includes(THREAD) ? [] : [{ threadId: THREAD, title: "Fix the build", channelId: CHANNEL_ID, channelName: "general" }],
-                notCarried: (r.carry ?? []).filter((t: string) => t !== THREAD),
+                notCarried: r.carry === "all" ? [] : (r.carry ?? []).filter((t: string) => t !== THREAD),
               }
             : plainHolds.length > 0 ? { holds: plainHolds } : {};
           ws.send(JSON.stringify({ v: 2, type: "authenticated", payload: { agentId: "bellman", agentName: "Bellman", contextId: "ctx-under-test", ...replaced } }));
@@ -250,32 +251,19 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     return lines(p).find((m) => m.id === id).result.content[0].text;
   }
 
-  test("RFC-028 §11: /clear declares `replaces` for the old conversation, and the hook hands the new one the note (released)", async () => {
+  test("RFC-028 §11: /clear declares `replaces` with carry \"all\", and the hook tells the new conversation what it holds", async () => {
     await boot(true);
     await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
     expect(stub.authReplaces()[0]).toBeUndefined();
     const r = await clearTo("sess-0302");
     const i = stub.authKeys().indexOf("sess-0302");
-    expect(stub.authReplaces()[i]).toEqual({ sessionKey: "sess-0301", reason: "clear" });
+    expect(stub.authReplaces()[i]).toEqual({ sessionKey: "sess-0301", reason: "clear", carry: "all" });
     const note = contextOf(r.out);
-    expect(note).toContain("fresh conversation after /clear");
-    expect(note).toContain(`#general "Fix the build" (${THREAD})`);
+    expect(note).toContain("fresh conversation after /clear. It holds 1 thread carried");
+    expect(note).toContain(`"Fix the build" (${THREAD})`);
+    expect(note).toContain("Release any the user is not continuing");
     // Declared once: the file is gone, so a reconnect or a restart never declares it again.
     expect(existsSync(join(dir, "replaces", "sess-0302.json"))).toBe(false);
-  }, 40_000);
-
-  test("RFC-028 §11: handover to next, then /clear: the thread is carried and the note says this session holds it", async () => {
-    const p = await boot(true);
-    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
-    expect(await call(p, "handover", { ref: THREAD, to: "next" })).toContain("Handed Fix the build to the next conversation");
-    const r = await clearTo("sess-0302");
-    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toEqual({ sessionKey: "sess-0301", reason: "clear", carry: [THREAD] });
-    const note = contextOf(r.out)!;
-    expect(note).toContain(`This session holds`);
-    expect(note).toContain(`"Fix the build" (${THREAD})`);
-    expect(note).not.toContain("Released");
-    // Used once.
-    expect(existsSync(join(dir, "carry", "sess-0301.json"))).toBe(false);
   }, 40_000);
 
   test("RFC-028 §11: a re-key that is not a /clear (resume) declares nothing and hands no note", async () => {
@@ -294,7 +282,7 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     await clearTo("sess-0303");
     await call(p, "connect", {});
     await waitFor(() => stub.authKeys().includes("sess-0303"), 10_000, "auth under the newest key");
-    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0303")]).toEqual({ sessionKey: "sess-0301", reason: "clear" });
+    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0303")]).toEqual({ sessionKey: "sess-0301", reason: "clear", carry: "all" });
   }, 40_000);
 
   test("RFC-028 §11 step 6: after a compaction the hook restates what this session holds", async () => {
@@ -317,7 +305,7 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     expect(stub.authCount()).toBe(0);
     await call(p, "connect", {});
     await waitFor(() => stub.authKeys().includes("sess-0302"), 10_000, "auth under the new key");
-    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toEqual({ sessionKey: "sess-0301", reason: "clear" });
+    expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toEqual({ sessionKey: "sess-0301", reason: "clear", carry: "all" });
     await waitFor(
       () => lines(p).some((m) => m.method === "notifications/claude/channel" && String(m.params?.content).includes("fresh conversation after /clear")),
       5000,

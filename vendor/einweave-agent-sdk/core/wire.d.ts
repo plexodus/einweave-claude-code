@@ -110,7 +110,7 @@ declare const WIRE: {
         mode: "all" | "channels" | "none";
     };
     replaces: {
-        carry?: string[] | undefined;
+        carry?: "all" | string[] | undefined;
         reason: "clear";
         sessionKey: string;
     };
@@ -128,7 +128,7 @@ declare const WIRE: {
         } | undefined;
         takeover?: "gateway" | undefined;
         replaces?: {
-            carry?: string[] | undefined;
+            carry?: "all" | string[] | undefined;
             reason: "clear";
             sessionKey: string;
         } | undefined;
@@ -344,8 +344,8 @@ export interface Scope extends _Scope {
 type _Replaces = typeof WIRE.replaces;
 /**
  * RFC-028 §11: a NEW session's declaration that it replaces a conversation of the same window (a
- * `/clear`). The server hands the replaced session's threads over: `carry` ones (at most 64) to this
- * session, the rest released. First connect only.
+ * `/clear`). The server hands the replaced session's threads over: `carry` ones (`"all"`, or a list of
+ * at most 64) to this session, the rest released. First connect only.
  */
 export interface ReplacesDeclaration extends _Replaces {
 }
