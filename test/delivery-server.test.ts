@@ -109,6 +109,10 @@ function startStub() {
       const message = { id, channelId: CHANNEL_ID, threadId: THREAD, agentId: "kevin", senderName: "Kevin", content, type: "text", seq: 1, createdAt: "2026-10-11T10:00:00.000Z" };
       for (const ws of sockets) ws.send(JSON.stringify({ v: 2, type: "message", seq: ++seq, payload: { message, deliveryReasons: ["broadcast"] } }));
     },
+    /** bridge #323: addressed work this session was not pushed (a status frame, not an entry). */
+    pushForYou(payload: Record<string, unknown>) {
+      for (const ws of sockets) ws.send(JSON.stringify({ v: 2, type: "for_you", seq: ++seq, payload }));
+    },
     stop: () => server.stop(true),
   };
 }
@@ -394,6 +398,25 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     expect(stub.liveSockets()).toBe(1);
     void a;
   }, 60_000);
+
+  test("for_you (bridge #323) reaches the model as ONE line at the next prompt, and only once; nothing is acked", async () => {
+    const plugin = await boot(true);
+    await waitFor(() => stub.connected(), 15_000, "plugin to authenticate");
+    stub.pushForYou({ entry: "thread_event", id: mid(7), threadId: THREAD, channelId: CHANNEL_ID, why: "assigned", title: "Renew the TLS wildcard" });
+    const line = 'einweave: 1 new for you — assigned "Renew the TLS wildcard". This window\'s scope did not take it; /einweave:take picks it up.';
+    let ctx: string | null = null;
+    const end = Date.now() + 8000;
+    while (Date.now() < end && !ctx?.includes(line)) {
+      ctx = contextOf(await runHook("what is new?"));
+      if (!ctx?.includes(line)) await Bun.sleep(100);
+    }
+    expect(ctx).toBe(line);
+    expect(contextOf(await runHook("and now?")), "told once").toBeNull();
+    // A status, not an entry: nothing pending, nothing to ack, no channel notification.
+    expect(stub.acks).toEqual([]);
+    expect((await status(plugin)).delivery).toMatchObject({ pending: 0 });
+    expect(lines(plugin).some((m) => m.method === "notifications/claude/channel")).toBe(false);
+  }, 40_000);
 
   test("a push alone sends no ack; the hook reporting the tag makes the plugin ack it `model`, once", async () => {
     const plugin = await boot(true);

@@ -69,7 +69,7 @@ einweave is not on Anthropic's channel allowlist, so `--channels` alone will not
 
 4. **Optional: a starting channel scope**
 
-By default a work session starts with scope `none`: only the threads it holds reach Claude, and the connect result and `/einweave:status` say how much unheld work waits (`Scope none · N for you · /einweave:take`: threads addressed to the agent or that it took part in; `· M new in your channels` is added when channels the agent follows have unread threads). To start with specific channels instead (the server applies the scope; the plugin filters nothing):
+By default a work session starts with scope `none`: only the threads it holds reach Claude, and the connect result and `/einweave:status` say how much unheld work waits (`Scope none · N for you · /einweave:take`: threads addressed to the agent or that it took part in; `· M new in your channels` is added when channels the agent follows have unread threads). Work addressed to the agent that no window took (an assignment, a mention, a reply in its thread) is named at your next prompt: `einweave: 1 new for you — assigned "…" · /einweave:take`. To start with specific channels instead (the server applies the scope; the plugin filters nothing):
 
 ```
 /einweave:configure channels general,frontend

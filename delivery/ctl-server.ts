@@ -55,6 +55,8 @@ export interface CtlServerOptions<E extends { id: string }> {
    * conversation, if any — possibly after the new session's first auth. Absent: never.
    */
   onSession?: (conversationId: string, source: SessionSource | undefined) => Promise<{ rekeyed: boolean; context: string | null }>;
+  /** More context for the next prompt, once (the `for_you` line, delivery/for-you.ts). Absent: none. */
+  promptNote?: () => string | null;
 }
 
 /** Why no socket is open — `status` names it; "the pid was not found" is a different cause. */
@@ -155,8 +157,8 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
           }
         }
         const split = o.tracker.prompt(o.pending.list(), now());
-        const context = missedNotice(split.fresh.map(o.toNotice), split.outstanding.map(o.toNotice));
-        return { ok: true, op: "prompt", confirmed, context };
+        const notes = [missedNotice(split.fresh.map(o.toNotice), split.outstanding.map(o.toNotice)), o.promptNote?.() ?? null].filter((n) => n);
+        return { ok: true, op: "prompt", confirmed, context: notes.length > 0 ? notes.join("\n\n") : null };
       }
     }
   };

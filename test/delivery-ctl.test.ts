@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync, existsSync, ch
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { ctlSocketPath } from "../delivery/ctl-path";
+import { forYouBox } from "../delivery/for-you";
 import { startCtlServer, openCtlServer, sweepStaleCtlSockets, sweepCtlDirs, removeLegacyCtlDir, type CtlServer } from "../delivery/ctl-server";
 import { checkPrivateDir } from "../delivery/private-dir";
 import { MissedTracker } from "../delivery/missed";
@@ -29,7 +30,7 @@ afterEach(() => {
 
 type Entry = NoticeEntry & { content: string };
 
-function setup() {
+function setup(opts: { promptNote?: () => string | null } = {}) {
   const dir = mkdtempSync(join("/tmp", "ewc-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   let clock = 0;
@@ -55,6 +56,7 @@ function setup() {
       toNotice: (e) => e,
       now: () => clock,
       log: (l) => logs.push(l),
+      ...(opts.promptNote ? { promptNote: opts.promptNote } : {}),
     }).then((s) => {
       if (s) cleanups.push(() => s.stop());
       return s;
@@ -100,6 +102,29 @@ describe("control socket ⇄ hook", () => {
     const srv = (await t.start())!;
     expect(await t.hook("prompt", TAG(B))).toBeNull();
     expect(srv.stats().confirmed).toBe(0);
+  });
+
+  test("a for_you line (bridge #323) rides the next prompt once, beside the missed notice", async () => {
+    const box = forYouBox();
+    const t = setup({ promptNote: () => box.take() });
+    await t.start();
+    box.add({ entry: "thread_event", id: "e1", threadId: THREAD, channelId: null, why: "assigned", title: "Renew the TLS wildcard" });
+    expect(await t.hook("prompt", "hi")).toBe(
+      'einweave: 1 new for you — assigned "Renew the TLS wildcard". This window\'s scope did not take it; /einweave:take picks it up.'
+    );
+    expect(await t.hook("prompt", "again")).toBeNull();
+  });
+
+  test("a for_you line and a missed entry in the same answer: both, the missed notice first", async () => {
+    const box = forYouBox();
+    const t = setup({ promptNote: () => box.take() });
+    await t.start();
+    t.push(A);
+    t.at(5000);
+    box.add({ entry: "message", id: "m2", threadId: THREAD, channelId: null, why: "mention", title: "Deploy plan" });
+    const both = await t.hook("prompt", "what is new?");
+    expect(both).toContain(`(id ${A}, thread ${THREAD})`);
+    expect(both!.endsWith('einweave: 1 new for you — mentioned you in "Deploy plan". This window\'s scope did not take it; /einweave:take picks it up.')).toBe(true);
   });
 
   test("idle push never delivered (no channels): full notice once, then a count, gone once read", async () => {

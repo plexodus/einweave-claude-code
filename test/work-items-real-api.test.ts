@@ -385,6 +385,16 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     const eventLine = (tid: string) => `Work item ${tid}: assigned`;
     const count = (pl: Plugin, tid: string) => pl.notices.filter((n) => n.includes(eventLine(tid))).length;
 
+    // Scope none (the default, #40): an assignment is NOT pushed to this window -- the server says
+    // `for_you` (bridge #323) and the plugin keeps it for the next prompt (delivery-ctl.test.ts: the line).
+    const t0 = await humanTask("Renew the staging cert");
+    await human("PUT", `/api/threads/${t0}/work`, { assignee: seed.agentId });
+    const forYou = /for you \(not pushed here\): thread_event \S+ \(assigned\)/;
+    expect(await until(() => forYou.test(p.stderr()), 15_000), `no for_you:\n${p.stderr()}`).toBe(true);
+    expect(count(p, t0), "scope none: the entry itself is not pushed").toBe(0);
+
+    // A window whose scope takes the channel gets it live.
+    expect((await p.call("scope", { channels: CHANNEL })).isError).toBe(false);
     // Live: a person assigns an item to the agent while it is connected.
     const t1 = await humanTask("Renew the TLS wildcard");
     await human("PUT", `/api/threads/${t1}/work`, { assignee: seed.agentId });
@@ -408,7 +418,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     await human("PUT", `/api/threads/${t2}/work`, { assignee: seed.agentId });
 
     // Resume: the same profile and session key — the event drains on the new connection.
-    p = await plugin(dir, { EINWEAVE_SESSION_KEY: "work-s1" });
+    p = await plugin(dir, { EINWEAVE_SESSION_KEY: "work-s1", EINWEAVE_CHANNELS: CHANNEL });
     expect(await until(p.connected, 20_000), p.stderr()).toBe(true);
     expect(await until(() => count(p, t2) > 0, 15_000), `no thread_event on resume:\n${p.notices.join("\n---\n")}`).toBe(true);
     await Bun.sleep(3000);
