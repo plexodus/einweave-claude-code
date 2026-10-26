@@ -61,6 +61,8 @@ function setup(opts: { promptNote?: () => string | null } = {}) {
       if (s) cleanups.push(() => s.stop());
       return s;
     });
+  // What the person sees (`systemMessage`) on the last hook run; null when the hook showed nothing.
+  let shown: string | null = null;
   const hook = async (mode: string, prompt?: string) => {
     const env: Record<string, string> = { ...(process.env as Record<string, string>), EINWEAVE_STATE_DIR: dir, CLAUDE_PID: String(PID) };
     const proc = Bun.spawn(["bun", HOOK, mode], { stdin: "pipe", stdout: "pipe", env });
@@ -68,9 +70,11 @@ function setup(opts: { promptNote?: () => string | null } = {}) {
     proc.stdin.end();
     const out = await new Response(proc.stdout).text();
     await proc.exited;
-    return out ? (JSON.parse(out).hookSpecificOutput.additionalContext as string) : null;
+    const parsed = out ? JSON.parse(out) : null;
+    shown = parsed?.systemMessage ?? null;
+    return parsed ? (parsed.hookSpecificOutput.additionalContext as string) : null;
   };
-  return { dir, held, confirmCalls, logs, push, start, hook, at: (t: number) => (clock = t) };
+  return { dir, held, confirmCalls, logs, push, start, hook, shown: () => shown, at: (t: number) => (clock = t) };
 }
 
 describe("control socket ⇄ hook", () => {
@@ -109,10 +113,12 @@ describe("control socket ⇄ hook", () => {
     const t = setup({ promptNote: () => box.take() });
     await t.start();
     box.add({ entry: "thread_event", id: "e1", threadId: THREAD, channelId: null, why: "assigned", title: "Renew the TLS wildcard" });
-    expect(await t.hook("prompt", "hi")).toBe(
-      'einweave: 1 new for you — assigned "Renew the TLS wildcard". This window\'s scope did not take it; /einweave:take picks it up.'
-    );
+    const line = 'einweave: 1 new for you — assigned "Renew the TLS wildcard". This window\'s scope did not take it; /einweave:take picks it up.';
+    expect(await t.hook("prompt", "hi")).toBe(line);
+    // The person sees it too: it names a command for them to run.
+    expect(t.shown()).toBe(line);
     expect(await t.hook("prompt", "again")).toBeNull();
+    expect(t.shown()).toBeNull();
   });
 
   test("a for_you line and a missed entry in the same answer: both, the missed notice first", async () => {
@@ -124,7 +130,10 @@ describe("control socket ⇄ hook", () => {
     box.add({ entry: "message", id: "m2", threadId: THREAD, channelId: null, why: "mention", title: "Deploy plan" });
     const both = await t.hook("prompt", "what is new?");
     expect(both).toContain(`(id ${A}, thread ${THREAD})`);
-    expect(both!.endsWith('einweave: 1 new for you — mentioned you in "Deploy plan". This window\'s scope did not take it; /einweave:take picks it up.')).toBe(true);
+    const line = 'einweave: 1 new for you — mentioned you in "Deploy plan". This window\'s scope did not take it; /einweave:take picks it up.';
+    expect(both!.endsWith(line)).toBe(true);
+    // Only the for_you line is shown; the missed notice is the model's and stays off the screen.
+    expect(t.shown()).toBe(line);
   });
 
   test("idle push never delivered (no channels): full notice once, then a count, gone once read", async () => {
@@ -135,6 +144,7 @@ describe("control socket ⇄ hook", () => {
     const first = await t.hook("prompt", "what is new?");
     expect(first).toContain(`(id ${A}, thread ${THREAD}) — read_deliveries returns it`);
     expect(first).not.toContain("SECRET");
+    expect(t.shown()).toBeNull(); // the model's to-do, not the person's
     t.at(9000);
     expect(await t.hook("prompt", "and now?")).toBe(
       "1 einweave entry pushed earlier still unconfirmed (#general ×1); read_deliveries returns them.",

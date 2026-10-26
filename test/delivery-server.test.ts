@@ -399,18 +399,22 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     void a;
   }, 60_000);
 
-  test("for_you (bridge #323) reaches the model as ONE line at the next prompt, and only once; nothing is acked", async () => {
+  test("for_you (bridge #323) reaches the model and the person as ONE line at the next prompt, and only once; nothing is acked", async () => {
     const plugin = await boot(true);
     await waitFor(() => stub.connected(), 15_000, "plugin to authenticate");
     stub.pushForYou({ entry: "thread_event", id: mid(7), threadId: THREAD, channelId: CHANNEL_ID, why: "assigned", title: "Renew the TLS wildcard" });
     const line = 'einweave: 1 new for you — assigned "Renew the TLS wildcard". This window\'s scope did not take it; /einweave:take picks it up.';
+    let out = "";
     let ctx: string | null = null;
     const end = Date.now() + 8000;
     while (Date.now() < end && !ctx?.includes(line)) {
-      ctx = contextOf(await runHook("what is new?"));
+      out = await runHook("what is new?");
+      ctx = contextOf(out);
       if (!ctx?.includes(line)) await Bun.sleep(100);
     }
     expect(ctx).toBe(line);
+    // And the person sees it: it names a command for them to run.
+    expect(JSON.parse(out.split("\n").find((l) => l.startsWith("{"))!).systemMessage).toBe(line);
     expect(contextOf(await runHook("and now?")), "told once").toBeNull();
     // A status, not an entry: nothing pending, nothing to ack, no channel notification.
     expect(stub.acks).toEqual([]);

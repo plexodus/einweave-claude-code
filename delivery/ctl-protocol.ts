@@ -28,7 +28,8 @@ export type CtlRequest =
   | { op: "session"; id: string; source?: SessionSource };
 
 export type CtlResponse =
-  | { ok: true; op: "prompt"; confirmed: boolean; context: string | null }
+  /** `context` is for the model; `display` (a part of it) is also shown to the person. */
+  | { ok: true; op: "prompt"; confirmed: boolean; context: string | null; display: string | null }
   | { ok: true; op: "stop" }
   | { ok: true; op: "pending"; entries: unknown[] }
   | { ok: true; op: "session"; rekeyed: boolean; context: string | null }
