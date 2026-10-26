@@ -157,8 +157,11 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
           }
         }
         const split = o.tracker.prompt(o.pending.list(), now());
-        const notes = [missedNotice(split.fresh.map(o.toNotice), split.outstanding.map(o.toNotice)), o.promptNote?.() ?? null].filter((n) => n);
-        return { ok: true, op: "prompt", confirmed, context: notes.length > 0 ? notes.join("\n\n") : null };
+        // The note is for the person too (it names a command to run): the hook also shows it as
+        // `systemMessage`. The missed notice is the model's to-do and repeats until read: model only.
+        const note = o.promptNote?.() || null;
+        const notes = [missedNotice(split.fresh.map(o.toNotice), split.outstanding.map(o.toNotice)), note].filter((n) => n);
+        return { ok: true, op: "prompt", confirmed, context: notes.length > 0 ? notes.join("\n\n") : null, display: note };
       }
     }
   };

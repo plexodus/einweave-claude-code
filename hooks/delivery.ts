@@ -16,8 +16,8 @@
  *
  * FAIL OPEN, ALWAYS. No CLAUDE_PID, no socket, a socket directory that is not ours, a slow or broken server, bad stdin:
  * exit 0 and print nothing. This runs on every prompt the user types; it may cost
- * a Bridge confirmation, never the user's prompt. And stdout is model context:
- * the only thing ever written there is the one JSON object below.
+ * a Bridge confirmation, never the user's prompt. And stdout is model context (and, via
+ * `systemMessage`, the person's screen): the only thing ever written there is the one JSON object below.
  */
 import { writeSync } from "node:fs";
 import { dirname } from "node:path";
@@ -71,9 +71,11 @@ async function main(): Promise<void> {
   }
   const res = await askCtl(path, { op: "prompt", id: deliveredEntryId(payload.prompt) });
   if (res?.ok === true && typeof res.context === "string" && res.context.length > 0) {
+    // additionalContext reaches only the model; systemMessage is what the person sees.
+    const shown = typeof res.display === "string" && res.display.length > 0 ? { systemMessage: res.display } : {};
     writeSync(
       1,
-      JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: res.context } }),
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: res.context }, ...shown }),
     );
   }
 }
