@@ -215,6 +215,14 @@ declare const WIRE: {
             sessionId: string | null;
         };
     };
+    for_you: {
+        id: string;
+        title: string | null;
+        channelId: string | null;
+        threadId: string | null;
+        entry: "message" | "action_request" | "thread_event";
+        why: string;
+    };
     error: {
         message: string;
     };
@@ -390,6 +398,15 @@ type _HoldUpdatePayload = typeof WIRE.hold_update;
  */
 export interface HoldUpdatePayload extends _HoldUpdatePayload {
 }
+type _ForYouPayload = typeof WIRE.for_you;
+/**
+ * Addressed work this session was NOT pushed: it reached none of the agent's sockets (no holder online, no
+ * live gateway, every work session's scope refused it). A non-turn status -- the entry stays owed
+ * (`read_deliveries`, the takeable list's "for you"). `why`: the addressed reason of a message, the action of
+ * a `thread_event`, the name of an `action_request`.
+ */
+export interface ForYouPayload extends _ForYouPayload {
+}
 type _ErrorPayload = typeof WIRE.error;
 export interface ErrorPayload extends _ErrorPayload {
 }
@@ -459,6 +476,8 @@ export type AgentFrame = (Envelope<AuthenticatedPayload> & {
     type: "drain";
 }) | (Envelope<HoldUpdatePayload> & {
     type: "hold_update";
+}) | (Envelope<ForYouPayload> & {
+    type: "for_you";
 }) | (Envelope<ReceiptPayload> & {
     type: "receipt";
 }) | (Envelope<ErrorPayload> & {

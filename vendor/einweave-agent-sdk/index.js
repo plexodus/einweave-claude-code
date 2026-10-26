@@ -776,6 +776,10 @@ class Session {
         if (typeof env.payload.threadId === "string")
           this.emitStatus({ kind: "hold_update", update: env.payload });
         return;
+      case "for_you":
+        if (typeof env.payload.id === "string")
+          this.emitStatus({ kind: "for_you", item: env.payload });
+        return;
       case "receipt":
         if (typeof env.payload.messageId === "string" && typeof env.payload.state === "string")
           this.emitStatus({ kind: "receipt", receipt: env.payload });
@@ -903,7 +907,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.14.0";
+var SDK_VERSION = "0.15.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

@@ -127,6 +127,8 @@ export interface TakeableThread {
     };
     /** `channel`: unread in a channel the agent subscribes to — only with `include: "channel"`. */
     why: "addressed" | "participant" | "channel";
+    /** With `include: "channel"`: the agent is not a member of the channel (a subscribed public one) -- take needs membership, so join first. */
+    joinRequired?: boolean;
 }
 export interface TakeableResult {
     threads: TakeableThread[];

@@ -30,7 +30,7 @@
  * (`api.sessions.setScope`) is not reverted and a takeover is never repeated by a transient close.
  * `supersede` is unchanged — this GRANT from another window — and NEVER implies a takeover.
  */
-import { type AckHow, type AuthenticatedPayload, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type HoldUpdatePayload, type InvalidSessionPayload, type ReceiptPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionInfo } from "../core";
+import { type AckHow, type AuthenticatedPayload, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type ForYouPayload, type HoldUpdatePayload, type InvalidSessionPayload, type ReceiptPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionInfo } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 import type { LockHolderInfo, SeqStore, SessionLock } from "./store";
@@ -110,6 +110,11 @@ export type SessionStatus = {
  | {
     kind: "hold_update";
     update: HoldUpdatePayload;
+}
+/** Addressed work that reached no socket of this agent (scope refused it everywhere): a status, not a turn. */
+ | {
+    kind: "for_you";
+    item: ForYouPayload;
 }
 /** A message's receipt (✓ sent / ✓✓ seen) — always for this agent's own sends; display-only, never an entry. */
  | {
