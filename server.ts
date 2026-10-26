@@ -65,6 +65,7 @@ import { clearNote, holdsNote } from "./clear-note";
 import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
+import { forYouBox } from "./delivery/for-you";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath } from "./delivery/ctl-path";
@@ -1187,6 +1188,8 @@ const creds = new SignIn({
 });
 /** Entries pushed but not confirmed, for the missed notice (delivery/missed.ts). */
 const tracker = new MissedTracker<PendingEntry>();
+/** `for_you` items waiting for the next prompt (delivery/for-you.ts). */
+const forYou = forYouBox();
 /** Read-tool acks that found no live Session (delivery/returned-acks.ts). */
 const returnedAcks = new ReturnedAcks();
 /** Entries handed to the host in this process — `status`'s "idle" until the first. */
@@ -1305,6 +1308,7 @@ function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<Pend
     toNotice: pendingNotice,
     log: (line) => process.stderr.write(line + "\n"),
     onSession: onSessionStart,
+    promptNote: () => forYou.take(),
     ...(takeover ? { takeover: true } : {}),
   };
 }
@@ -1734,6 +1738,11 @@ function onStatus(st: SessionStatus): void {
     }
     case "server_error":
       noteServerError(st.message);
+      return;
+    case "for_you":
+      // bridge #323: addressed work this window's scope did not take. Told once at the next prompt.
+      forYou.add(st.item);
+      process.stderr.write(`einweave channel: for you (not pushed here): ${st.item.entry} ${st.item.id} (${st.item.why})\n`);
       return;
     case "hold_update": {
       // RFC-028 D3/D8: a thread's hold changed hands. Status only -- it asks the model for nothing, and
