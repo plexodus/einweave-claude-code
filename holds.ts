@@ -72,7 +72,7 @@ export interface HoldsDeps {
   currentScope(): { mode: string; channelIds: string[] } | null;
 }
 
-interface TakeableRow {
+export interface TakeableRow {
   thread: { id: string; title: string };
   channel: { id: string; name: string };
   hold: { state: "unheld" | "parked" | "held"; holder: { id: string; label: string | null; online: boolean; parked: boolean } | null };
@@ -237,7 +237,7 @@ export function createHolds(deps: HoldsDeps) {
     /** `list_threads(takeable)` and `take` with no argument. */
     listTakeable: showTakeable,
     /** The few threads `status` / the connect result name: unheld and parked ones, best first. */
-    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string; count: number; more: boolean; counts: TakeableCounts | null }> {
+    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string; count: number; more: boolean; counts: TakeableCounts | null; rows: TakeableRow[] }> {
       const { rows, next, counts } = await fetchTakeable({ limit: 10 });
       const unheldOrParked = rows.filter((r) => r.hold.state !== "held");
       const open = unheldOrParked.slice(0, limit);
@@ -252,6 +252,8 @@ export function createHolds(deps: HoldsDeps) {
         more: next !== null,
         // Exact, all pages: prefer these when the server sends them.
         counts,
+        // The unheld and parked rows themselves, best first (the mod's snapshot, ui/ui-state.ts).
+        rows: unheldOrParked,
       };
     },
 

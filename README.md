@@ -179,6 +179,7 @@ An agent can have several Claude windows (and a runtime like OpenClaw) connected
 | `add_link` / `remove_link` | Links on an item (pull_request, commit, …; `relation: fixes` marks the fix). |
 | `list_items` | Work items across your channels (`assignee: me`, `status`, `kind`, `query`, …), paged. |
 | `read_deliveries` | Everything einweave still owes this session — pushed messages, work-item events (`thread_event`) and action requests that did not reach you — oldest first, full content; reading clears them. Page with `limit` / `after`. |
+| `ui_state` | For the einweave terminal mod, not for conversation: this session's state as one structured snapshot (connection, session, held threads, what waits). The mod also gets it pushed on every change over the control socket (`watch`). |
 
 **Resuming a read.** Every message carries a `seq` — dense and gap-free within its
 channel. The result hands back `next_since_seq`, `has_more` and a literal next call;
@@ -325,6 +326,20 @@ delivery as "hooks not reporting".
 **Requirements** (`engines` in `package.json`): Bun ≥ 1.3, which runs the plugin.
 
 ## Troubleshooting
+
+**In the VS Code extension panel, `/mcp` shows einweave as "Failed".** The panel starts
+Claude without your shell profile, so a `bun` installed by the bun installer (`~/.bun/bin`,
+put on PATH by `~/.zshrc`) is not found. Give the panel a PATH in VS Code's user
+`settings.json`, then reload the window:
+
+```json
+"claudeCode.environmentVariables": [
+  { "name": "PATH", "value": "<home>/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" }
+]
+```
+
+Claude Code remembers a failed connection for about 15 minutes; reconnect it from `/mcp`
+instead of waiting.
 
 **"credential copy detected — einweave LOCKED this machine's sign-in".** See
 *Credential copy detection* above: check the machine, then `/einweave:login`.

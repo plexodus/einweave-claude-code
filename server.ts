@@ -66,6 +66,7 @@ import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
+import { buildUiState, toWaiting, UiWatch, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath } from "./delivery/ctl-path";
@@ -1190,6 +1191,10 @@ const creds = new SignIn({
 const tracker = new MissedTracker<PendingEntry>();
 /** `for_you` items waiting for the next prompt (delivery/for-you.ts). */
 const forYou = forYouBox();
+// The einweave mod's snapshot (ui/ui-state.ts): served by the `ui_state` tool and pushed to the
+// control socket's `watch`ers. Defined here, before anything can open the socket.
+const uiWatch = new UiWatch();
+let uiWaiting: UiWaiting | null = null;
 /** Read-tool acks that found no live Session (delivery/returned-acks.ts). */
 const returnedAcks = new ReturnedAcks();
 /** Entries handed to the host in this process — `status`'s "idle" until the first. */
@@ -1309,6 +1314,18 @@ function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<Pend
     log: (line) => process.stderr.write(line + "\n"),
     onSession: onSessionStart,
     promptNote: () => forYou.take(),
+    watch: {
+      current: () => {
+        refreshUi();
+        return uiWatch.current();
+      },
+      subscribe: (fn) => {
+        const off = uiWatch.subscribe(fn);
+        // The first watcher: read what waits now rather than at the next minute.
+        if (uiWaiting === null) void refreshWaiting();
+        return off;
+      },
+    },
     ...(takeover ? { takeover: true } : {}),
   };
 }
@@ -1641,6 +1658,7 @@ function onStatus(st: SessionStatus): void {
       authenticated = true;
       sessionEverAuthenticated = true;
       authenticatedAt = Date.now();
+      if (uiWatch.subscribers() > 0) void refreshWaiting();
       // "connected" means an authenticated socket, not merely having won the local lock.
       updateProcState(STATE_DIR, process.pid, "connected");
       lastServerError = "";
@@ -2869,6 +2887,26 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "ui_state",
+      description:
+        "For the einweave terminal mod, not for conversation: this session's state as one structured snapshot (connection, session, held threads, what waits). Use status to answer the person.",
+      inputSchema: { type: "object", properties: {} },
+      outputSchema: {
+        type: "object",
+        properties: {
+          rev: { type: "number" },
+          v: { type: "number" },
+          connection: { type: "object" },
+          session: { type: "object" },
+          holds: { type: "array", items: { type: "string" } },
+          waiting: { type: ["object", "null"] },
+          version: { type: "string" },
+          staleSince: { type: ["string", "null"] },
+        },
+        required: ["rev", "v", "connection", "session", "holds", "waiting", "version", "staleSince"],
+      },
+    },
   ],
 }));
 
@@ -2946,6 +2984,48 @@ const workDeps: WorkDeps = {
     );
   },
 };
+
+function uiSnapshot() {
+  return buildUiState({
+    authenticated,
+    hasSession: !!session,
+    standby: !!(session && standbyHolder),
+    stateText: connectionState(),
+    agent: agentName || agentId || null,
+    label: sessionLabel || null,
+    kind: connectionKind,
+    scope: serverScope,
+    holds: serverHolds,
+    waiting: uiWaiting,
+    version: PLUGIN_VERSION,
+    staleSince: staleSince !== null ? localIso(staleSince) : null,
+  });
+}
+
+function refreshUi(): void {
+  uiWatch.set(uiSnapshot());
+}
+
+/** What waits (one API call). Only while someone draws it: a session no mod watches pays nothing. */
+async function refreshWaiting(): Promise<void> {
+  if (!authenticated || creds.configError()) uiWaiting = null;
+  else {
+    try {
+      uiWaiting = toWaiting(await holds.needSomeone(5));
+    } catch {}
+  }
+  refreshUi();
+}
+
+// Module state changes in many places; rebuilding the snapshot each second (in memory, no IO) means
+// no mutation site can be missed, and UiWatch pushes only real changes. What waits is the server's,
+// read each minute. Both run only while a `watch`er is attached.
+setInterval(() => {
+  if (uiWatch.subscribers() > 0) refreshUi();
+}, 1000).unref?.();
+setInterval(() => {
+  if (uiWatch.subscribers() > 0) void refreshWaiting();
+}, 60_000).unref?.();
 
 /** "Threads that need someone" for `status` and the connect result; "" when there are none or it cannot be read (best effort). */
 async function needSomeoneText(): Promise<string> {
@@ -3341,22 +3421,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         { const gate = requireBridge(); if (gate) return gate; }
         const channel = typeof args.channel_id === "string" && args.channel_id ? args.channel_id : undefined;
         const text = await holds.take({ ref: args.ref, confirm: args.confirm, ...(channel ? { channel } : {}), ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}) });
+        if (uiWatch.subscribers() > 0) void refreshWaiting();
         return { content: [{ type: "text", text }] };
       }
 
       case "release": {
         { const gate = requireBridge(); if (gate) return gate; }
-        return { content: [{ type: "text", text: await holds.release({ ref: args.ref }) }] };
+        const text = await holds.release({ ref: args.ref });
+        if (uiWatch.subscribers() > 0) void refreshWaiting();
+        return { content: [{ type: "text", text }] };
       }
 
       case "handover": {
         { const gate = requireBridge(); if (gate) return gate; }
-        return { content: [{ type: "text", text: await holds.handover({ ref: args.ref, to: args.to }) }] };
+        const text = await holds.handover({ ref: args.ref, to: args.to });
+        if (uiWatch.subscribers() > 0) void refreshWaiting();
+        return { content: [{ type: "text", text }] };
       }
 
       case "scope": {
         { const gate = requireBridge(); if (gate) return gate; }
-        return { content: [{ type: "text", text: await holds.scope({ channels: args.channels }) }] };
+        const text = await holds.scope({ channels: args.channels });
+        if (uiWatch.subscribers() > 0) void refreshWaiting();
+        return { content: [{ type: "text", text }] };
       }
 
       case "list_agents": {
@@ -4077,6 +4164,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "logout": {
         if (sessionKeyReady) await sessionKeyReady;
         return { content: [{ type: "text", text: await creds.logout(args.local === true) }] };
+      }
+
+      case "ui_state": {
+        // Not gated, like status: the mod draws "disconnected" from it too.
+        if (authenticated && uiWaiting === null) await refreshWaiting();
+        refreshUi();
+        const cur = uiWatch.current()!;
+        const structured = { rev: cur.rev, ...cur.state };
+        return { content: [{ type: "text", text: JSON.stringify(structured) }], structuredContent: structured };
       }
 
       case "status": {

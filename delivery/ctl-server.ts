@@ -57,7 +57,18 @@ export interface CtlServerOptions<E extends { id: string }> {
   onSession?: (conversationId: string, source: SessionSource | undefined) => Promise<{ rekeyed: boolean; context: string | null }>;
   /** More context for the next prompt, once (the `for_you` line, delivery/for-you.ts). Absent: none. */
   promptNote?: () => string | null;
+  /** The UI snapshot `watch` streams (ui/ui-state.ts UiWatch). Absent: `watch` is refused. */
+  watch?: WatchPort;
 }
+
+/** What the `watch` op needs from ui/ui-state.ts's UiWatch. */
+export interface WatchPort {
+  current(): { rev: number; state: unknown } | null;
+  subscribe(fn: (rev: number, state: unknown) => void): () => void;
+}
+
+/** Open `watch` connections at once; one per mod relay is the norm, a few spare for reloads. */
+export const MAX_WATCHERS = 4;
 
 /** Why no socket is open — `status` names it; "the pid was not found" is a different cause. */
 export type CtlFailure =
@@ -79,10 +90,14 @@ export interface CtlServer {
   stats(): CtlStats;
   /** Is the public path still the socket this server created? "replaced": another process bound it since. */
   ownership(): "ours" | "replaced" | "gone";
+  /** Open `watch` connections. */
+  watchers(): number;
   stop(): void;
 }
 
 const MAX_LINE = 4096;
+
+type Conn = { buf: string; unwatch?: () => void };
 
 /** Probe an existing socket file: is a live server behind it? */
 function socketAnswers(path: string): Promise<boolean> {
@@ -143,6 +158,9 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
         return { ok: true, op: "stop" };
       case "pending":
         return { ok: true, op: "pending", entries: o.pending.list().map(o.toNotice) };
+      case "watch":
+        // Streams are answered by startWatch before handle() runs; this is never reached.
+        return { ok: false, error: "watch is a stream" };
       case "session": {
         const r = (await o.onSession?.(req.id, req.source)) ?? { rekeyed: false, context: null };
         return { ok: true, op: "session", rekeyed: r.rekeyed, context: r.context };
@@ -166,7 +184,34 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
     }
   };
 
-  let listener: UnixSocketListener<{ buf: string }>;
+  const watchers = new Set<Socket<Conn>>();
+  /** `watch`: answer now and on every change; the connection stays open. Never counts as a hook. */
+  const startWatch = (s: Socket<Conn>): void => {
+    const send = (rev: number, state: unknown): void => {
+      try {
+        s.write(JSON.stringify({ ok: true, op: "watch", rev, state } satisfies CtlResponse) + "\n");
+      } catch {}
+    };
+    if (!o.watch || watchers.size >= MAX_WATCHERS) {
+      try {
+        s.write(JSON.stringify({ ok: false, error: o.watch ? "too many watchers" : "watch unavailable" } satisfies CtlResponse) + "\n");
+        s.end();
+      } catch {}
+      return;
+    }
+    // current() may itself find a change; read it before subscribing so that change is sent once.
+    // Both are synchronous, so nothing can change in between.
+    const cur = o.watch.current();
+    watchers.add(s);
+    s.data.unwatch = o.watch.subscribe(send);
+    if (cur) send(cur.rev, cur.state);
+  };
+  const dropWatch = (s: Socket<Conn>): void => {
+    s.data?.unwatch?.();
+    watchers.delete(s);
+  };
+
+  let listener: UnixSocketListener<Conn>;
   let mine: { ino: number; dev: number } | null = null;
   const tmp = `${o.path}.tmp-${process.pid}-${Math.random().toString(16).slice(2, 6)}`;
   try {
@@ -180,19 +225,28 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
       o.log(`einweave delivery: control socket ${o.path} is served by another process; hook confirmations off`);
       return { server: null, failure: { kind: "served-elsewhere", detail: o.path } };
     }
-    listener = Bun.listen<{ buf: string }>({
+    listener = Bun.listen<Conn>({
       unix: tmp,
       socket: {
         open(s) {
           s.data = { buf: "" };
         },
-        data(s: Socket<{ buf: string }>, chunk) {
+        close(s) {
+          dropWatch(s);
+        },
+        error(s) {
+          dropWatch(s);
+        },
+        data(s: Socket<Conn>, chunk) {
+          // A watcher has said all it will: anything more is not ours.
+          if (watchers.has(s)) return;
           s.data.buf += chunk.toString();
           if (s.data.buf.length > MAX_LINE) return void s.end();
           const nl = s.data.buf.indexOf("\n");
           if (nl < 0) return;
           const line = s.data.buf.slice(0, nl);
           s.data.buf = "";
+          if (parseCtlRequest(line)?.op === "watch") return startWatch(s);
           void handle(line)
             .catch((err): CtlResponse => {
               o.log(`einweave delivery: control request failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -235,7 +289,11 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
       path: o.path,
       stats: () => ({ ...stats }),
       ownership,
+      watchers: () => watchers.size,
       stop() {
+        // listener.stop(true) below closes the connections; unsubscribe them first, since a forced
+        // close need not reach their close() handler.
+        for (const w of [...watchers]) dropWatch(w);
         // Bun unlinks only the temp name, which the rename already moved away.
         try {
           listener.stop(true);
