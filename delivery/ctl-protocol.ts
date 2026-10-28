@@ -3,7 +3,7 @@
  * (RFC-027 D7): `<state>/ctl/c<claude-pid>.sock`, 0600. One NDJSON request and one
  * response per connection. Not the feed socket — that one stays read-only (#228).
  *
- * Four operations, nothing else:
+ * Five operations, nothing else:
  * - `prompt` (UserPromptSubmit): `id` is the entry the prompt delivered, if any
  *   (`tags.ts`). The server confirms it ONLY if this process holds it pending,
  *   then answers with the missed notice, if any. Sent on every prompt, so its
@@ -19,13 +19,18 @@
  *   is the note the hook gives the conversation (after `/clear`, after a compaction), or null;
  *   it may take a few seconds (the new session's first `authenticated`).
  *
+ * - `watch` (the einweave mod's relay, ui/ctl-watch.ts): the one op that keeps the connection
+ *   open. The server writes the current UI snapshot (ui/ui-state.ts) at once and again on every
+ *   change, one line each, until either side closes. It is not a hook: it never counts as one.
+ *
  * Time is the server's clock at receipt, never the caller's.
  */
 export type CtlRequest =
   | { op: "prompt"; id: string | null }
   | { op: "stop" }
   | { op: "pending" }
-  | { op: "session"; id: string; source?: SessionSource };
+  | { op: "session"; id: string; source?: SessionSource }
+  | { op: "watch" };
 
 export type CtlResponse =
   /** `context` is for the model; `display` (a part of it) is also shown to the person. */
@@ -33,6 +38,8 @@ export type CtlResponse =
   | { ok: true; op: "stop" }
   | { ok: true; op: "pending"; entries: unknown[] }
   | { ok: true; op: "session"; rekeyed: boolean; context: string | null }
+  /** One per snapshot; `rev` grows by one per change. */
+  | { ok: true; op: "watch"; rev: number; state: unknown }
   | { ok: false; error: string };
 
 /** SessionStart's `source` values this build knows. */
@@ -62,6 +69,8 @@ export function parseCtlRequest(line: string): CtlRequest | null {
       return { op: "stop" };
     case "pending":
       return { op: "pending" };
+    case "watch":
+      return { op: "watch" };
     case "session": {
       if (typeof o.id !== "string" || !ID.test(o.id)) return null;
       const source = (SESSION_SOURCES as readonly unknown[]).includes(o.source) ? (o.source as SessionSource) : undefined;
