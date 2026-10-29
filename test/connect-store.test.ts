@@ -1,9 +1,7 @@
 /**
  * Pure storage for the per-session connect-intent boolean (connect-on-demand
- * feature). Mirrors label-store.ts / test/label-store.test.ts exactly —
- * same cursor-persistence idiom, same atomic tmp+rename write — differing
- * only in filename prefix (`.connect-state-`) and value shape (boolean, not
- * string).
+ * feature). The cursor-persistence idiom: atomic tmp+rename write, filename
+ * prefix `.connect-state-`, a boolean value.
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readdirSync, utimesSync, existsSync, readFileSync, writeFileSync } from "node:fs";

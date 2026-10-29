@@ -416,7 +416,7 @@ class Session {
       if (this.ws !== sock)
         return;
       const sessionInfo = {
-        ...this.opts.sessionInfo,
+        ...typeof this.opts.sessionInfo === "function" ? this.opts.sessionInfo() : this.opts.sessionInfo,
         sessionKey: this.client.sessionKey(),
         softwareId: this.client.softwareId(),
         clientVersion: this.client.softwareVersion()
@@ -812,6 +812,7 @@ class Session {
       advice: p.client,
       ...typeof p.kind === "string" ? { connectionKind: p.kind } : {},
       ...typeof p.scope === "object" && p.scope !== null ? { scope: p.scope } : {},
+      ...typeof p.label === "string" || p.label === null ? { label: p.label } : {},
       ...Array.isArray(p.holds) ? { holds: p.holds } : {},
       ...Array.isArray(p.carried) ? { carried: p.carried } : {},
       ...Array.isArray(p.released) ? { released: p.released } : {},
@@ -907,7 +908,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.15.0";
+var SDK_VERSION = "0.16.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

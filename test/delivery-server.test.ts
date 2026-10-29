@@ -14,7 +14,6 @@ import { join } from "node:path";
 import { createAgentAuthRoutes } from "./agent-auth-routes";
 import { mintAgentToken } from "./agent-auth-stub";
 import { readConnectState, readScopeSet, readConnectKind } from "../connect-store";
-import { writeLabelFile } from "../label-store";
 
 const SERVER = join(import.meta.dir, "..", "server.ts");
 const HOOK = join(import.meta.dir, "..", "hooks", "delivery.ts");
@@ -370,8 +369,9 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
   }, 30_000);
 
   test("RFC-028 B4: the previous conversation's label does not ride into the new session", async () => {
-    writeLabelFile(dir, "sess-0301", "deploy-fix");
-    await boot(true);
+    // This stub stores no label (no authenticated.label): the label then rides every frame of ITS conversation.
+    const p = await boot(false);
+    await call(p, "connect", { label: "deploy-fix" });
     await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
     expect(stub.authLabels()[stub.authKeys().indexOf("sess-0301")]).toBe("deploy-fix");
     let err = "";

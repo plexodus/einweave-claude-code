@@ -10,11 +10,10 @@
  * only ANSWERS that question; each caller decides what "unusable" means for it (store.ts
  * treats the whole installation as one unit; see its own comments).
  *
- * `state`, the connect-store and the label-store are bare scalars with no JSON
- * envelope and are NOT read through here — see their own modules for why they are
- * guarded differently (state: gated on installation.json's format, as part of the same
- * unit; connect-store: guarded by its own value's shape; label-store: not guarded, see
- * its header).
+ * `state` and the connect-store are bare scalars with no JSON envelope and are NOT
+ * read through here — see their own modules for why they are guarded differently
+ * (state: gated on installation.json's format, as part of the same unit; connect-store:
+ * guarded by its own value's shape).
  */
 import { readFileSync } from "fs";
 
