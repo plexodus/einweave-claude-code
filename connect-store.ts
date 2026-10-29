@@ -1,6 +1,6 @@
 /**
  * Per-session connect-intent persistence — pure module, no top-level side
- * effects. Mirrors label-store.ts (which mirrors the cursor idiom). Keyed by
+ * effects. Mirrors the cursor idiom. Keyed by
  * SESSION_KEY (resume-stable), so a session's connected/disconnected choice
  * survives reconnect and `claude -c`. Wired into server.ts: resolution is
  * `readConnectState(...) ?? (EINWEAVE_AUTOCONNECT==="1")`; connect/disconnect

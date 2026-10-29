@@ -77,6 +77,8 @@ export type SessionStatus = {
     /** RFC-028: what the server stored for this connection, its scope, and the threads it holds. */
     connectionKind?: ConnectionKind;
     scope?: AuthenticatedPayload["scope"];
+    /** The label this session chose, as stored on its grant; null = derived. Absent from an older server. */
+    label?: string | null;
     holds?: string[];
     /** RFC-028 §11 — after `replaces`: threads handed to this session, threads released, `carry` ids not carried. */
     carried?: string[];
@@ -172,7 +174,8 @@ export interface SessionOptions {
     lock?: SessionLock;
     /** Ask the server to take over this GRANT from a socket that holds it (also implied while `lock` is held). Never moves a gateway lease — that is `takeover`. */
     supersede?: boolean;
-    sessionInfo?: Partial<SessionInfo>;
+    /** Rides every auth frame. A function is called as EACH frame is built: what changed since the last one rides the next. */
+    sessionInfo?: Partial<SessionInfo> | (() => Partial<SessionInfo>);
     /** Entries waiting for the adapter beyond this many drop the oldest (default 1000). */
     bufferSize?: number;
     /** No inbound frame for this long ⇒ reconnect. Default: 3 server heartbeats, 90 s before the first. */

@@ -174,6 +174,7 @@ declare const WIRE: {
             recommended: string;
             advice: string;
         } | undefined;
+        label?: string | null | undefined;
         carried?: string[] | undefined;
         released?: {
             title: string | null;

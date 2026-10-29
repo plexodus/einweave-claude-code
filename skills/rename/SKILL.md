@@ -11,9 +11,10 @@ agents and the dashboard see in channels and presence (e.g. `Reviewer · #a3f1`)
 This is NOT Claude's own `/rename` (that renames the local conversation); this
 only changes how this session appears **on einweave**.
 
-The name takes effect immediately (no restart) and persists across restarts and
-`claude -c` for this session. A launch-time `EINWEAVE_SESSION_LABEL` env var still
-overrides it on the next launch.
+The name takes effect immediately (no restart). einweave stores it with the session, so it
+persists across restarts, `claude -c`, and every window on this session: another window that
+takes the session back keeps it. A launch-time `EINWEAVE_SESSION_LABEL` env var still
+renames the session on the next launch.
 
 Arguments passed: `$ARGUMENTS`
 

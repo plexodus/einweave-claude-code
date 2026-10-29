@@ -48,7 +48,7 @@ import {
 import { readFileSync, mkdirSync, chmodSync, existsSync } from "fs";
 import { homedir, hostname, tmpdir } from "os";
 import { dirname, join } from "path";
-import { labelFileFor, readLabelFile, writeLabelFile, clearLabelFile, sweepLabelFiles } from "./label-store";
+import { createLabelSetting } from "./session-settings";
 import { readConnectState, writeConnectState, connectStateFileFor, sweepConnectStateFiles, readConnectKind, writeConnectKind, connectKindFileFor, readScopeSet, writeScopeSet, connectScopeFileFor, touchSessionFiles, type ConnectKind } from "./connect-store";
 import { describeClose, type CloseClass, type HolderIdentity } from "./reconnect-policy";
 import { writeProc, removeProc, updateProcState, listProcs, type ProcInfo } from "./proc-registry";
@@ -110,10 +110,8 @@ const SESSION_KEY_OVERRIDE = (process.env.EINWEAVE_SESSION_KEY ?? "").trim();
 // machine-global, so a label there would name every session on the box the
 // same. Only a per-launch env var may set it.
 //
-// This is the top of the resolution precedence — env override > stored
-// label file (SESSION_KEY-keyed, see label-store.ts) > "" (no label; the
-// server derives one). Settled into module-scope `sessionLabel` once
-// SESSION_KEY is resolved, near the bottom of this file.
+// A launch-time change (session-settings.ts): it rides the first auth frame, after which the
+// label the server stores is the label (RFC-028 D6).
 const SESSION_LABEL_OVERRIDE = (process.env.EINWEAVE_SESSION_LABEL ?? "").trim();
 
 // Same real-env-before-.env rule: the profile picks WHICH agent this session is,
@@ -127,16 +125,14 @@ const LEGACY_ENV_PROBLEM = legacyEnvProblem(process.env);
 const PROFILE = LEGACY_ENV_PROBLEM ? { error: LEGACY_ENV_PROBLEM } : resolveProfile(STATE_DIR, process.env.EINWEAVE_PROFILE);
 const PROFILE_LABEL = "error" in PROFILE ? "(invalid)" : profileLabel(PROFILE);
 
-// Resolved once SESSION_KEY is (see bottom of file); read by
-// minimalSessionInfo(). Mutable because the set_session_label tool updates it
-// in place after a successful rename/clear, without requiring a reconnect to
-// take effect on the NEXT auth frame.
-let sessionLabel = "";
+// RFC-028 D6: the server stores the label; this window adopts it on each auth and sends one
+// only as a change (session-settings.ts). A new one per conversation (rekeyTo).
+let labelSetting = createLabelSetting(SESSION_LABEL_OVERRIDE);
 
 // Master switch for the startup connect (Task 3, connect-on-demand):
 // persisted per-session intent (connect-store.ts) wins, else EINWEAVE_AUTOCONNECT.
 // Resolved once SESSION_KEY is (see bottom of file); the `connect`/`disconnect`
-// tools update it in place, the same way sessionLabel does.
+// tools update it in place.
 let wantConnected = false;
 
 // RFC-028 D1: what this window declares on every auth frame -- a work `session` unless a
@@ -545,7 +541,6 @@ function minimalSessionInfo(): Record<string, string> {
     info.hostName = hostname();
   } catch {}
   info.sessionKey = SESSION_KEY;
-  if (sessionLabel) info.sessionLabel = sessionLabel;
   return info;
 }
 
@@ -1209,8 +1204,13 @@ let lockKey = "";
 let ctlMgr: CtlManager<PendingEntry> | null = null;
 /** This Session has authenticated at least once: it holds the lock and can send acks. Reset when a Session closes. */
 let sessionEverAuthenticated = false;
-/** What rides on every auth frame. Mutated in place: the label tool's change applies to the next one. */
+/** What rides on every auth frame (the label is added per frame: authSessionInfoForFrame). */
 const authSessionInfo: Record<string, string> = {};
+/** Called by the Session as EACH auth frame is built: the label rides only a frame that changes it. */
+function authSessionInfoForFrame(): Record<string, string> {
+  const label = labelSetting.forFrame();
+  return label ? { ...authSessionInfo, sessionLabel: label } : { ...authSessionInfo };
+}
 
 let authenticatedAt: number | null = null;
 let reconnectAttempt = 0;
@@ -1599,7 +1599,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
     ...(replace ? { replaces: { sessionKey: replace.from, reason: "clear" as const, carry: "all" as const } } : {}),
     seqStore,
     lock: keyCheckedLock(myLock),
-    sessionInfo: authSessionInfo,
+    sessionInfo: authSessionInfoForFrame,
     livenessTimeoutMs: LIVENESS_TIMEOUT_MS,
     standbyRetryMs: LOCK_RETRY_MS,
     autoConnect: false,
@@ -1646,6 +1646,7 @@ function onStatus(st: SessionStatus): void {
       agentHandle = st.handle ?? "";
       myContextId = st.contextId ?? "";
       serverScope = st.scope ?? null;
+      labelSetting.adopt(st.label);
       serverHolds = st.holds ?? [];
       if (replaceSentBy && replaceSentBy === session) {
         replaceSentBy = null;
@@ -1966,7 +1967,7 @@ function rekeyTo(conversationId: string, source = ""): boolean {
   SESSION_KEY = conversationId;
   SESSION_KEY_IS_CONVERSATION_ID = true;
   // Everything keyed by the session key now reads the new conversation's files.
-  sessionLabel = SESSION_LABEL_OVERRIDE || readLabelFile(STATE_DIR, SESSION_KEY) || "";
+  labelSetting = createLabelSetting(SESSION_LABEL_OVERRIDE);
   sessionInfoPromise = null;
   // The new conversation's own connect choice wins; else it carries on as this window was.
   wantConnected = readConnectState(STATE_DIR, SESSION_KEY) ?? wantConnected;
@@ -2910,19 +2911,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-// Shared by `set_session_label` and `connect`'s optional label: persist the
-// label file (keyed by SESSION_KEY) and patch the live `sessionLabel` so the
-// NEXT auth frame carries it without requiring a reconnect to take effect.
-// Dropping the sessionInfo memo makes that "next auth frame" the very next
-// one sent, rather than a cached payload from before the change.
-function persistLabel(label: string): void {
-  sessionLabel = label;
-  // The next auth frame carries it (the Session spreads this object at each open).
-  if (label) authSessionInfo.sessionLabel = label;
-  else delete authSessionInfo.sessionLabel;
-  if (label) writeLabelFile(STATE_DIR, SESSION_KEY, label);
-  else clearLabelFile(STATE_DIR, SESSION_KEY);
-  sessionInfoPromise = null;
+/**
+ * RFC-028 D6: the label route stores this session's label on its grant ("" clears it); it is the label
+ * now, and no auth frame needs to carry it. Returns the server's suffixed "Name · #id" form.
+ */
+async function renameOnServer(label: string): Promise<string> {
+  const res = await apiFetch(
+    `/api/agents/${encodeURIComponent(agentId)}/contexts/${encodeURIComponent(myContextId)}/label`,
+    { method: "PUT", body: JSON.stringify({ label }) }
+  );
+  if (!res.ok) throw new Error(`einweave API error ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { label?: string };
+  // The RAW label, not the suffixed form the server answers with.
+  labelSetting.applied(label);
+  return data.label ?? "";
 }
 
 // RFC-028 D3/D8: the hold verbs. HTTP goes through apiFetch (a proof per request); this window's
@@ -2992,7 +2994,7 @@ function uiSnapshot() {
     standby: !!(session && standbyHolder),
     stateText: connectionState(),
     agent: agentName || agentId || null,
-    label: sessionLabel || null,
+    label: labelSetting.current() || null,
     kind: connectionKind,
     scope: serverScope,
     holds: serverHolds,
@@ -4003,26 +4005,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         // Trimmed once, up front: a whitespace-only arg must read as a clear,
         // matching the server's own sanitizeSessionLabel (trims -> empty ->
-        // clear). Otherwise the client would persist " " to the label file
+        // clear). Otherwise the client would keep " " as its label
         // and report "renamed" for something the server treats as empty.
         const label = String(args.label ?? "").trim();
-        const res = await apiFetch(
-          `/api/agents/${encodeURIComponent(agentId)}/contexts/${encodeURIComponent(myContextId)}/label`,
-          { method: "PUT", body: JSON.stringify({ label }) }
-        );
-        if (!res.ok) throw new Error(`einweave API error ${res.status}: ${await res.text()}`);
-        const data = (await res.json()) as { label?: string };
-        const stored = data.label ?? "";
-        // Effective immediately: the NEXT auth frame (a reconnect, or the
-        // server rebinding this connection) carries the new value without
-        // requiring a process restart. Must be the RAW label, not `stored`
-        // (the server's suffixed "Name · #id" form) — `sessionLabel` feeds
-        // minimalSessionInfo().sessionLabel on that next auth frame, and the
-        // server re-suffixes whatever it receives. Storing `stored` here
-        // would compound the suffix on every subsequent reconnect. `label`
-        // is already "" on the clear path. Same store+memo write `connect`'s
-        // optional label uses (persistLabel), just without the API PUT above.
-        persistLabel(label);
+        const stored = await renameOnServer(label);
         return {
           content: [
             {
@@ -4036,11 +4022,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       case "connect": {
-        // Optional label first: independent of connection state (it just
-        // touches the label file + the in-memory value), so it is in place
-        // before the auth frame below is even built.
         const label = String(args.label ?? "").trim();
-        if (label) persistLabel(label);
         // RFC-017 D3: the ONE way a superseded window resumes. Clearing it here (an
         // explicit person action) is what lets connectUnlessDuplicate proceed at all —
         // its own guard refuses every automatic path.
@@ -4059,6 +4041,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (gatewayTakeover && wantedKind !== "gateway") {
           return { content: [{ type: "text", text: 'takeover:"gateway" moves the agent\'s gateway to this window, so it needs kind "gateway" (a work session is not the gateway).' }] };
         }
+        // The optional label. Connected: the label route stores it, as set_session_label does. Otherwise it is
+        // a change the next auth frame carries (session-settings.ts), recorded before any await so the first
+        // frame has it -- unless this connect is refused (superseded without takeover, below): nothing may ride a later takeover.
+        if (label && authenticated) await renameOnServer(label);
+        else if (label && (!superseded || takeover)) labelSetting.change(label);
         const kindChanged = wantedKind !== connectionKind;
         const previousKind = connectionKind;
         connectionKind = wantedKind;
@@ -4194,10 +4181,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
                   })()),
                   configured: !creds.configError(),
                   auth: creds.status(),
-                  // The RAW in-memory label (what the user typed), not the
-                  // server's suffixed "Name · #id" form — same distinction
-                  // persistLabel's own comment draws.
-                  label: sessionLabel || null,
+                  // The RAW label (what was typed), not the server's suffixed "Name · #id" form.
+                  label: labelSetting.current() || null,
                   // RFC-022 D10: run this in a split terminal to read messages in full.
                   tail: feedTap?.path() && existsSync(launcherPath(STATE_DIR)) ? launcherPath(STATE_DIR) : null,
                 },
@@ -4285,18 +4270,10 @@ sessionKeyReady = resolveSessionKey().then((resolved) => {
 const resolvedSessionKey = await sessionKeyReady;
 SESSION_KEY_IS_CONVERSATION_ID = resolvedSessionKey.source.startsWith("session map");
 
-// Same precedence note as SESSION_LABEL_OVERRIDE above: launch env wins,
-// then whatever set_session_label persisted on a previous launch of THIS
-// session key, else "" (minimalSessionInfo omits the field and the server
-// derives a name). Swept on the same age-based, never-current-file terms as
-// cursors — nothing else prunes these files either.
-sessionLabel = SESSION_LABEL_OVERRIDE || readLabelFile(STATE_DIR, SESSION_KEY) || "";
-sweepLabelFiles(STATE_DIR, labelFileFor(STATE_DIR, SESSION_KEY), STATE_SWEEP_MAX_AGE_MS);
-
-// Same precedence idea as sessionLabel above: whatever the connect/disconnect
+// Whatever the connect/disconnect
 // tools persisted on a previous launch of THIS session key wins; else
 // EINWEAVE_AUTOCONNECT decides. Swept on the same age-based, never-current-file
-// terms as cursors and labels. Guarded on intentExplicitlySet: a
+// terms as cursors. Guarded on intentExplicitlySet: a
 // connect/disconnect already answered in the pre-settle window set
 // wantConnected (and persisted it under the now-resolved SESSION_KEY via the
 // same sessionKeyReady await) — this must not clobber that with a stale read.
@@ -4348,7 +4325,7 @@ feedTap = await startFeedTap({
     software_version: PLUGIN_VERSION,
     agent: { id: agentId, handle: agentHandle || agentName },
     context_id: myContextId || SESSION_KEY,
-    ...(sessionLabel ? { label: sessionLabel } : {}),
+    ...(labelSetting.current() ? { label: labelSetting.current() } : {}),
     ...(process.env.CLAUDE_PROJECT_DIR ? { cwd: process.env.CLAUDE_PROJECT_DIR } : {}),
   }),
   log: (line) => process.stderr.write(line + "\n"),
