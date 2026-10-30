@@ -75,6 +75,8 @@ describe("RFC-017 D9/P8: status other_processes", () => {
       const sb = await untilSees(b, "session-aaaa", 10_000);
       expect(sa.other_processes.some((p: any) => p.sessionKey === "session-bbbb")).toBe(true);
       expect(sa.other_processes.some((p: any) => p.sessionKey === "session-aaaa")).toBe(false); // no self-reporting
+      expect(sa.session_key).toBe("session-aaaa"); // ...but its own key is there, on its own
+      expect(typeof sa.session_key_resumable).toBe("boolean");
       expect(sb.other_processes.some((p: any) => p.sessionKey === "session-aaaa")).toBe(true);
       const entry = sa.other_processes.find((p: any) => p.sessionKey === "session-bbbb");
       expect(typeof entry.pid).toBe("number");

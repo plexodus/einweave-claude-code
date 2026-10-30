@@ -2,4 +2,4 @@
 preload = ["./test/preload.ts"]
 # mods/picker-probe is a Claude Code mod with its own kit tests (`claude plugin test mods/picker-probe`);
 # it imports `claude-code/testing`, which only that runner provides.
-pathIgnorePatterns = ["mods/**"]
+pathIgnorePatterns = ["mods/**", "mod/**"]

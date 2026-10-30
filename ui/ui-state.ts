@@ -7,7 +7,7 @@
  * The builder is pure: server.ts hands it what it holds, so the shape is tested without a socket.
  */
 
-export type UiConnection = "connected" | "standby" | "disconnected" | "idle";
+export type UiConnection = "connected" | "superseded" | "standby" | "disconnected" | "idle";
 
 export interface UiWaitingItem {
   threadId: string;
@@ -26,12 +26,17 @@ export interface UiWaiting {
   top: UiWaitingItem[];
 }
 
+export interface UiHeld {
+  threadId: string;
+  title: string | null;
+}
+
 export interface UiState {
   v: 1;
   connection: { state: UiConnection; detail: string | null };
   session: { agent: string | null; label: string | null; kind: string | null; scope: unknown };
-  /** Thread ids this session holds. */
-  holds: string[];
+  /** Threads this session holds, in hold order; `title` null until read, or when it has none. */
+  holds: UiHeld[];
   /** Unheld work this session could take; null until first read, or while not connected. */
   waiting: UiWaiting | null;
   version: string;
@@ -42,26 +47,46 @@ export interface UiInputs {
   authenticated: boolean;
   /** A Session exists (connect was asked for); false: idle. */
   hasSession: boolean;
+  /** Another window took this session over (D3): nothing reconnects until a person takes it back. */
+  superseded: boolean;
   standby: boolean;
   /** connectionState()'s text, shown as the detail when not connected. */
   stateText: string;
+  /** The process that has this session when superseded or standing by, as far as it is known. */
+  holder: { pid: number; termProgram?: string; tty?: string } | null;
   agent: string | null;
   label: string | null;
   kind: string | null;
   scope: unknown;
   holds: readonly string[];
+  /** Titles read so far (holds.titlesOf); a held id missing here is drawn without one. */
+  titles: ReadonlyMap<string, string | null>;
   waiting: UiWaiting | null;
   version: string;
   staleSince: string | null;
 }
 
+/** Which window has the session, for a person to find it; the close code and the tool advice stay in `status`. */
+function holderDetail(h: UiInputs["holder"]): string | null {
+  if (!h) return null;
+  return `that window: ${[`pid ${h.pid}`, h.termProgram, h.tty && h.tty !== "??" ? h.tty : null].filter(Boolean).join(" · ")}`;
+}
+
+/** Idle already says "not connected": keep only why the last connection closed, if it said. */
+function idleDetail(stateText: string): string | null {
+  const why = stateText.indexOf(" — ");
+  return why >= 0 ? stateText.slice(why + 3) || null : null;
+}
+
 export function buildUiState(i: UiInputs): UiState {
-  const state: UiConnection = i.authenticated ? "connected" : i.standby ? "standby" : i.hasSession ? "disconnected" : "idle";
+  const state: UiConnection = i.authenticated ? "connected" : i.superseded ? "superseded" : i.standby ? "standby" : i.hasSession ? "disconnected" : "idle";
+  const detail =
+    state === "connected" ? null : state === "superseded" || state === "standby" ? holderDetail(i.holder) : state === "idle" ? idleDetail(i.stateText) : i.stateText || null;
   return {
     v: 1,
-    connection: { state, detail: state === "connected" ? null : i.stateText || null },
+    connection: { state, detail },
     session: { agent: i.agent, label: i.label, kind: i.kind, scope: i.authenticated ? (i.scope ?? null) : null },
-    holds: i.authenticated ? [...i.holds] : [],
+    holds: i.authenticated ? i.holds.map((threadId) => ({ threadId, title: i.titles.get(threadId) ?? null })) : [],
     waiting: i.authenticated ? i.waiting : null,
     version: i.version,
     staleSince: i.staleSince,

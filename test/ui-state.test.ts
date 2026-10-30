@@ -22,13 +22,16 @@ afterEach(() => {
 const INPUTS: UiInputs = {
   authenticated: true,
   hasSession: true,
+  superseded: false,
   standby: false,
   stateText: "connected",
+  holder: null,
   agent: "bellman",
   label: "probe",
   kind: "session",
   scope: { mode: "none" },
   holds: ["t1"],
+  titles: new Map([["t1", "Fix the build"]]),
   waiting: { forYou: 2, channel: 0, more: false, top: [] },
   version: "0.38.0",
   staleSince: null,
@@ -39,8 +42,13 @@ describe("buildUiState", () => {
     const s = buildUiState(INPUTS);
     expect(s.connection).toEqual({ state: "connected", detail: null });
     expect(s.session).toEqual({ agent: "bellman", label: "probe", kind: "session", scope: { mode: "none" } });
-    expect(s.holds).toEqual(["t1"]);
+    expect(s.holds).toEqual([{ threadId: "t1", title: "Fix the build" }]);
     expect(s.waiting?.forYou).toBe(2);
+  });
+
+  test("a held thread whose title is not known yet (or has none) carries title null, in hold order", () => {
+    const s = buildUiState({ ...INPUTS, holds: ["t2", "t1"] });
+    expect(s.holds).toEqual([{ threadId: "t2", title: null }, { threadId: "t1", title: "Fix the build" }]);
   });
 
   test("not connected: no holds, scope or waiting from a socket that is gone, and the reason as detail", () => {
@@ -51,9 +59,30 @@ describe("buildUiState", () => {
     expect(s.session.scope).toBeNull();
   });
 
+  test("idle drops the bare 'disconnected' (it already says not connected) and keeps why the last close happened", () => {
+    const idle = (stateText: string) => buildUiState({ ...INPUTS, authenticated: false, hasSession: false, stateText }).connection.detail;
+    expect(idle("disconnected")).toBeNull();
+    expect(idle("disconnected — this key was deleted")).toBe("this key was deleted");
+    expect(buildUiState({ ...INPUTS, authenticated: false, hasSession: true, stateText: "disconnected (reconnect attempt 2, in 4s)" }).connection.detail).toBe("disconnected (reconnect attempt 2, in 4s)");
+  });
+
   test("standby and idle are told apart from disconnected", () => {
     expect(buildUiState({ ...INPUTS, authenticated: false, standby: true }).connection.state).toBe("standby");
     expect(buildUiState({ ...INPUTS, authenticated: false, hasSession: false }).connection.state).toBe("idle");
+  });
+
+  test("a window another one took over is superseded, not disconnected (it never reconnects by itself)", () => {
+    expect(buildUiState({ ...INPUTS, authenticated: false, superseded: true }).connection.state).toBe("superseded");
+    // Taken over wins over standing by: only Take it back helps, and it needs no other window to let go.
+    expect(buildUiState({ ...INPUTS, authenticated: false, superseded: true, standby: true }).connection.state).toBe("superseded");
+  });
+
+  test("superseded or standing by: the detail names the window that has it, not the close code", () => {
+    const stateText = 'disconnected — another window took over (4008 "session superseded: …") — /einweave:connect takeover moves it back';
+    const holder = { pid: 82004, termProgram: "vscode", tty: "ttys033" };
+    expect(buildUiState({ ...INPUTS, authenticated: false, superseded: true, stateText, holder }).connection.detail).toBe("that window: pid 82004 · vscode · ttys033");
+    expect(buildUiState({ ...INPUTS, authenticated: false, standby: true, stateText, holder: { pid: 7, tty: "??" } }).connection.detail).toBe("that window: pid 7");
+    expect(buildUiState({ ...INPUTS, authenticated: false, superseded: true, stateText, holder: null }).connection.detail).toBeNull();
   });
 });
 
@@ -175,7 +204,7 @@ describe("ctl watch", () => {
     const { server, path } = await serve(w);
     const c = watchLines(path);
     await until(() => c.lines.length === 1);
-    expect(c.lines[0]).toMatchObject({ ok: true, op: "watch", rev: 1, state: { holds: ["t1"] } });
+    expect(c.lines[0]).toMatchObject({ ok: true, op: "watch", rev: 1, state: { holds: [{ threadId: "t1" }] } });
     w.set(buildUiState({ ...INPUTS, holds: [] }));
     await until(() => c.lines.length === 2);
     expect(c.lines[1]).toMatchObject({ rev: 2, state: { holds: [] } });

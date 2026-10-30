@@ -2900,7 +2900,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           v: { type: "number" },
           connection: { type: "object" },
           session: { type: "object" },
-          holds: { type: "array", items: { type: "string" } },
+          holds: { type: "array", items: { type: "object", properties: { threadId: { type: "string" }, title: { type: ["string", "null"] } }, required: ["threadId", "title"] } },
           waiting: { type: ["object", "null"] },
           version: { type: "string" },
           staleSince: { type: ["string", "null"] },
@@ -2988,23 +2988,62 @@ const workDeps: WorkDeps = {
 };
 
 function uiSnapshot() {
+  // The pane names the scope's channels; a name the map lacks is fetched (rate-limited) for the next rebuild.
+  if (serverScope?.channelIds.some((id) => !channelNameOf(id))) void ensureChannelMap().catch(() => {});
   return buildUiState({
     authenticated,
     hasSession: !!session,
+    superseded,
     standby: !!(session && standbyHolder),
     stateText: connectionState(),
+    holder: standbyHolder ?? (superseded ? (lastClose.supersededBy ?? null) : null),
     agent: agentName || agentId || null,
     label: labelSetting.current() || null,
     kind: connectionKind,
-    scope: serverScope,
+    scope: serverScope && { ...serverScope, channelNames: serverScope.channelIds.map((id) => channelNameOf(id) || null) },
     holds: serverHolds,
+    titles: new Map([...heldTitles].map(([id, t]) => [id, t.title])),
     waiting: uiWaiting,
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
   });
 }
 
+// Held threads' titles for the snapshot: one API call per thread (holds.titlesOf), so each is read
+// once; a null (no title, or the read failed) is read again after a minute, a failed batch likewise.
+const TITLE_RETRY_MS = 60_000;
+const heldTitles = new Map<string, { title: string | null; at: number }>();
+let titlesBusy = false;
+let titlesRetryAt = 0;
+
+function readHeldTitles(): void {
+  for (const id of [...heldTitles.keys()]) if (!serverHolds.includes(id)) heldTitles.delete(id);
+  const now = Date.now();
+  if (!authenticated || titlesBusy || now < titlesRetryAt) return;
+  const missing = serverHolds.filter((id) => {
+    const t = heldTitles.get(id);
+    return !t || (t.title === null && now - t.at > TITLE_RETRY_MS);
+  });
+  if (missing.length === 0) return;
+  titlesBusy = true;
+  void holds
+    .titlesOf(missing)
+    .then(
+      (rows) => {
+        for (const r of rows) heldTitles.set(r.id, { title: r.title, at: Date.now() });
+      },
+      () => {
+        titlesRetryAt = Date.now() + TITLE_RETRY_MS;
+      }
+    )
+    .finally(() => {
+      titlesBusy = false;
+      refreshUi();
+    });
+}
+
 function refreshUi(): void {
+  readHeldTitles();
   uiWatch.set(uiSnapshot());
 }
 
@@ -4173,6 +4212,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
               text: JSON.stringify(
                 {
                   ...connectionStatus(),
+                  // This window's own key, which other_processes leaves out: `claude --resume` takes it when resumable.
+                  session_key: SESSION_KEY,
+                  session_key_resumable: SESSION_KEY_IS_CONVERSATION_ID,
                   ...updateStatus(),
                   wantConnected,
                   ...(await (async () => {

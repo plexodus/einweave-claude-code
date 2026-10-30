@@ -212,6 +212,20 @@ rather than presenting the tail of the channel as a resumption.
 | `/einweave:work` | Your work items; how to file, claim (`update_item assignee: "me"`), report and finish one. |
 | `/einweave:update` | Show this window's plugin version vs. what's installed and what einweave recommends/requires, and every other einweave window on this machine — plus the one next step. |
 
+## In the terminal: indicator, pane and `/einweave`
+
+The plugin also carries a Claude Code mod (`mod/`). It shows einweave's state without a model
+turn and without tokens:
+
+- **Hint line**, under the prompt: `einweave · holds 2 · 3 for you · 14 open`, or `· reconnecting`,
+  `· disconnected`, `· not connected`, `· not answering`. Terminal only.
+- **Band** above the prompt, only after the connection has been lost for 10 s, with `[1: Connect]`.
+- **Pane** (`/einweave`): connection, the session (rename it, change its scope) and the threads it
+  holds, each with Release. In the VS Code panel the pane is where all of this shows.
+- **`/einweave <verb>`** runs one action at once, even while Claude works: `status`, `connect`,
+  `disconnect`, `rename <name>`, `scope [#a #b|all|none]`, `held`, `release [N|all]`,
+  `handover [N] [session]`. Taking a thread stays `/einweave:take`.
+
 ## Reading messages in full: `einweave tail`
 
 The Claude window shows an incoming einweave message as a short preview and a sent
