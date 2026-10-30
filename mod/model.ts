@@ -109,7 +109,7 @@ export type Action =
   | { kind: 'find'; words: string }
 
 export const USAGE = [
-  '/einweave                       open the pane',
+  '/einweave                       open or close the pane',
   '/einweave status [full]         connection, session and what waits (full: every field)',
   '/einweave connect | disconnect  join or leave einweave in this session',
   '/einweave rename <name>         rename this session ("" clears)',
@@ -253,11 +253,22 @@ export interface InboxRow {
   channel: string
   /** `unheld · addressed to you`, `parked · you took part` ... */
   meta: string
-  /** `quiet 3h`: since the thread's last post; null when the server sent no time. */
-  quiet: string | null
+  /** `3h`: since the thread's last post; null when the server sent no time. */
+  age: string | null
+  /** Quiet longer than OLD_MS: drawn under the "Older" fold. */
+  old: boolean
 }
 
 const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts in your channel' }
+
+/** A thread quiet this long folds under "Older (n)". */
+export const OLD_MS = 7 * 86_400_000
+
+/** How long since `iso`, and whether that is past OLD_MS; an absent or unreadable time is neither. */
+export function quietFor(iso: string | null | undefined, now: number): { age: string | null; old: boolean } {
+  const t = iso ? Date.parse(iso) : NaN
+  return Number.isFinite(t) ? { age: ago(now - t), old: now - t > OLD_MS } : { age: null, old: false }
+}
 
 /**
  * The Inbox tab: For you (addressed, or taken part in) and Open (new posts in a followed channel),
@@ -265,14 +276,36 @@ const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you
  */
 export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: InboxRow[]; open: InboxRow[] } {
   const rows = waiting?.top ?? []
-  const row = (w: UiWaitingItem): InboxRow => ({
-    threadId: w.threadId,
-    title: w.title,
-    channel: w.channel,
-    meta: `${w.hold} · ${WHY[w.why]}`,
-    quiet: w.quietSince && Number.isFinite(Date.parse(w.quietSince)) ? `quiet ${ago(now - Date.parse(w.quietSince))}` : null,
-  })
+  const row = (w: UiWaitingItem): InboxRow => ({ threadId: w.threadId, title: w.title, channel: w.channel, meta: `${w.hold} · ${WHY[w.why]}`, ...quietFor(w.quietSince, now) })
   return { forYou: rows.filter(w => w.why !== 'channel').map(row), open: rows.filter(w => w.why === 'channel').map(row) }
+}
+
+/** A list split for drawing: the recent rows in their order, then those under the "Older" fold. */
+export function fold<T extends { old: boolean }>(rows: T[]): { recent: T[]; older: T[] } {
+  return { recent: rows.filter(r => !r.old), older: rows.filter(r => r.old) }
+}
+
+/** The record a pane element belongs to: `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
+export function recordOf(element: string | undefined): string {
+  const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
+  return m ? m[2]! : ''
+}
+
+/**
+ * Where the pane's focus ring lands. Records' titles (and the "Older" folds between them) are its only
+ * stops: the ring moves linearly like Tab, so a move onto a record's action goes on to the stop after
+ * that record when it came from that record (moving down) and back to the record's own title otherwise
+ * (moving up). After the last stop the actions are left as they are: past them the ring goes on to
+ * what follows the list. `stops` are the stop keys drawn, top to bottom; `last` where the ring was.
+ */
+export function focusTarget(stops: readonly string[], last: string, element: string | undefined): string | undefined {
+  const m = element && /^(take|new|release|join):(.+)$/.exec(element)
+  if (!m) return element
+  const id = m[2]!
+  const at = stops.indexOf(`open:${id}`)
+  if (at < 0) return element
+  if (recordOf(last) !== id) return `open:${id}`
+  return stops[at + 1] ?? element
 }
 
 /** The opening of `take`'s answer when an online holder must be asked about first (holds.ts; pinned by test/mod-model.test.ts). */
@@ -345,13 +378,14 @@ export function waitingIn(c: ChannelCounts | undefined): number {
   return c ? c.unheld + c.parked : 0
 }
 
-/** A channel row's meta: `open 4 · waiting 2 · oldest 3h`; "counts unknown" when the server did not say (never 0). */
+/** A channel row's meta: `2 waiting · oldest 3h · 4 open`; "counts unknown" when the server did not say (never 0). */
 export function channelMeta(c: ChannelCounts | undefined, now: number): string {
   if (!c) return 'counts unknown'
-  const parts = [`open ${c.open}`]
+  const parts: string[] = []
   const w = waitingIn(c)
-  if (w) parts.push(`waiting ${w}`)
+  if (w) parts.push(`${w} waiting`)
   if (w && c.oldestWaitingAt && Number.isFinite(Date.parse(c.oldestWaitingAt))) parts.push(`oldest ${ago(now - Date.parse(c.oldestWaitingAt))}`)
+  parts.push(`${c.open} open`)
   return parts.join(' · ')
 }
 

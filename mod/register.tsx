@@ -1,6 +1,6 @@
 /**
- * The einweave mod (plan 2026-10-25-terminal-ui.md, Phase 2): the hint-line indicator, a band while
- * the connection is lost, the pane (inbox, held threads, channels, session) and one command, `/einweave [verb]`.
+ * The einweave mod (plan 2026-10-25-terminal-ui.md, Phase 2): a band above the prompt (what waits, or
+ * what went wrong, and Show / Hide), the pane (inbox, held threads, channels, session) and one command, `/einweave [verb]`.
  *
  * Data: this plugin's own MCP server is the single source. ui/ctl-watch.ts, started here for the
  * session's life, relays the control socket's `watch` stream (a snapshot per change); `ui_state`
@@ -8,13 +8,13 @@
  * Every action calls one of the plugin's tools: no model turn, no tokens.
  */
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 
 import type { ChannelView, OpenTab, ThreadView, UiSnapshot } from '../types'
 import {
-  ago, applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, holdBadge, inbox, indicator,
-  needsBand, newSessionCommand, NO_CHANNELS, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, textOf, threadView, waitingIn,
-  BAND_GRACE_MS, type InboxRow,
+  applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
+  indicator, needsBand, newSessionCommand, NO_CHANNELS, openTab, parseCommand, parseLine, quietFor, recordOf, scopeText, shownTab, statusSummary, takeOutcome, textOf,
+  threadView, waitingIn, BAND_GRACE_MS, type InboxRow,
 } from './model'
 
 const SERVER = 'plugin:einweave:einweave'
@@ -29,6 +29,14 @@ const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { sh
 const threads = atom({ plugin: 'einweave', key: 'threads' } as const, {} as Record<string, ThreadView>, { shape: 'threads-1' })
 const channels = atom({ plugin: 'einweave', key: 'channels' } as const, NO_CHANNELS, { shape: 'channels-1' })
 const channel = atom({ plugin: 'einweave', key: 'channel' } as const, {} as Record<string, ChannelView>, { shape: 'channel-1' })
+/** Which record the keyboard is on: drawn as hovered, its actions on hotkeys. */
+const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shape: 'focused-1' })
+/** Set as the pane opens or closes, so the band redraws; its Show / Hide reads the engine's own record. */
+const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
+/** The "Older" folds opened, by list. */
+const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
+/** A record under the pointer or the keyboard: both lines tinted, its actions drawn over its last line's end. */
+const HOVER_BG = '#253036'
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
@@ -67,6 +75,20 @@ async function connect($: EngineInterface): Promise<string> {
     if (answer === 'Take it over') text = textOf(await $.mcp.call(SERVER, 'connect', { takeover: 'lock' }))
   }
   return text.startsWith('connecting') ? settled($) : text
+}
+
+/** Opens the pane, or closes it while it is the one shown: `/einweave` and the band's button. */
+async function togglePane($: EngineInterface): Promise<{ isPlaced: boolean } | null> {
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane?.isShown) {
+    await $.ui.close({ id: PANE })
+    // The plugin's own close does not come back through its own ui.close hook: say it here.
+    await update($, paneUp, () => false)
+    return null
+  }
+  const opened = await $.ui.open({ id: PANE, title: 'einweave' })
+  await update($, paneUp, () => true)
+  return opened
 }
 
 /** Take this session back from the window that took it over: the person pressed for it, so no question. */
@@ -204,7 +226,20 @@ async function runRelay($: EngineInterface): Promise<void> {
   }
 }
 
+type Press = Parameters<NonNullable<ButtonProps['onPress']>>[0]
+
+/** One action of a record: drawn on hover, and on its hotkey while the keyboard is on the record. */
+interface Act {
+  key: 'take' | 'new' | 'release' | 'join'
+  label: string
+  hotkey: string
+  onPress: (press: Press) => void
+}
+
 export const register: Register = on => {
+  // The stops the pane's records drew last, top to bottom, and where the ring was: ui.focus reads both.
+  let stops: string[] = []
+  let last = ''
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The command first: a reload runs this again while the plugin's server may be slow to answer,
@@ -212,7 +247,7 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'einweave',
-        description: 'einweave: open the pane, or status | connect | disconnect | rename | scope | held | release | handover',
+        description: 'einweave: open or close the pane, or status | connect | disconnect | rename | scope | held | release | handover',
         argumentHint: '[verb] [args]',
         immediate: true,
       })
@@ -243,8 +278,8 @@ export const register: Register = on => {
     const action = parseCommand(e.args)
     switch (action.kind) {
       case 'pane': {
-        const opened = await $.ui.open({ id: PANE, title: 'einweave' })
-        return opened.isPlaced ? {} : { text: `The pane waits for a wider terminal. ${indicator(await read($, view), await $.clock.now()).text}` }
+        const opened = await togglePane($)
+        return !opened || opened.isPlaced ? {} : { text: `The pane waits for a wider terminal. ${indicator(await read($, view), await $.clock.now()).text}` }
       }
       case 'usage':
         return { text: action.text }
@@ -268,26 +303,43 @@ export const register: Register = on => {
     }
   })
 
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const i = indicator(await read($, view), await $.clock.now())
-    return next({ ...e, props: { ...e.props, tail: i.text } })
+  // Closed by the person (its ×) or an unload: the band redraws and says Show again.
+  on('ui.close', async ($, e, next) => {
+    const r = await next(e)
+    if (e.id === PANE) await update($, paneUp, () => false)
+    return r
+  })
+
+  // Titles are the records' only keyboard stops; their actions are on hotkeys (focusTarget).
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const element = focusTarget(stops, last, e.element)
+    last = element ?? ''
+    await update($, focused, () => recordOf(element))
+    return next(element === e.element ? e : { ...e, element })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
     const i = indicator(v, await $.clock.now())
-    if (e.props.hasSurvey || !needsBand(i)) return next(e)
+    if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
+    // Read for the redraw it brings; the engine's record says what is up, a pane kept over a reload too.
+    await read($, paneUp)
+    const up = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
+    const warn = needsBand(i)
+    // One row, always: what waits (or what went wrong) and the pane's Show / Hide. The hint line no longer says it twice.
     return (
       <Box flexDirection="row" columnGap={2}>
-        <Text color="red">{i.text}</Text>
-        {v.snap?.connection.detail ? <Text dimColor wrap="truncate-end">{v.snap.connection.detail}</Text> : null}
+        <Text color={warn ? 'red' : undefined} dimColor={!warn}>{i.text}</Text>
+        {warn && v.snap?.connection.detail ? <Text dimColor wrap="truncate-end">{v.snap.connection.detail}</Text> : null}
         {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session. */}
-        {i.kind === 'superseded' ? (
+        {!warn ? null : i.kind === 'superseded' ? (
           <Button key="take-back" label="Take it back" plain onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
         ) : (
           <Button key="connect" label="Connect" hotkey="1" plain onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
         )}
+        {/* No hotkey: a bare letter in an empty composer would press it. */}
+        <Button key="pane" label={up ? 'Hide' : 'Show'} plain dimColor onPress={() => void togglePane($)} />
       </Box>
     )
   })
@@ -318,11 +370,23 @@ export const register: Register = on => {
           await after?.()
         })
         .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
+    const join = (channelId: string, after?: () => Promise<void>) => () =>
+      void $.mcp.call(SERVER, 'join_channel', { channel_id: channelId }).then(
+        async r => {
+          $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? 'join_channel failed' : 'Joined.'))
+          await loadChannels($)
+          await after?.()
+        },
+        err => $.ui.toast(`join_channel failed: ${String(err).slice(0, 120)}`),
+      )
     const connected = s?.connection.state === 'connected'
     const box = connected ? inbox(s.waiting, now) : { forYou: [], open: [] }
     const waiting = box.forYou.length + box.open.length
     // The tab counts what waits (the server's exact counts), not the rows drawn: those stop at 20.
     const total = s?.waiting?.forYou != null && s.waiting.channel != null ? `${s.waiting.forYou + s.waiting.channel}` : `${waiting}${s?.waiting?.more ? '+' : ''}`
+    // Each Inbox heading counts what waits in it the same way, so the headings add up to the tab.
+    const forYouCount = s?.waiting?.forYou ?? box.forYou.length
+    const openCount = s?.waiting?.channel ?? box.open.length
     const tab = shownTab(t)
     const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
     // Channels and channel tabs load each time they are shown: nothing pushes them.
@@ -332,25 +396,106 @@ export const register: Register = on => {
     // Channels with something waiting; unknown counts count as none.
     const waitingChannels = ch.channels.filter(c => waitingIn(c.threads) > 0).length
 
-    const row = (r: InboxRow) => (
-      <Box key={`row:${r.threadId}`} flexDirection="column">
-        {/* The title alone on its line: beside it a narrow pane broke the channel name mid-word (seen live). */}
-        <Text weight="semibold" wrap="truncate-end">{r.title}</Text>
-        <Text dimColor wrap="truncate-end">{[`#${r.channel}`, r.meta, r.quiet].filter(Boolean).join(' · ')}</Text>
-        <Box flexDirection="row" columnGap={1}>
-          <Button key={`view:${r.threadId}`} label="View" onPress={() => void viewThread($, r.threadId, r.title)} />
-          <Button key={`take:${r.threadId}`} label="Take" onPress={take(r.threadId)} />
-          <Button
-            key={`new:${r.threadId}`}
-            label="New session"
-            onPress={press => {
-              const cmd = newSessionCommand(r.threadId)
-              void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
-            }}
-          />
+    const f = await read($, focused)
+    const open = await read($, unfolded)
+    const drawn: string[] = []
+    const newSession = (id: string) => (press: Press) => {
+      const cmd = newSessionCommand(id)
+      void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
+    }
+    const takeAct = (id: string, after?: () => Promise<void>): Act => ({ key: 'take', label: 'Take', hotkey: 't', onPress: take(id, after) })
+    const newAct = (id: string): Act => ({ key: 'new', label: 'New', hotkey: 'n', onPress: newSession(id) })
+
+    // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
+    // VS Code): there a title is a link and a record's actions live in the tab it opens.
+    const desk = e.surface !== 'terminal'
+    // A button's face: its hotkey before its label, but not on a desktop, whose webview drops hotkeys.
+    const keyed = (hotkey: string, label: string) => (desk ? label : [<Text key="k" color="suggestion">{hotkey}</Text>, ` ${label}`])
+
+    /**
+     * A record: its title (opens it) on the first line, `meta` on a second unless `inline`. Hover or
+     * keyboard focus tints it and draws its actions at the end of its last line; focused, with hotkeys.
+     * Drawn shown, the overlay must not also carry the hover reveal: the kit refuses that and the whole pane goes blank.
+     */
+    const record = (r: { id: string; title: string; dim?: boolean; onOpen: () => void; meta?: { text: string; badge?: { text: string; color?: 'cyan' | 'yellow' } }; inline?: boolean; acts: Act[] }) => {
+      if (desk) return deskRecord(r)
+      drawn.push(`open:${r.id}`)
+      const hot = f === r.id
+      const meta = r.meta ? (
+        <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+          {/* Inline, a dot parts the title from its meta: run together they read as one name. */}
+          {r.inline ? <Text dimColor>·</Text> : null}
+          {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
+          <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
         </Box>
-      </Box>
-    )
+      ) : null
+      return (
+        <Box key={`rec:${r.id}`} flexDirection="column" backgroundColor={hot ? HOVER_BG : undefined} hover={{ backgroundColor: HOVER_BG }}>
+          <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+            <Button key={`open:${r.id}`} plain label={r.title} dimColor={r.dim} onPress={r.onOpen} />
+            {r.inline ? meta : null}
+          </Box>
+          {r.inline ? null : meta}
+          {r.acts.length ? (
+            <Box position="absolute" top={r.meta && !r.inline ? 1 : 0} right={0} flexDirection="row" backgroundColor={HOVER_BG} {...(hot ? {} : { display: 'none' as const, hover: { display: 'flex' as const } })}>
+              {r.acts.map(a => (
+                <Box key={`act:${a.key}:${r.id}`} flexDirection="row">
+                  {/* A space as text, not a gap: columnGap's cells let the record show through. */}
+                  <Text> </Text>
+                  {hot ? (
+                    <Button key={`${a.key}:${r.id}`} hotkey={a.hotkey} onPress={a.onPress}>
+                      <Text color="suggestion">{a.hotkey}</Text> {a.label}
+                    </Button>
+                  ) : (
+                    <Button key={`${a.key}:${r.id}`} label={a.label} onPress={a.onPress} />
+                  )}
+                </Box>
+              ))}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    /** A record on a desktop: the title a link that opens it, the meta under it, no actions. */
+    const deskRecord = (r: Parameters<typeof record>[0]) => {
+      const href = recordHref(r.id)
+      return (
+        <Box key={`rec:${r.id}`} flexDirection="column">
+          <Markdown key={`open:${r.id}`} text={`[${mdText(r.title)}](${href})`} dimColor={r.dim} pressableLinks={[href]} onLinkPress={() => r.onOpen()} />
+          {r.meta ? (
+            <Box flexDirection="row" columnGap={1}>
+              {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
+              <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    /** A list's records, those quiet over a week under an "Older (n)" fold that opens in place. */
+    const folded = <T extends { old: boolean }>(name: string, rows: T[], draw: (r: T) => ReturnType<typeof record>) => {
+      const { recent, older } = fold(rows)
+      const shown = recent.map(draw)
+      if (!older.length) return shown
+      const key = `fold:${name}`
+      drawn.push(key)
+      const isOpen = !!open[name]
+      return [
+        ...shown,
+        <Button key={key} plain dimColor label={`${isOpen ? '▾' : '▸'} Older (${older.length})`} onPress={() => void update($, unfolded, u => ({ ...u, [name]: !isOpen }))} />,
+        ...(isOpen ? older.map(draw) : []),
+      ]
+    }
+
+    const inboxRecord = (r: InboxRow) =>
+      record({
+        id: r.threadId,
+        title: r.title,
+        onOpen: () => void viewThread($, r.threadId, r.title),
+        meta: { text: [`#${r.channel}`, r.meta, r.age].filter(Boolean).join(' · ') },
+        acts: [takeAct(r.threadId), newAct(r.threadId)],
+      })
 
     const header = (
       <Box flexDirection="column">
@@ -359,28 +504,34 @@ export const register: Register = on => {
         {!s && v.error ? <Text dimColor>{v.error}</Text> : null}
         {s && !connected ? (
           i.kind === 'superseded' ? (
-            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(toastFirst($))} />
+            <Button key="take-back" label="Take it back" variant="primary" onPress={() => void takeBack($).then(toastFirst($))} />
           ) : (
-            <Button key="connect" label="Connect" onPress={() => void connect($).then(toastFirst($))} />
+            <Button key="connect" label="Connect" variant="primary" onPress={() => void connect($).then(toastFirst($))} />
           )
         ) : null}
       </Box>
     )
     if (!s) return header
 
+    // The pane's button standard (Jörgen, 2026-10-30). A desktop draws no variant (VS Code keeps only label
+    // and dimness), so dimness carries it: full strength is where you are (the shown tab) or the one thing
+    // to do (Take, Connect), primary for the terminal's accent; every other button is dim; titles are links.
+    const shownIf = (id: string) => (tab === id ? { variant: 'primary' as const } : { dimColor: true })
+
     const tabRow = (
       <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
-        <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} variant={tab === 'inbox' ? 'primary' : undefined} onPress={show('inbox')} />
-        <Button key="tab:held" label={`Held ${s.holds.length}`} variant={tab === 'held' ? 'primary' : undefined} onPress={show('held')} />
-        <Button key="tab:channels" label={`Channels ${waitingChannels}`} variant={tab === 'channels' ? 'primary' : undefined} onPress={showChannels} />
-        <Button key="tab:session" label="Session" variant={tab === 'session' ? 'primary' : undefined} onPress={show('session')} />
+        <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} {...shownIf('inbox')} onPress={show('inbox')} />
+        <Button key="tab:held" label={`Held ${s.holds.length}`} {...shownIf('held')} onPress={show('held')} />
+        <Button key="tab:channels" label={`Channels ${waitingChannels}`} {...shownIf('channels')} onPress={showChannels} />
+        <Button key="tab:session" label="Session" {...shownIf('session')} onPress={show('session')} />
         {t.open.map(o => (
           <Box key={`tabbox:${o.id}`} flexDirection="row">
-            <Button key={`tab:${o.id}`} label={o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title} variant={tab === o.id ? 'primary' : undefined} onPress={showOpen(o)} />
+            <Button key={`tab:${o.id}`} label={o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title} {...shownIf(o.id)} onPress={showOpen(o)} />
             <Button
               key={`close:${o.id}`}
               label="×"
               plain
+              dimColor
               onPress={() => {
                 void update($, tabs, x => closeTab(x, o.id))
                 if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
@@ -400,10 +551,10 @@ export const register: Register = on => {
         <Text dimColor>Nothing waits for this session.</Text>
       ) : (
         <Box flexDirection="column" rowGap={1}>
-          {box.forYou.length ? <Text weight="semibold">For you</Text> : null}
-          {box.forYou.map(row)}
-          {box.open.length ? <Text weight="semibold">Open</Text> : null}
-          {box.open.map(row)}
+          {box.forYou.length ? <Text weight="semibold">{`For you ${forYouCount}`}</Text> : null}
+          {folded('forYou', box.forYou, inboxRecord)}
+          {box.open.length ? <Text weight="semibold">{`Open ${openCount}`}</Text> : null}
+          {folded('open', box.open, inboxRecord)}
           {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
         </Box>
       )
@@ -411,36 +562,39 @@ export const register: Register = on => {
       body = !connected ? (
         <Text dimColor>Not connected.</Text>
       ) : (
-        <Box flexDirection="column">
+        <Box flexDirection="column" rowGap={1}>
           {s.holds.length === 0 ? <Text dimColor>None. Take one from the Inbox.</Text> : null}
-          {s.holds.map(held => (
-            <Box key={`held:${held.threadId}`} flexDirection="row" columnGap={1}>
-              <Button key={`release:${held.threadId}`} label="Release" onPress={act('release', { ref: held.threadId })} />
-              <Button key={`view:${held.threadId}`} label="View" onPress={() => void viewThread($, held.threadId, held.title ?? held.threadId)} />
-              <Text wrap="truncate-end">{held.title ?? held.threadId}</Text>
-            </Box>
-          ))}
+          {s.holds.map(held =>
+            record({
+              id: held.threadId,
+              title: held.title ?? held.threadId,
+              onOpen: () => void viewThread($, held.threadId, held.title ?? held.threadId),
+              acts: [{ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: held.threadId }) }],
+            }),
+          )}
           {s.holds.length > 0 ? <Text dimColor>{'Hand one over: /einweave handover N <session>'}</Text> : null}
         </Box>
       )
     } else if (tab === 'channels') {
       const who = ch.agent ? `@${ch.agent}` : 'This agent'
       body = (
-        <Box flexDirection="column" rowGap={1}>
+        <Box flexDirection="column">
           {ch.error ? <Text color="red">{ch.error}</Text> : null}
           {ch.loading && !ch.channels.length ? <Text dimColor>Loading…</Text> : null}
           {!ch.loading && !ch.error && !ch.channels.length ? <Text dimColor>{`${who} isn't in any channels · set up in the web app`}</Text> : null}
-          {ch.channels.map(c => (
-            <Box key={`chan:${c.id}`} flexDirection="column">
-              <Text weight="semibold" wrap="truncate-end">{`#${c.name}`}</Text>
-              <Text dimColor wrap="truncate-end">{[channelMeta(c.threads, now), c.role ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text>
-              <Box flexDirection="row" columnGap={1}>
-                <Button key={`viewch:${c.id}`} label="View" onPress={() => void viewChannel($, c.id, c.name)} />
-              </Box>
-            </Box>
-          ))}
-          <Box flexDirection="row" columnGap={1}>
-            <Button key="refresh:channels" label="Refresh" onPress={() => void loadChannels($)} />
+          {ch.channels.map(c =>
+            record({
+              id: `ch:${c.id}`,
+              title: `#${c.name}`,
+              inline: true,
+              onOpen: () => void viewChannel($, c.id, c.name),
+              meta: { text: [channelMeta(c.threads, now), c.role ? null : 'not a member'].filter(Boolean).join(' · ') },
+              // Following without membership: it can read but not post or take until it joins.
+              acts: c.role ? [] : [{ key: 'join', label: 'Join', hotkey: 'j', onPress: join(c.id) }],
+            }),
+          )}
+          <Box flexDirection="row" columnGap={1} marginTop={1}>
+            <Button key="refresh:channels" label="Refresh" dimColor onPress={() => void loadChannels($)} />
           </Box>
         </Box>
       )
@@ -484,29 +638,32 @@ export const register: Register = on => {
           <Text weight="semibold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
           {row ? <Text dimColor wrap="truncate-end">{[channelMeta(row.threads, now), member ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text> : null}
           <Box flexDirection="row" columnGap={1}>
-            <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadChannel($, id)} />
+            {member ? null : <Button key={`joinch:${id}`} label="Join" dimColor onPress={join(id, () => loadChannel($, id))} />}
+            <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadChannel($, id)} />
           </Box>
           {cv.error ? <Text color="red">{cv.error}</Text> : null}
           {cv.loading && !cv.threads.length ? <Text dimColor>Loading…</Text> : null}
           {!cv.loading && !cv.error && !cv.threads.length ? <Text dimColor>No threads yet.</Text> : null}
-          {rows.map(th => {
-            const here = s.holds.some(h => h.threadId === th.id)
-            const badge = holdBadge(th.hold, here)
-            const quiet = th.lastActivityAt && Number.isFinite(Date.parse(th.lastActivityAt)) ? `quiet ${ago(now - Date.parse(th.lastActivityAt))}` : null
-            return (
-              <Box key={`cth:${th.id}`} flexDirection="column" marginTop={1}>
-                <Text weight="semibold" dimColor={th.resolved} wrap="truncate-end">{th.title || th.id}</Text>
-                <Box flexDirection="row" columnGap={1}>
-                  {badge ? <Text color={th.resolved ? undefined : badge.color} dimColor={th.resolved}>{badge.text}</Text> : null}
-                  <Text dimColor wrap="truncate-end">{[th.resolved ? 'resolved' : th.status, th.kind, quiet].filter(Boolean).join(' · ')}</Text>
-                </Box>
-                <Box flexDirection="row" columnGap={1}>
-                  <Button key={`view:${th.id}`} label="View" onPress={() => void viewThread($, th.id, th.title || th.id)} />
-                  {here || !member || th.resolved ? null : <Button key={`take:${th.id}`} label="Take" onPress={take(th.id, () => loadChannel($, id))} />}
-                </Box>
-              </Box>
-            )
-          })}
+          <Box flexDirection="column" rowGap={1} marginTop={1}>
+            {folded(
+              `ch:${id}`,
+              rows.map(th => ({ ...th, ...quietFor(th.lastActivityAt, now) })),
+              th => {
+                const here = s.holds.some(h => h.threadId === th.id)
+                const badge = holdBadge(th.hold, here)
+                // `open` is every live thread's status: only the others are said.
+                const status = th.resolved ? 'resolved' : th.status === 'open' ? null : th.status
+                return record({
+                  id: th.id,
+                  title: th.title || th.id,
+                  dim: th.resolved,
+                  onOpen: () => void viewThread($, th.id, th.title || th.id),
+                  meta: { badge: badge ?? undefined, text: [status, th.kind, th.age].filter(Boolean).join(' · ') },
+                  acts: here || !member || th.resolved ? [newAct(th.id)] : [takeAct(th.id, () => loadChannel($, id)), newAct(th.id)],
+                })
+              },
+            )}
+          </Box>
           {more ? <Text dimColor>{`${more} more in the web app.`}</Text> : null}
           <Text dimColor>Read-only · no tokens · viewing marks nothing read.</Text>
         </Box>
@@ -521,8 +678,13 @@ export const register: Register = on => {
           <Text weight="semibold" wrap="truncate-end">{title}</Text>
           <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
           <Box flexDirection="row" columnGap={1}>
-            {held ? null : <Button key={`take:${id}`} label="Take" onPress={take(id)} />}
-            <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadThread($, id)} />
+            {held ? (
+              <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>{keyed('r', 'Release')}</Button>
+            ) : (
+              <Button key={`take:${id}`} hotkey="t" variant="primary" onPress={take(id)}>{keyed('t', 'Take')}</Button>
+            )}
+            <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>{keyed('n', 'New session')}</Button>
+            <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadThread($, id)} />
           </Box>
           {th.error ? <Text color="red">{th.error}</Text> : null}
           {th.loading && !th.messages.length ? <Text dimColor>Loading…</Text> : null}
@@ -542,6 +704,7 @@ export const register: Register = on => {
       )
     }
 
+    stops = drawn
     return (
       <Box flexDirection="column">
         {header}
@@ -552,6 +715,19 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+/**
+ * A desktop title link's target. Its press is the mod's (pressableLinks), so nothing opens it; the
+ * mod knows no web app address, so it points nowhere real: `.invalid` is reserved never to resolve.
+ */
+function recordHref(id: string): string {
+  return `https://einweave.invalid/${encodeURIComponent(id)}`
+}
+
+/** A title as Markdown link text: what Markdown would read as markup, escaped. */
+function mdText(title: string): string {
+  return title.replace(/[\\`*_{}[\]()#+\-.!|<>~]/g, c => `\\${c}`)
 }
 
 /** A message's local time, `HH:MM`, or its date when not today. */

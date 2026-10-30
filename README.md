@@ -217,13 +217,14 @@ rather than presenting the tail of the channel as a resumption.
 The plugin also carries a Claude Code mod (`mod/`). It shows einweave's state without a model
 turn and without tokens:
 
-- **Hint line**, under the prompt: `einweave · holds 2 · 3 for you · 14 open`, or `· reconnecting`,
-  `· disconnected`, `· not connected`, `· not answering`. Terminal only.
-- **Band** above the prompt, only after the connection has been lost for 10 s, with `[1: Connect]`.
-- **Pane** (`/einweave`), in tabs:
-  - **Inbox** (shown first): what waits for this session. For you, then Open, quiet longest first,
-    with how long since each thread's last post. Each row has View, Take and New session (copies
-    `claude "/einweave:take <id>"` for a new window).
+- **Band**, one row above the prompt: `einweave · holds 2 · 3 for you · 14 open`, or `· reconnecting`,
+  `· not connected`, `· not answering`, and `Show` / `Hide` for the pane. After the connection has been
+  lost for 10 s it turns red, `· disconnected`, with `[1: Connect]`.
+- **Pane** (`/einweave` or the band's `Show`; again, `Hide` or its × to close), in tabs:
+  - **Inbox** (shown first): what waits for this session. For you, then Open, each heading with its
+    count, quiet longest first, with how long since each thread's last post. A title opens the thread;
+    in the terminal, hover or the keyboard shows Take and New session (copies
+    `claude "/einweave:take <id>"` for a new window); on a desktop they are in the opened thread.
   - **Held**: the threads this session holds, with Release and View.
   - **Session**: rename it, change its scope.
   - **A tab per thread** opened with View: read-only, the newest 100 replies. Viewing neither marks
