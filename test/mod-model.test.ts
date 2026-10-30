@@ -4,8 +4,8 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, holdBadge,
-  inbox, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, threadView, waitingIn,
+  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
+  inbox, OLD_MS, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, threadView, waitingIn,
 } from "../mod/model";
 import type { ChannelThread } from "../types";
 import type { UiSnapshot, View } from "../types";
@@ -205,9 +205,38 @@ describe("the Inbox and thread tabs", () => {
   test("For you holds addressed + participant, Open the channel tier, in the snapshot's order; quiet counts from the last post", () => {
     const box = inbox({ forYou: 3, channel: 1, more: false, top: [item("old", "participant", "2026-10-30T07:00:00.000Z"), item("new", "addressed", "2026-10-30T09:59:00.000Z"), item("bad", "addressed", "not a time"), item("none", "addressed", null), item("ch", "channel", "2026-10-29T10:00:00.000Z")] }, now);
     expect(box.forYou.map((r) => r.threadId)).toEqual(["old", "new", "bad", "none"]);
-    expect(box.forYou.map((r) => r.quiet)).toEqual(["quiet 3h", "quiet 1m", null, null]);
-    expect(box.open.map((r) => [r.threadId, r.quiet, r.meta])).toEqual([["ch", "quiet 1d", "unheld · new posts in your channel"]]);
+    expect(box.forYou.map((r) => r.age)).toEqual(["3h", "1m", null, null]);
+    expect(box.open.map((r) => [r.threadId, r.age, r.meta])).toEqual([["ch", "1d", "unheld · new posts in your channel"]]);
     expect(inbox(null, now)).toEqual({ forYou: [], open: [] });
+  });
+
+  test("quietFor: a week to the millisecond is not old, past it is; no time is neither", () => {
+    expect(quietFor(new Date(now - OLD_MS).toISOString(), now)).toEqual({ age: "7d", old: false });
+    expect(quietFor(new Date(now - OLD_MS - 1).toISOString(), now)).toEqual({ age: "7d", old: true });
+    expect(quietFor(null, now)).toEqual({ age: null, old: false });
+    expect(quietFor("not a time", now)).toEqual({ age: null, old: false });
+  });
+
+  test("fold: recent rows in order, then the old ones in order", () => {
+    const r = (id: string, old: boolean) => ({ id, old });
+    expect(fold([r("a", true), r("b", false), r("c", true), r("d", false)])).toEqual({ recent: [r("b", false), r("d", false)], older: [r("a", true), r("c", true)] });
+  });
+
+  test("recordOf: the record an element belongs to; tabs, folds and the rest belong to none", () => {
+    expect([recordOf("open:t1"), recordOf("take:t1"), recordOf("new:ch:c1"), recordOf("release:t1"), recordOf("join:ch:c1")]).toEqual(["t1", "t1", "ch:c1", "t1", "ch:c1"]);
+    expect([recordOf("tab:inbox"), recordOf("fold:forYou"), recordOf(undefined), recordOf("")]).toEqual(["", "", "", ""]);
+  });
+
+  test("focusTarget: an action is no stop -- down goes on to the next stop, up back to its own title; past the last stop it stays", () => {
+    const stops = ["open:a", "open:b", "fold:forYou", "open:c"];
+    expect(focusTarget(stops, "open:a", "take:a")).toBe("open:b");
+    expect(focusTarget(stops, "open:b", "take:b")).toBe("fold:forYou");
+    expect(focusTarget(stops, "open:b", "new:a")).toBe("open:a");
+    expect(focusTarget(stops, "fold:forYou", "release:b")).toBe("open:b");
+    expect(focusTarget(stops, "open:c", "take:c")).toBe("take:c");
+    expect(focusTarget(stops, "take:c", "new:c")).toBe("new:c");
+    // Titles, tabs, the engine's own stops, and actions of records not drawn pass as they came.
+    expect([focusTarget(stops, "", "open:b"), focusTarget(stops, "", "tab:held"), focusTarget(stops, "", undefined), focusTarget(stops, "", "take:zz")]).toEqual(["open:b", "tab:held", undefined, "take:zz"]);
   });
 
   test("ago: one short unit", () => {
@@ -243,10 +272,10 @@ describe("the Inbox and thread tabs", () => {
     expect(closeTab(ab, "b")).toEqual({ tab: "a", open: [{ kind: "thread", id: "a", title: "A" }] });
   });
 
-  test("channel meta: open, waiting (unheld + parked), oldest; counts the server did not send are unknown, never 0", () => {
+  test("channel meta: waiting (unheld + parked), oldest, open; counts the server did not send are unknown, never 0", () => {
     const now = Date.parse("2026-10-30T12:00:00.000Z");
-    expect(channelMeta({ open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" }, now)).toBe("open 4 · waiting 2 · oldest 3h");
-    expect(channelMeta({ open: 3, unheld: 0, parked: 0, oldestWaitingAt: null }, now)).toBe("open 3");
+    expect(channelMeta({ open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" }, now)).toBe("2 waiting · oldest 3h · 4 open");
+    expect(channelMeta({ open: 3, unheld: 0, parked: 0, oldestWaitingAt: null }, now)).toBe("3 open");
     expect(channelMeta(undefined, now)).toBe("counts unknown");
     expect(waitingIn({ open: 9, unheld: 2, parked: 3, oldestWaitingAt: null })).toBe(5);
     expect(waitingIn(undefined)).toBe(0);

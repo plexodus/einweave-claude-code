@@ -8,13 +8,13 @@
  * Every action calls one of the plugin's tools: no model turn, no tokens.
  */
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 
 import type { ChannelView, OpenTab, ThreadView, UiSnapshot } from '../types'
 import {
-  ago, applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, holdBadge, inbox, indicator,
-  needsBand, newSessionCommand, NO_CHANNELS, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, textOf, threadView, waitingIn,
-  BAND_GRACE_MS, type InboxRow,
+  applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
+  indicator, needsBand, newSessionCommand, NO_CHANNELS, openTab, parseCommand, parseLine, quietFor, recordOf, scopeText, shownTab, statusSummary, takeOutcome, textOf,
+  threadView, waitingIn, BAND_GRACE_MS, type InboxRow,
 } from './model'
 
 const SERVER = 'plugin:einweave:einweave'
@@ -29,6 +29,12 @@ const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { sh
 const threads = atom({ plugin: 'einweave', key: 'threads' } as const, {} as Record<string, ThreadView>, { shape: 'threads-1' })
 const channels = atom({ plugin: 'einweave', key: 'channels' } as const, NO_CHANNELS, { shape: 'channels-1' })
 const channel = atom({ plugin: 'einweave', key: 'channel' } as const, {} as Record<string, ChannelView>, { shape: 'channel-1' })
+/** Which record the keyboard is on: drawn as hovered, its actions on hotkeys. */
+const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shape: 'focused-1' })
+/** The "Older" folds opened, by list. */
+const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
+/** A record under the pointer or the keyboard: both lines tinted, its actions drawn over its last line's end. */
+const HOVER_BG = '#253036'
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
@@ -204,7 +210,20 @@ async function runRelay($: EngineInterface): Promise<void> {
   }
 }
 
+type Press = Parameters<NonNullable<ButtonProps['onPress']>>[0]
+
+/** One action of a record: drawn on hover, and on its hotkey while the keyboard is on the record. */
+interface Act {
+  key: 'take' | 'new' | 'release' | 'join'
+  label: string
+  hotkey: string
+  onPress: (press: Press) => void
+}
+
 export const register: Register = on => {
+  // The stops the pane's records drew last, top to bottom, and where the ring was: ui.focus reads both.
+  let stops: string[] = []
+  let last = ''
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The command first: a reload runs this again while the plugin's server may be slow to answer,
@@ -268,6 +287,14 @@ export const register: Register = on => {
     }
   })
 
+  // Titles are the records' only keyboard stops; their actions are on hotkeys (focusTarget).
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const element = focusTarget(stops, last, e.element)
+    last = element ?? ''
+    await update($, focused, () => recordOf(element))
+    return next(element === e.element ? e : { ...e, element })
+  })
+
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const i = indicator(await read($, view), await $.clock.now())
     return next({ ...e, props: { ...e.props, tail: i.text } })
@@ -318,6 +345,14 @@ export const register: Register = on => {
           await after?.()
         })
         .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
+    const join = (channelId: string) => () =>
+      void $.mcp.call(SERVER, 'join_channel', { channel_id: channelId }).then(
+        async r => {
+          $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? 'join_channel failed' : 'Joined.'))
+          await loadChannels($)
+        },
+        err => $.ui.toast(`join_channel failed: ${String(err).slice(0, 120)}`),
+      )
     const connected = s?.connection.state === 'connected'
     const box = connected ? inbox(s.waiting, now) : { forYou: [], open: [] }
     const waiting = box.forYou.length + box.open.length
@@ -332,25 +367,81 @@ export const register: Register = on => {
     // Channels with something waiting; unknown counts count as none.
     const waitingChannels = ch.channels.filter(c => waitingIn(c.threads) > 0).length
 
-    const row = (r: InboxRow) => (
-      <Box key={`row:${r.threadId}`} flexDirection="column">
-        {/* The title alone on its line: beside it a narrow pane broke the channel name mid-word (seen live). */}
-        <Text weight="semibold" wrap="truncate-end">{r.title}</Text>
-        <Text dimColor wrap="truncate-end">{[`#${r.channel}`, r.meta, r.quiet].filter(Boolean).join(' · ')}</Text>
-        <Box flexDirection="row" columnGap={1}>
-          <Button key={`view:${r.threadId}`} label="View" onPress={() => void viewThread($, r.threadId, r.title)} />
-          <Button key={`take:${r.threadId}`} label="Take" onPress={take(r.threadId)} />
-          <Button
-            key={`new:${r.threadId}`}
-            label="New session"
-            onPress={press => {
-              const cmd = newSessionCommand(r.threadId)
-              void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
-            }}
-          />
+    const f = await read($, focused)
+    const open = await read($, unfolded)
+    const drawn: string[] = []
+    const newSession = (id: string) => (press: Press) => {
+      const cmd = newSessionCommand(id)
+      void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
+    }
+    const takeAct = (id: string, after?: () => Promise<void>): Act => ({ key: 'take', label: 'Take', hotkey: 't', onPress: take(id, after) })
+    const newAct = (id: string): Act => ({ key: 'new', label: 'New', hotkey: 'n', onPress: newSession(id) })
+
+    /**
+     * A record: its title (opens it) on the first line, `meta` on a second unless `inline`. Hover or
+     * keyboard focus tints it and draws its actions at the end of its last line; focused, with hotkeys.
+     * Drawn shown, the overlay must not also carry the hover reveal: the kit refuses that and the whole pane goes blank.
+     */
+    const record = (r: { id: string; title: string; dim?: boolean; onOpen: () => void; meta?: { text: string; badge?: { text: string; color?: 'cyan' | 'yellow' } }; inline?: boolean; acts: Act[] }) => {
+      drawn.push(`open:${r.id}`)
+      const hot = f === r.id
+      const meta = r.meta ? (
+        <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+          {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
+          <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
         </Box>
-      </Box>
-    )
+      ) : null
+      return (
+        <Box key={`rec:${r.id}`} flexDirection="column" backgroundColor={hot ? HOVER_BG : undefined} hover={{ backgroundColor: HOVER_BG }}>
+          <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+            <Button key={`open:${r.id}`} plain label={r.title} dimColor={r.dim} onPress={r.onOpen} />
+            {r.inline ? meta : null}
+          </Box>
+          {r.inline ? null : meta}
+          {r.acts.length ? (
+            <Box position="absolute" top={r.meta && !r.inline ? 1 : 0} right={0} flexDirection="row" backgroundColor={HOVER_BG} {...(hot ? {} : { display: 'none' as const, hover: { display: 'flex' as const } })}>
+              {r.acts.map(a => (
+                <Box key={`act:${a.key}:${r.id}`} flexDirection="row">
+                  {/* A space as text, not a gap: columnGap's cells let the record show through. */}
+                  <Text> </Text>
+                  {hot ? (
+                    <Button key={`${a.key}:${r.id}`} hotkey={a.hotkey} onPress={a.onPress}>
+                      <Text color="suggestion">{a.hotkey}</Text> {a.label}
+                    </Button>
+                  ) : (
+                    <Button key={`${a.key}:${r.id}`} label={a.label} onPress={a.onPress} />
+                  )}
+                </Box>
+              ))}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    /** A list's records, those quiet over a week under an "Older (n)" fold that opens in place. */
+    const folded = <T extends { old: boolean }>(name: string, rows: T[], draw: (r: T) => ReturnType<typeof record>) => {
+      const { recent, older } = fold(rows)
+      const shown = recent.map(draw)
+      if (!older.length) return shown
+      const key = `fold:${name}`
+      drawn.push(key)
+      const isOpen = !!open[name]
+      return [
+        ...shown,
+        <Button key={key} plain label={`${isOpen ? '▾' : '▸'} Older (${older.length})`} onPress={() => void update($, unfolded, u => ({ ...u, [name]: !isOpen }))} />,
+        ...(isOpen ? older.map(draw) : []),
+      ]
+    }
+
+    const inboxRecord = (r: InboxRow) =>
+      record({
+        id: r.threadId,
+        title: r.title,
+        onOpen: () => void viewThread($, r.threadId, r.title),
+        meta: { text: [`#${r.channel}`, r.meta, r.age].filter(Boolean).join(' · ') },
+        acts: [takeAct(r.threadId), newAct(r.threadId)],
+      })
 
     const header = (
       <Box flexDirection="column">
@@ -401,9 +492,9 @@ export const register: Register = on => {
       ) : (
         <Box flexDirection="column" rowGap={1}>
           {box.forYou.length ? <Text weight="semibold">For you</Text> : null}
-          {box.forYou.map(row)}
+          {folded('forYou', box.forYou, inboxRecord)}
           {box.open.length ? <Text weight="semibold">Open</Text> : null}
-          {box.open.map(row)}
+          {folded('open', box.open, inboxRecord)}
           {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
         </Box>
       )
@@ -411,35 +502,38 @@ export const register: Register = on => {
       body = !connected ? (
         <Text dimColor>Not connected.</Text>
       ) : (
-        <Box flexDirection="column">
+        <Box flexDirection="column" rowGap={1}>
           {s.holds.length === 0 ? <Text dimColor>None. Take one from the Inbox.</Text> : null}
-          {s.holds.map(held => (
-            <Box key={`held:${held.threadId}`} flexDirection="row" columnGap={1}>
-              <Button key={`release:${held.threadId}`} label="Release" onPress={act('release', { ref: held.threadId })} />
-              <Button key={`view:${held.threadId}`} label="View" onPress={() => void viewThread($, held.threadId, held.title ?? held.threadId)} />
-              <Text wrap="truncate-end">{held.title ?? held.threadId}</Text>
-            </Box>
-          ))}
+          {s.holds.map(held =>
+            record({
+              id: held.threadId,
+              title: held.title ?? held.threadId,
+              onOpen: () => void viewThread($, held.threadId, held.title ?? held.threadId),
+              acts: [{ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: held.threadId }) }],
+            }),
+          )}
           {s.holds.length > 0 ? <Text dimColor>{'Hand one over: /einweave handover N <session>'}</Text> : null}
         </Box>
       )
     } else if (tab === 'channels') {
       const who = ch.agent ? `@${ch.agent}` : 'This agent'
       body = (
-        <Box flexDirection="column" rowGap={1}>
+        <Box flexDirection="column">
           {ch.error ? <Text color="red">{ch.error}</Text> : null}
           {ch.loading && !ch.channels.length ? <Text dimColor>Loading…</Text> : null}
           {!ch.loading && !ch.error && !ch.channels.length ? <Text dimColor>{`${who} isn't in any channels · set up in the web app`}</Text> : null}
-          {ch.channels.map(c => (
-            <Box key={`chan:${c.id}`} flexDirection="column">
-              <Text weight="semibold" wrap="truncate-end">{`#${c.name}`}</Text>
-              <Text dimColor wrap="truncate-end">{[channelMeta(c.threads, now), c.role ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text>
-              <Box flexDirection="row" columnGap={1}>
-                <Button key={`viewch:${c.id}`} label="View" onPress={() => void viewChannel($, c.id, c.name)} />
-              </Box>
-            </Box>
-          ))}
-          <Box flexDirection="row" columnGap={1}>
+          {ch.channels.map(c =>
+            record({
+              id: `ch:${c.id}`,
+              title: `#${c.name}`,
+              inline: true,
+              onOpen: () => void viewChannel($, c.id, c.name),
+              meta: { text: [channelMeta(c.threads, now), c.role ? null : 'not a member'].filter(Boolean).join(' · ') },
+              // Following without membership: it can read but not post or take until it joins.
+              acts: c.role ? [] : [{ key: 'join', label: 'Join', hotkey: 'j', onPress: join(c.id) }],
+            }),
+          )}
+          <Box flexDirection="row" columnGap={1} marginTop={1}>
             <Button key="refresh:channels" label="Refresh" onPress={() => void loadChannels($)} />
           </Box>
         </Box>
@@ -489,24 +583,26 @@ export const register: Register = on => {
           {cv.error ? <Text color="red">{cv.error}</Text> : null}
           {cv.loading && !cv.threads.length ? <Text dimColor>Loading…</Text> : null}
           {!cv.loading && !cv.error && !cv.threads.length ? <Text dimColor>No threads yet.</Text> : null}
-          {rows.map(th => {
-            const here = s.holds.some(h => h.threadId === th.id)
-            const badge = holdBadge(th.hold, here)
-            const quiet = th.lastActivityAt && Number.isFinite(Date.parse(th.lastActivityAt)) ? `quiet ${ago(now - Date.parse(th.lastActivityAt))}` : null
-            return (
-              <Box key={`cth:${th.id}`} flexDirection="column" marginTop={1}>
-                <Text weight="semibold" dimColor={th.resolved} wrap="truncate-end">{th.title || th.id}</Text>
-                <Box flexDirection="row" columnGap={1}>
-                  {badge ? <Text color={th.resolved ? undefined : badge.color} dimColor={th.resolved}>{badge.text}</Text> : null}
-                  <Text dimColor wrap="truncate-end">{[th.resolved ? 'resolved' : th.status, th.kind, quiet].filter(Boolean).join(' · ')}</Text>
-                </Box>
-                <Box flexDirection="row" columnGap={1}>
-                  <Button key={`view:${th.id}`} label="View" onPress={() => void viewThread($, th.id, th.title || th.id)} />
-                  {here || !member || th.resolved ? null : <Button key={`take:${th.id}`} label="Take" onPress={take(th.id, () => loadChannel($, id))} />}
-                </Box>
-              </Box>
-            )
-          })}
+          <Box flexDirection="column" rowGap={1} marginTop={1}>
+            {folded(
+              `ch:${id}`,
+              rows.map(th => ({ ...th, ...quietFor(th.lastActivityAt, now) })),
+              th => {
+                const here = s.holds.some(h => h.threadId === th.id)
+                const badge = holdBadge(th.hold, here)
+                // `open` is every live thread's status: only the others are said.
+                const status = th.resolved ? 'resolved' : th.status === 'open' ? null : th.status
+                return record({
+                  id: th.id,
+                  title: th.title || th.id,
+                  dim: th.resolved,
+                  onOpen: () => void viewThread($, th.id, th.title || th.id),
+                  meta: { badge: badge ?? undefined, text: [status, th.kind, th.age].filter(Boolean).join(' · ') },
+                  acts: here || !member || th.resolved ? [newAct(th.id)] : [takeAct(th.id, () => loadChannel($, id)), newAct(th.id)],
+                })
+              },
+            )}
+          </Box>
           {more ? <Text dimColor>{`${more} more in the web app.`}</Text> : null}
           <Text dimColor>Read-only · no tokens · viewing marks nothing read.</Text>
         </Box>
@@ -521,7 +617,14 @@ export const register: Register = on => {
           <Text weight="semibold" wrap="truncate-end">{title}</Text>
           <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
           <Box flexDirection="row" columnGap={1}>
-            {held ? null : <Button key={`take:${id}`} label="Take" onPress={take(id)} />}
+            {held ? null : (
+              <Button key={`take:${id}`} hotkey="t" onPress={take(id)}>
+                <Text color="suggestion">t</Text> Take
+              </Button>
+            )}
+            <Button key={`new:${id}`} hotkey="n" onPress={newSession(id)}>
+              <Text color="suggestion">n</Text> New session
+            </Button>
             <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadThread($, id)} />
           </Box>
           {th.error ? <Text color="red">{th.error}</Text> : null}
@@ -542,6 +645,7 @@ export const register: Register = on => {
       )
     }
 
+    stops = drawn
     return (
       <Box flexDirection="column">
         {header}
