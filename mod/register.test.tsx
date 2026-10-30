@@ -241,7 +241,7 @@ test('the Held tab lists held threads, the Session tab has the name field; Relea
   for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'tab:held' })
-    expect(await ui.find({ key: 'open:t1' })).toMatchObject({ props: { label: 'Fix the build' } })
+    expect(await ui.find({ key: 'open:t1' })).toMatchObject(surface === 'terminal' ? { type: 'Button', props: { label: 'Fix the build' } } : { type: 'Markdown', props: { text: '[Fix the build](https://einweave.invalid/t1)' } })
     await ui.press({ key: 'tab:session' })
     expect(await ui.find({ key: 'label' })).toBeDefined()
     await ui.unmount()
@@ -515,8 +515,8 @@ for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     expect(await ui.find({ key: 'tab:channels' })).toMatchObject({ props: { label: 'Channels 2', variant: 'primary' } })
     expect(await ui.find({ type: 'Text', text: /^2 waiting · oldest \d+[smhd] · 4 open$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2 waiting · 2 open · not a member' })).toBeDefined()
-    // Only the channel it follows without membership offers Join.
-    expect((await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('join:'))).toEqual([`join:ch:${CH_FOLLOW}`])
+    // Only the channel it follows without membership offers Join on its row; a desktop draws no row actions (no hover).
+    expect((await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('join:'))).toEqual(surface === 'terminal' ? [`join:ch:${CH_FOLLOW}`] : [])
     expect(await ui.find({ type: 'Text', text: 'counts unknown' })).toBeDefined()
     expect(calls.every(c => PERSON_ONLY.includes(c.tool))).toBe(true)
     await ui.unmount()
@@ -706,5 +706,54 @@ test('a thread tab takes on t and copies the new-session command on n', async ($
   await clock.settle()
   expect(await ui.find({ key: `take:${T_OLD}` })).toMatchObject({ props: { hotkey: 't' } })
   expect(await ui.find({ key: `new:${T_OLD}` })).toMatchObject({ props: { hotkey: 'n' } })
+  await ui.unmount()
+})
+
+for (const surface of ['desktop', 'vscode'] as const) {
+  test(`${surface}: titles are links (a desktop draws every Button as a pill), no row actions; a link press opens the thread tab, which has Take and New`, async ($, on) => {
+    const thread = { thread: { id: T_NEW, title: 'Newer ask' }, messages: [], has_older: false, older_count: 0 }
+    const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+    await start($, clock)
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ key: `open:${T_NEW}` })).toMatchObject({ type: 'Markdown', props: { text: `[Newer ask](https://einweave.invalid/${T_NEW})` } })
+    expect((await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => /^(open|take|new):/.test(k))).toEqual([])
+    await ui.press({ key: `open:${T_NEW}`, link: { href: `https://einweave.invalid/${T_NEW}` } } as never)
+    await clock.settle()
+    expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_NEW }])
+    expect(await ui.find({ key: `take:${T_NEW}` })).toBeDefined()
+    expect(await ui.find({ key: `new:${T_NEW}` })).toBeDefined()
+    await ui.unmount()
+  })
+}
+
+test('a held thread\'s tab has Release (the desktop\'s only way to it); a followed channel\'s tab has Join', async ($, on) => {
+  const thread = { thread: { id: 't1', title: 'Fix the build' }, messages: [], has_older: false, older_count: 0 }
+  const { calls, clock } = engine(on, {
+    answer: c =>
+      c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool === 'ui_channel' ? text(JSON.stringify({ ...OPS_THREADS, channel_id: CH_FOLLOW })) : undefined,
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: 'open:t1', link: { href: 'https://einweave.invalid/t1' } } as never)
+  await clock.settle()
+  expect(await ui.find({ key: 'take:t1' })).toBeUndefined()
+  await ui.press({ key: 'release:t1' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'release').map(c => c.args)).toEqual([{ ref: 't1' }])
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  await ui.press({ key: `open:ch:${CH_FOLLOW}`, link: { href: `https://einweave.invalid/ch%3A${CH_FOLLOW}` } } as never)
+  await clock.settle()
+  await ui.press({ key: `joinch:${CH_FOLLOW}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'join_channel').map(c => c.args)).toEqual([{ channel_id: CH_FOLLOW }])
+  expect(calls.filter(c => c.tool === 'ui_channel').length).toBe(2)
+  // A channel it is a member of offers no Join.
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  await ui.press({ key: `open:ch:${CH_OPS}`, link: { href: `https://einweave.invalid/ch%3A${CH_OPS}` } } as never)
+  await clock.settle()
+  expect(await ui.find({ key: `joinch:${CH_OPS}` })).toBeUndefined()
   await ui.unmount()
 })

@@ -345,11 +345,12 @@ export const register: Register = on => {
           await after?.()
         })
         .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
-    const join = (channelId: string) => () =>
+    const join = (channelId: string, after?: () => Promise<void>) => () =>
       void $.mcp.call(SERVER, 'join_channel', { channel_id: channelId }).then(
         async r => {
           $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? 'join_channel failed' : 'Joined.'))
           await loadChannels($)
+          await after?.()
         },
         err => $.ui.toast(`join_channel failed: ${String(err).slice(0, 120)}`),
       )
@@ -377,12 +378,17 @@ export const register: Register = on => {
     const takeAct = (id: string, after?: () => Promise<void>): Act => ({ key: 'take', label: 'Take', hotkey: 't', onPress: take(id, after) })
     const newAct = (id: string): Act => ({ key: 'new', label: 'New', hotkey: 'n', onPress: newSession(id) })
 
+    // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
+    // VS Code): there a title is a link and a record's actions live in the tab it opens.
+    const desk = e.surface !== 'terminal'
+
     /**
      * A record: its title (opens it) on the first line, `meta` on a second unless `inline`. Hover or
      * keyboard focus tints it and draws its actions at the end of its last line; focused, with hotkeys.
      * Drawn shown, the overlay must not also carry the hover reveal: the kit refuses that and the whole pane goes blank.
      */
     const record = (r: { id: string; title: string; dim?: boolean; onOpen: () => void; meta?: { text: string; badge?: { text: string; color?: 'cyan' | 'yellow' } }; inline?: boolean; acts: Act[] }) => {
+      if (desk) return deskRecord(r)
       drawn.push(`open:${r.id}`)
       const hot = f === r.id
       const meta = r.meta ? (
@@ -413,6 +419,22 @@ export const register: Register = on => {
                   )}
                 </Box>
               ))}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    /** A record on a desktop: the title a link that opens it, the meta under it, no actions. */
+    const deskRecord = (r: Parameters<typeof record>[0]) => {
+      const href = recordHref(r.id)
+      return (
+        <Box key={`rec:${r.id}`} flexDirection="column">
+          <Markdown key={`open:${r.id}`} text={`[${mdText(r.title)}](${href})`} dimColor={r.dim} pressableLinks={[href]} onLinkPress={() => r.onOpen()} />
+          {r.meta ? (
+            <Box flexDirection="row" columnGap={1}>
+              {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
+              <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
             </Box>
           ) : null}
         </Box>
@@ -578,6 +600,7 @@ export const register: Register = on => {
           <Text weight="semibold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
           {row ? <Text dimColor wrap="truncate-end">{[channelMeta(row.threads, now), member ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text> : null}
           <Box flexDirection="row" columnGap={1}>
+            {member ? null : <Button key={`joinch:${id}`} label="Join" onPress={join(id, () => loadChannel($, id))} />}
             <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadChannel($, id)} />
           </Box>
           {cv.error ? <Text color="red">{cv.error}</Text> : null}
@@ -617,7 +640,11 @@ export const register: Register = on => {
           <Text weight="semibold" wrap="truncate-end">{title}</Text>
           <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
           <Box flexDirection="row" columnGap={1}>
-            {held ? null : (
+            {held ? (
+              <Button key={`release:${id}`} hotkey="r" onPress={act('release', { ref: id })}>
+                <Text color="suggestion">r</Text> Release
+              </Button>
+            ) : (
               <Button key={`take:${id}`} hotkey="t" onPress={take(id)}>
                 <Text color="suggestion">t</Text> Take
               </Button>
@@ -656,6 +683,19 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+/**
+ * A desktop title link's target. Its press is the mod's (pressableLinks), so nothing opens it; the
+ * mod knows no web app address, so it points nowhere real: `.invalid` is reserved never to resolve.
+ */
+function recordHref(id: string): string {
+  return `https://einweave.invalid/${encodeURIComponent(id)}`
+}
+
+/** A title as Markdown link text: what Markdown would read as markup, escaped. */
+function mdText(title: string): string {
+  return title.replace(/[\\`*_{}[\]()#+\-.!|<>~]/g, c => `\\${c}`)
 }
 
 /** A message's local time, `HH:MM`, or its date when not today. */
