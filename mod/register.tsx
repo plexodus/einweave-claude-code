@@ -359,6 +359,9 @@ export const register: Register = on => {
     const waiting = box.forYou.length + box.open.length
     // The tab counts what waits (the server's exact counts), not the rows drawn: those stop at 20.
     const total = s?.waiting?.forYou != null && s.waiting.channel != null ? `${s.waiting.forYou + s.waiting.channel}` : `${waiting}${s?.waiting?.more ? '+' : ''}`
+    // Each Inbox heading counts what waits in it the same way, so the headings add up to the tab.
+    const forYouCount = s?.waiting?.forYou ?? box.forYou.length
+    const openCount = s?.waiting?.channel ?? box.open.length
     const tab = shownTab(t)
     const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
     // Channels and channel tabs load each time they are shown: nothing pushes them.
@@ -519,9 +522,9 @@ export const register: Register = on => {
         <Text dimColor>Nothing waits for this session.</Text>
       ) : (
         <Box flexDirection="column" rowGap={1}>
-          {box.forYou.length ? <Text weight="semibold">For you</Text> : null}
+          {box.forYou.length ? <Text weight="semibold">{`For you ${forYouCount}`}</Text> : null}
           {folded('forYou', box.forYou, inboxRecord)}
-          {box.open.length ? <Text weight="semibold">Open</Text> : null}
+          {box.open.length ? <Text weight="semibold">{`Open ${openCount}`}</Text> : null}
           {folded('open', box.open, inboxRecord)}
           {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
         </Box>

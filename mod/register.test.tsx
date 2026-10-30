@@ -369,7 +369,7 @@ const WAITING: UiSnapshot = {
   },
 }
 
-test('the Inbox is the default tab: For you, then Open, each with how long it has been quiet; the tab counts all that waits, not the rows drawn', async ($, on) => {
+test('the Inbox is the default tab: For you, then Open, each with how long it has been quiet; the tab and each heading count all that waits, not the rows drawn', async ($, on) => {
   const { clock } = engine(on, { polled: WAITING })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -379,7 +379,9 @@ test('the Inbox is the default tab: For you, then Open, each with how long it ha
   for (const k of ['tab:held', 'tab:channels', 'tab:session']) expect(await ui.find({ key: k })).toMatchObject({ props: { dimColor: true } })
   const keys = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('open:'))
   expect(keys).toEqual([`open:${T_OLD}`, `open:${T_NEW}`, `open:${T_CH}`])
-  expect(await ui.find({ type: 'Text', text: 'Open' })).toBeDefined()
+  // Each heading says how many wait in it (the server's counts), so they add up to the tab: 25 + 4 = 29.
+  expect(await ui.find({ type: 'Text', text: 'For you 25' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Open 4' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^#ops · parked · you took part · \d+[smhd]$/ })).toBeDefined()
   await ui.unmount()
 })
