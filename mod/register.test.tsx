@@ -39,7 +39,7 @@ type Call = { tool: string; args: Record<string, unknown> }
  * text block only (its `$.mcp.call` drops structuredContent, measured 2026-10-29); the server
  * connects `connectAfterMs` after the session starts. The relay writes `pushed` (or, per start,
  * `pushes[n]`) and then exits, or stays open with `stayOpen`; other tools answer `answer(tool)`.
- * Every MCP call and relay start is recorded; `tails` collects the hint tail handed on.
+ * Every MCP call and relay start is recorded.
  */
 function engine(
   on: Parameters<Parameters<typeof test>[1]>[1],
@@ -48,7 +48,6 @@ function engine(
   const calls: Call[] = []
   const spawns: { env?: Record<string, string> }[] = []
   const toasts: string[] = []
-  const tails: (string | undefined)[] = []
   const clock = mock.clock(on)
   // The server connects on its own, connectAfterMs after the session starts; until then a call fails as Claude Code's does.
   let connected = !o.connectAfterMs
@@ -63,7 +62,18 @@ function engine(
     registered.push(e.name)
     return { value: { command: e.name } }
   })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  // The engine's record of the pane: open, listed, closed.
+  const pane = { up: false, opens: 0 }
+  on('ui.open', () => {
+    pane.up = true
+    pane.opens++
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: pane.up ? [{ id: 'einweave', title: 'einweave', isShown: true, isFocused: false, isPlaced: true }] : [] }))
+  on('ui.close', () => {
+    pane.up = false
+    return { value: undefined }
+  })
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -89,12 +99,18 @@ function engine(
     // A call on $, so its result comes back as { value }.
     return { value: { code: 0, signal: null } } as never
   })
+  // The engine's own drawing, which records the hint tail handed on.
+  const tails: (string | undefined)[] = []
   on('ui.render', ($, e) => {
     if (e.component === 'PromptHint') tails.push((e.props as { tail?: string }).tail)
     return { type: 'Text', props: {}, children: ['drawn by Claude Code'] }
   })
-  return { calls, spawns, toasts, tails, clock, registered }
+  return { calls, spawns, toasts, tails, clock, registered, pane }
 }
+
+/** What the band says of einweave: its first line, the counts or what went wrong. */
+const said = async (band: { find(q: object): Promise<{ children?: unknown[] } | undefined> }) =>
+  (await band.find({ type: 'Text', text: /^einweave/ }))?.children?.[0]
 
 const start = async ($: Parameters<Parameters<typeof test>[1]>[0], clock: { settle(): Promise<void> }) => {
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
@@ -102,32 +118,74 @@ const start = async ($: Parameters<Parameters<typeof test>[1]>[0], clock: { sett
 }
 
 test('the hint tail shows the first snapshot, then what the relay pushes', async ($, on) => {
-  const { tails, clock } = engine(on, { pushed: [line(2, { ...SNAP, holds: [...SNAP.holds, { threadId: 't2', title: null }] })] })
+  const { clock } = engine(on, { pushed: [line(2, { ...SNAP, holds: [...SNAP.holds, { threadId: 't2', title: null }] })] })
   await start($, clock)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · holds 2 · 2 for you')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · holds 2 · 2 for you')
   await ui.unmount()
 })
 
+test('the band is always there: what waits, dim, and Show / Hide for the pane (no hotkey); the hint line no longer says it', async ($, on) => {
+  const { pane, tails, clock } = engine(on)
+  await start($, clock)
+  const band = await $.ui.mount(BAND)
+  expect(await said(band)).toBe('einweave · holds 1 · 2 for you')
+  expect(await band.find({ type: 'Text', text: /^einweave/ })).toMatchObject({ props: { dimColor: true } })
+  expect(await band.find({ key: 'connect' })).toBeUndefined()
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
+  // A bare letter in an empty composer presses a band Button that has a hotkey.
+  expect((await band.find({ key: 'pane' }))?.props.hotkey).toBeUndefined()
+  await band.press({ key: 'pane' })
+  await clock.settle()
+  expect(pane).toMatchObject({ up: true, opens: 1 })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Hide' } })
+  await band.press({ key: 'pane' })
+  await clock.settle()
+  expect(pane).toMatchObject({ up: false, opens: 1 })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
+  await band.unmount()
+  const hint = await $.ui.mount(HINT)
+  expect(tails).toEqual([undefined])
+  await hint.unmount()
+})
+
+test('/einweave toggles the pane as the band does; closed any other way (its ×), the band says Show again', async ($, on) => {
+  const { pane, clock } = engine(on)
+  await start($, clock)
+  await $.command.run({ command: 'einweave', args: '' })
+  expect(pane).toMatchObject({ up: true, opens: 1 })
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Hide' } })
+  await $.command.run({ command: 'einweave', args: '' })
+  expect(pane).toMatchObject({ up: false, opens: 1 })
+  await $.command.run({ command: 'einweave', args: '' })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Hide' } })
+  // Closed by its × (the engine's record changes; a test cannot press the engine's mark): the band follows the record.
+  pane.up = false
+  await band.redraw()
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
+  await band.unmount()
+})
+
 test('a relay started against an older plugin, which refuses watch, leaves the poll in charge', async ($, on) => {
-  const { tails, calls, clock } = engine(on, { pushed: [JSON.stringify({ ok: false, error: 'bad request' }) + '\n'] })
+  const { calls, clock } = engine(on, { pushed: [JSON.stringify({ ok: false, error: 'bad request' }) + '\n'] })
   await start($, clock)
   const before = calls.filter(c => c.tool === 'ui_state').length
   await clock.advance(60_000)
   expect(calls.filter(c => c.tool === 'ui_state').length).toBe(before + 1)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · holds 1 · 2 for you')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · holds 1 · 2 for you')
   await ui.unmount()
 })
 
 test('a drop shows in the band only after 10 s, with Connect; the hint says reconnecting meanwhile', async ($, on) => {
-  const { tails, calls, clock } = engine(on, { polled: DOWN })
+  const { calls, clock } = engine(on, { polled: DOWN })
   await start($, clock)
   let band = await $.ui.mount(BAND)
   expect(await band.find({ type: 'Text', text: /disconnected/ })).toBeUndefined()
   await band.unmount()
-  const hint = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · reconnecting')
+  const hint = await $.ui.mount(BAND)
+  expect(await said(hint)).toBe('einweave · reconnecting')
   await hint.unmount()
   // Drawn once and left on screen: the band appears when the grace period ends, with no other change.
   band = await $.ui.mount(BAND)
@@ -212,10 +270,10 @@ test('a connect that never signs in says so after 10 s instead of hanging', asyn
 
 test('a window another one took over says so at once, and its band takes it back without asking', async ($, on) => {
   const GONE: UiSnapshot = { ...SNAP, connection: { state: 'superseded', detail: 'disconnected — another window took over' }, holds: [], waiting: null }
-  const { calls, tails, clock } = engine(on, { polled: GONE })
+  const { calls, clock } = engine(on, { polled: GONE })
   await start($, clock)
-  const hint = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · moved to another window')
+  const hint = await $.ui.mount(BAND)
+  expect(await said(hint)).toBe('einweave · moved to another window')
   await hint.unmount()
   const band = await $.ui.mount(BAND)
   expect((await band.find({ type: 'Text', text: /einweave/ }))?.children).toEqual(['einweave · moved to another window'])
@@ -277,21 +335,21 @@ test('a window that does not hold the session shows its name, with no field to r
 })
 
 test('no plugin answer: the tail says so instead of claiming a state', async ($, on) => {
-  const { tails, clock } = engine(on, { polled: null })
+  const { clock } = engine(on, { polled: null })
   await start($, clock)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · not answering')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · not answering')
   await ui.unmount()
 })
 
 test('after /clear (state back at its default) the snapshot is read again', async ($, on) => {
-  const { tails, calls, clock } = engine(on)
+  const { calls, clock } = engine(on)
   // No session.start: /clear does not run it; the state starts at its default, as /clear leaves it.
   await $.classic.SessionStart({ source: 'clear' } as never)
   await clock.settle()
   expect(calls.filter(c => c.tool === 'ui_state').length).toBe(1)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · holds 1 · 2 for you')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · holds 1 · 2 for you')
   await ui.unmount()
 })
 
@@ -312,35 +370,34 @@ test('while the relay is live, the minute poll does not run', async ($, on) => {
 })
 
 test('a restarted plugin counts from rev 1 again: its relay is believed over a higher polled rev', async ($, on) => {
-  const { tails, clock } = engine(on, { polledRev: 40, pushed: [line(1, { ...SNAP, holds: [] })] })
+  const { clock } = engine(on, { polledRev: 40, pushed: [line(1, { ...SNAP, holds: [] })] })
   await start($, clock)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · holds 0 · 2 for you')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · holds 0 · 2 for you')
   await ui.unmount()
 })
 
 test('at startup the first read waits for the plugin\'s server instead of saying "not answering"', async ($, on) => {
-  const { tails, clock } = engine(on, { connectAfterMs: 3_000 })
+  const { clock } = engine(on, { connectAfterMs: 3_000 })
   await start($, clock)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · starting')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · starting')
   await ui.unmount()
   await clock.advance(3_000)
-  const after = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · holds 1 · 2 for you')
-  expect(tails).not.toContain('einweave · not answering')
+  const after = await $.ui.mount(BAND)
+  expect(await said(after)).toBe('einweave · holds 1 · 2 for you')
   await after.unmount()
 })
 
 test('a relay that found no socket yet (startup) tries again after 2 s, not 10', async ($, on) => {
   const NO_SOCKET = JSON.stringify({ ok: false, error: 'no control socket' }) + '\n'
-  const { tails, spawns, clock } = engine(on, { polled: null, pushes: [[NO_SOCKET], [line(1, SNAP)]] })
+  const { spawns, clock } = engine(on, { polled: null, pushes: [[NO_SOCKET], [line(1, SNAP)]] })
   await start($, clock)
   expect(spawns.length).toBe(1)
   await clock.advance(2_000)
   expect(spawns.length).toBe(2)
-  const ui = await $.ui.mount(HINT)
-  expect(tails.at(-1)).toBe('einweave · holds 1 · 2 for you')
+  const ui = await $.ui.mount(BAND)
+  expect(await said(ui)).toBe('einweave · holds 1 · 2 for you')
   await ui.unmount()
 })
 

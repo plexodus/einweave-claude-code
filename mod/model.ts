@@ -109,7 +109,7 @@ export type Action =
   | { kind: 'find'; words: string }
 
 export const USAGE = [
-  '/einweave                       open the pane',
+  '/einweave                       open or close the pane',
   '/einweave status [full]         connection, session and what waits (full: every field)',
   '/einweave connect | disconnect  join or leave einweave in this session',
   '/einweave rename <name>         rename this session ("" clears)',

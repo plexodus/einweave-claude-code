@@ -138,6 +138,7 @@ declare module 'claude-code' {
       channel: Shaped<Record<string, ChannelView>>
       focused: Shaped<string>
       unfolded: Shaped<Record<string, boolean>>
+      paneUp: Shaped<boolean>
     }
   }
 }

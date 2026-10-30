@@ -1,6 +1,6 @@
 /**
- * The einweave mod (plan 2026-10-25-terminal-ui.md, Phase 2): the hint-line indicator, a band while
- * the connection is lost, the pane (inbox, held threads, channels, session) and one command, `/einweave [verb]`.
+ * The einweave mod (plan 2026-10-25-terminal-ui.md, Phase 2): a band above the prompt (what waits, or
+ * what went wrong, and Show / Hide), the pane (inbox, held threads, channels, session) and one command, `/einweave [verb]`.
  *
  * Data: this plugin's own MCP server is the single source. ui/ctl-watch.ts, started here for the
  * session's life, relays the control socket's `watch` stream (a snapshot per change); `ui_state`
@@ -31,6 +31,8 @@ const channels = atom({ plugin: 'einweave', key: 'channels' } as const, NO_CHANN
 const channel = atom({ plugin: 'einweave', key: 'channel' } as const, {} as Record<string, ChannelView>, { shape: 'channel-1' })
 /** Which record the keyboard is on: drawn as hovered, its actions on hotkeys. */
 const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shape: 'focused-1' })
+/** Set as the pane opens or closes, so the band redraws; its Show / Hide reads the engine's own record. */
+const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
 /** A record under the pointer or the keyboard: both lines tinted, its actions drawn over its last line's end. */
@@ -73,6 +75,20 @@ async function connect($: EngineInterface): Promise<string> {
     if (answer === 'Take it over') text = textOf(await $.mcp.call(SERVER, 'connect', { takeover: 'lock' }))
   }
   return text.startsWith('connecting') ? settled($) : text
+}
+
+/** Opens the pane, or closes it while it is the one shown: `/einweave` and the band's button. */
+async function togglePane($: EngineInterface): Promise<{ isPlaced: boolean } | null> {
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane?.isShown) {
+    await $.ui.close({ id: PANE })
+    // The plugin's own close does not come back through its own ui.close hook: say it here.
+    await update($, paneUp, () => false)
+    return null
+  }
+  const opened = await $.ui.open({ id: PANE, title: 'einweave' })
+  await update($, paneUp, () => true)
+  return opened
 }
 
 /** Take this session back from the window that took it over: the person pressed for it, so no question. */
@@ -231,7 +247,7 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'einweave',
-        description: 'einweave: open the pane, or status | connect | disconnect | rename | scope | held | release | handover',
+        description: 'einweave: open or close the pane, or status | connect | disconnect | rename | scope | held | release | handover',
         argumentHint: '[verb] [args]',
         immediate: true,
       })
@@ -262,8 +278,8 @@ export const register: Register = on => {
     const action = parseCommand(e.args)
     switch (action.kind) {
       case 'pane': {
-        const opened = await $.ui.open({ id: PANE, title: 'einweave' })
-        return opened.isPlaced ? {} : { text: `The pane waits for a wider terminal. ${indicator(await read($, view), await $.clock.now()).text}` }
+        const opened = await togglePane($)
+        return !opened || opened.isPlaced ? {} : { text: `The pane waits for a wider terminal. ${indicator(await read($, view), await $.clock.now()).text}` }
       }
       case 'usage':
         return { text: action.text }
@@ -287,6 +303,13 @@ export const register: Register = on => {
     }
   })
 
+  // Closed by the person (its ×) or an unload: the band redraws and says Show again.
+  on('ui.close', async ($, e, next) => {
+    const r = await next(e)
+    if (e.id === PANE) await update($, paneUp, () => false)
+    return r
+  })
+
   // Titles are the records' only keyboard stops; their actions are on hotkeys (focusTarget).
   on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const element = focusTarget(stops, last, e.element)
@@ -295,26 +318,28 @@ export const register: Register = on => {
     return next(element === e.element ? e : { ...e, element })
   })
 
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const i = indicator(await read($, view), await $.clock.now())
-    return next({ ...e, props: { ...e.props, tail: i.text } })
-  })
-
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
     const i = indicator(v, await $.clock.now())
-    if (e.props.hasSurvey || !needsBand(i)) return next(e)
+    if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
+    // Read for the redraw it brings; the engine's record says what is up, a pane kept over a reload too.
+    await read($, paneUp)
+    const up = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
+    const warn = needsBand(i)
+    // One row, always: what waits (or what went wrong) and the pane's Show / Hide. The hint line no longer says it twice.
     return (
       <Box flexDirection="row" columnGap={2}>
-        <Text color="red">{i.text}</Text>
-        {v.snap?.connection.detail ? <Text dimColor wrap="truncate-end">{v.snap.connection.detail}</Text> : null}
+        <Text color={warn ? 'red' : undefined} dimColor={!warn}>{i.text}</Text>
+        {warn && v.snap?.connection.detail ? <Text dimColor wrap="truncate-end">{v.snap.connection.detail}</Text> : null}
         {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session. */}
-        {i.kind === 'superseded' ? (
+        {!warn ? null : i.kind === 'superseded' ? (
           <Button key="take-back" label="Take it back" plain onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
         ) : (
           <Button key="connect" label="Connect" hotkey="1" plain onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
         )}
+        {/* No hotkey: a bare letter in an empty composer would press it. */}
+        <Button key="pane" label={up ? 'Hide' : 'Show'} plain dimColor onPress={() => void togglePane($)} />
       </Box>
     )
   })
