@@ -384,6 +384,8 @@ export const register: Register = on => {
     // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
     // VS Code): there a title is a link and a record's actions live in the tab it opens.
     const desk = e.surface !== 'terminal'
+    // A button's face: its hotkey before its label, but not on a desktop, whose webview drops hotkeys.
+    const keyed = (hotkey: string, label: string) => (desk ? label : [<Text key="k" color="suggestion">{hotkey}</Text>, ` ${label}`])
 
     /**
      * A record: its title (opens it) on the first line, `meta` on a second unless `inline`. Hover or
@@ -652,17 +654,11 @@ export const register: Register = on => {
           <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
           <Box flexDirection="row" columnGap={1}>
             {held ? (
-              <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>
-                <Text color="suggestion">r</Text> Release
-              </Button>
+              <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>{keyed('r', 'Release')}</Button>
             ) : (
-              <Button key={`take:${id}`} hotkey="t" variant="primary" onPress={take(id)}>
-                <Text color="suggestion">t</Text> Take
-              </Button>
+              <Button key={`take:${id}`} hotkey="t" variant="primary" onPress={take(id)}>{keyed('t', 'Take')}</Button>
             )}
-            <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>
-              <Text color="suggestion">n</Text> New session
-            </Button>
+            <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>{keyed('n', 'New session')}</Button>
             <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadThread($, id)} />
           </Box>
           {th.error ? <Text color="red">{th.error}</Text> : null}

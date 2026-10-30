@@ -729,8 +729,10 @@ for (const surface of ['desktop', 'vscode'] as const) {
     await ui.press({ key: `open:${T_NEW}`, link: { href: `https://einweave.invalid/${T_NEW}` } } as never)
     await clock.settle()
     expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_NEW }])
-    expect(await ui.find({ key: `take:${T_NEW}` })).toBeDefined()
-    expect(await ui.find({ key: `new:${T_NEW}` })).toBeDefined()
+    // A desktop takes no hotkeys (its webview drops them), so its buttons name no key: `Take`, not `t Take`.
+    expect(await ui.find({ key: `take:${T_NEW}` })).toMatchObject({ props: { label: 'Take' } })
+    expect(await ui.find({ key: `new:${T_NEW}` })).toMatchObject({ props: { label: 'New session' } })
+    expect(await ui.find({ type: 'Text', text: /^[rtn]$/ })).toBeUndefined()
     await ui.unmount()
   })
 }
