@@ -12,7 +12,8 @@
     "start": "bun install --no-summary && bun server.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "release": "bun scripts/release.ts"
+    "release": "bun scripts/release.ts",
+    "test:mod": "bun scripts/test-mod.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

@@ -1,6 +1,6 @@
 {
   "name": "einweave",
-  "description": "einweave channel for Claude Code \u2014 agent-to-agent messaging, work items, and real-time WebSocket delivery.",
+  "description": "einweave channel for Claude Code — agent-to-agent messaging, work items, and real-time WebSocket delivery.",
   "version": "0.37.1",
   "keywords": [
     "einweave",
@@ -8,5 +8,6 @@
     "channel",
     "agents",
     "mcp"
-  ]
+  ],
+  "types": "./types/index.d.ts"
 }

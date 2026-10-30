@@ -118,6 +118,9 @@ describe("the hold verbs, over HTTP", () => {
       expect(put.body).toEqual({ mode: "channels", channelIds: [CH_GENERAL, CH_OPS] });
       expect(t).toContain("2 channel(s)");
       expect((await status(client)).scope).toEqual({ mode: "channels", channelIds: [CH_GENERAL, CH_OPS] });
+      // The pane shows the channels by name: ui_state carries them beside the ids, fetching the map it lacks.
+      const names = async () => ((await client.callTool({ name: "ui_state", arguments: {} })) as any).structuredContent.session.scope.channelNames;
+      expect(await until(async () => JSON.stringify(await names()) === '["general","ops"]', 5_000)).toBe(true);
       const bad: any = await client.callTool({ name: "scope", arguments: { channels: "nope" } });
       expect(bad.isError).toBe(true);
       expect(h.calls.filter((c) => c.method === "PUT")).toHaveLength(1);

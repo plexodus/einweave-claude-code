@@ -1,0 +1,6 @@
+{
+  // The mod is type-checked against the API this Claude Code build writes into .claude-plugin/types/
+  // (gitignored) once it has loaded the plugin; the plugin's own tsconfig covers its Node code.
+  "extends": "../.claude-plugin/types/tsconfig.json",
+  "include": ["./", "../types"]
+}
