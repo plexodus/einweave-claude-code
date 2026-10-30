@@ -10,8 +10,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { UiSnapshot } from '../types'
-import { applySnapshot, EMPTY_VIEW, fromTool, indicator, needsBand, parseCommand, parseLine, scopeText, statusSummary, textOf, BAND_GRACE_MS } from './model'
+import type { ThreadView, UiSnapshot } from '../types'
+import {
+  applySnapshot, closeThread, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, inbox, indicator, needsBand, newSessionCommand, openThread, parseCommand, parseLine,
+  scopeText, shownTab, statusSummary, takeOutcome, textOf, threadView, BAND_GRACE_MS, type InboxRow,
+} from './model'
 
 const SERVER = 'plugin:einweave:einweave'
 const PANE = 'einweave'
@@ -21,6 +24,9 @@ const SETTLE_MS = 10_000
 const SETTLE_STEP_MS = 500
 
 const view = atom({ plugin: 'einweave', key: 'view' } as const, EMPTY_VIEW, { shape: 'view-1' })
+const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { shape: 'tabs-1' })
+const threads = atom({ plugin: 'einweave', key: 'threads' } as const, {} as Record<string, ThreadView>, { shape: 'threads-1' })
+const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 
 /** Take a snapshot into the view; a drop that starts now redraws once its grace period has passed. */
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
@@ -80,6 +86,50 @@ async function settled($: EngineInterface): Promise<string> {
     await $.clock.sleep(SETTLE_STEP_MS)
   }
 }
+
+/**
+ * Take a thread for this session. From a holder who is online the tool asks first: put its question to
+ * the person, and only on their yes take it with confirm (by id: a number cannot carry a confirmation).
+ */
+async function takeThread($: EngineInterface, ref: string): Promise<string> {
+  const first = textOf(await $.mcp.call(SERVER, 'take', { ref }))
+  const o = takeOutcome(first)
+  if (o.kind !== 'ask') {
+    await poll($)
+    return first
+  }
+  let answer = 'Leave it'
+  try {
+    answer = await $.ui.ask(o.question, ['Take it', 'Leave it'])
+  } catch {}
+  if (answer !== 'Take it') return 'Nothing was taken.'
+  const text = textOf(await $.mcp.call(SERVER, 'take', { ref: o.id, confirm: true }))
+  await poll($)
+  return text
+}
+
+/** Read a thread tab's content with `ui_thread`: the person's view, which neither marks read nor acks. */
+async function loadThread($: EngineInterface, id: string): Promise<void> {
+  await update($, threads, m => ({ ...m, [id]: { ...(m[id] ?? NO_THREAD), loading: true } }))
+  let got: ThreadView
+  try {
+    const r = await $.mcp.call(SERVER, 'ui_thread', { thread_id: id })
+    got = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
+  } catch (err) {
+    got = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
+  }
+  // Closed (×) while it loaded: the tab is gone, so its content must not come back.
+  if (!(await read($, tabs)).threads.some(x => x.id === id)) return
+  await update($, threads, m => ({ ...m, [id]: got }))
+}
+
+async function viewThread($: EngineInterface, id: string, title: string): Promise<void> {
+  await update($, tabs, t => openThread(t, id, title))
+  await loadThread($, id)
+}
+
+/** The first line of a tool's answer, as a toast. */
+const toastFirst = ($: EngineInterface) => (t: string) => $.ui.toast(t.split('\n')[0] || 'Done.')
 
 /** The relay to the control socket's `watch`, for the session's life; ends with the module, which also kills the child. */
 async function runRelay($: EngineInterface): Promise<void> {
@@ -172,6 +222,12 @@ export const register: Register = on => {
         const r = await $.mcp.call(SERVER, action.tool, action.args)
         return { text: textOf(r) || (r.isError ? `${action.tool} failed` : 'Done.') }
       }
+      case 'take':
+        return { text: await takeThread($, action.ref) }
+      case 'find': {
+        const r = await $.mcp.call(SERVER, 'list_threads', { takeable: true, limit: 50 })
+        return { text: r.isError ? textOf(r) || 'list_threads failed' : findInList(textOf(r), action.words) }
+      }
     }
   })
 
@@ -208,70 +264,189 @@ export const register: Register = on => {
     const Input = fields && 'Input' in els ? els.Input : null
     const Select = fields && 'Select' in els ? els.Select : null
     const v = await read($, view)
-    const i = indicator(v, await $.clock.now())
+    const now = await $.clock.now()
+    const i = indicator(v, now)
     const s = v.snap
+    const t = await read($, tabs)
     const color = i.kind === 'connected' ? undefined : i.kind === 'disconnected' || i.kind === 'superseded' || i.kind === 'no-answer' ? 'red' : 'yellow'
     const act = (tool: string, args: Record<string, unknown>) => () =>
       void $.mcp.call(SERVER, tool, args).then(
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
         err => $.ui.toast(`${tool} failed: ${String(err).slice(0, 120)}`),
       )
+    const take = (ref: string) => () => void takeThread($, ref).then(toastFirst($), err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
     const connected = s?.connection.state === 'connected'
-    return (
+    const box = connected ? inbox(s.waiting, now) : { forYou: [], open: [] }
+    const waiting = box.forYou.length + box.open.length
+    // The tab counts what waits (the server's exact counts), not the rows drawn: those stop at 20.
+    const total = s?.waiting?.forYou != null && s.waiting.channel != null ? `${s.waiting.forYou + s.waiting.channel}` : `${waiting}${s?.waiting?.more ? '+' : ''}`
+    const tab = shownTab(t)
+    const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
+
+    const row = (r: InboxRow) => (
+      <Box key={`row:${r.threadId}`} flexDirection="column">
+        {/* The title alone on its line: beside it a narrow pane broke the channel name mid-word (seen live). */}
+        <Text weight="semibold" wrap="truncate-end">{r.title}</Text>
+        <Text dimColor wrap="truncate-end">{[`#${r.channel}`, r.meta, r.quiet].filter(Boolean).join(' · ')}</Text>
+        <Box flexDirection="row" columnGap={1}>
+          <Button key={`view:${r.threadId}`} label="View" onPress={() => void viewThread($, r.threadId, r.title)} />
+          <Button key={`take:${r.threadId}`} label="Take" onPress={take(r.threadId)} />
+          <Button
+            key={`new:${r.threadId}`}
+            label="New session"
+            onPress={press => {
+              const cmd = newSessionCommand(r.threadId)
+              void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
+            }}
+          />
+        </Box>
+      </Box>
+    )
+
+    const header = (
       <Box flexDirection="column">
         <Text color={color} weight="semibold">{i.text}</Text>
         {s && !connected && s.connection.detail ? <Text dimColor>{s.connection.detail}</Text> : null}
         {!s && v.error ? <Text dimColor>{v.error}</Text> : null}
         {s && !connected ? (
           i.kind === 'superseded' ? (
-            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
+            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(toastFirst($))} />
           ) : (
-            <Button key="connect" label="Connect" onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
+            <Button key="connect" label="Connect" onPress={() => void connect($).then(toastFirst($))} />
           )
         ) : null}
-        {s ? (
-          <Box flexDirection="column" marginTop={1}>
-            <Text weight="semibold">Session</Text>
-            <Text>{`agent ${s.session.agent ?? '-'} · ${s.session.kind ?? 'session'} · plugin ${s.version}`}</Text>
-            {s.staleSince ? <Text color="yellow">Plugin updated on disk: restart Claude Code to use it.</Text> : null}
-            {Input && connected ? (
-              <Input key="label" label="Name" value={s.session.label ?? ''} placeholder="this session's name" submitLabel="rename" onSubmit={(label: string) => act('set_session_label', { label })()} />
-            ) : (
-              <Text>{`name ${s.session.label ?? '-'}`}</Text>
-            )}
-            {s.session.scope && !Select ? <Text>{`scope ${scopeText(s.session.scope)}`}</Text> : null}
-            {s.session.scope && Select ? (
-              <Select
-                key="scope"
-                label="Scope"
-                value={s.session.scope.mode}
-                options={[
-                  { value: 'none', label: scopeText({ mode: 'none', channelIds: [] }) },
-                  { value: 'all', label: scopeText({ mode: 'all', channelIds: [] }) },
-                  ...(s.session.scope.mode === 'channels' ? [{ value: 'channels', label: scopeText(s.session.scope) }] : []),
-                ]}
-                onSelect={(mode: string) => {
-                  if (mode !== 'channels') act('scope', { channels: mode })()
-                }}
-              />
-            ) : null}
+      </Box>
+    )
+    if (!s) return header
+
+    const tabRow = (
+      <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
+        <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} variant={tab === 'inbox' ? 'primary' : undefined} onPress={show('inbox')} />
+        <Button key="tab:held" label={`Held ${s.holds.length}`} variant={tab === 'held' ? 'primary' : undefined} onPress={show('held')} />
+        <Button key="tab:session" label="Session" variant={tab === 'session' ? 'primary' : undefined} onPress={show('session')} />
+        {t.threads.map(th => (
+          <Box key={`tabbox:${th.id}`} flexDirection="row">
+            <Button key={`tab:${th.id}`} label={th.title.length > 18 ? `${th.title.slice(0, 17)}…` : th.title} variant={tab === th.id ? 'primary' : undefined} onPress={show(th.id)} />
+            <Button
+              key={`close:${th.id}`}
+              label="×"
+              plain
+              onPress={() => {
+                void update($, tabs, x => closeThread(x, th.id))
+                void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== th.id)))
+              }}
+            />
           </Box>
-        ) : null}
-        {connected ? (
-          <Box flexDirection="column" marginTop={1}>
-            <Text weight="semibold">{`Held (${s.holds.length})`}</Text>
-            {s.holds.length === 0 ? <Text dimColor>None. Take one with /einweave:take.</Text> : null}
-            {s.holds.map(held => (
-              <Box key={`held:${held.threadId}`} flexDirection="row" columnGap={1}>
-                <Button key={`release:${held.threadId}`} label="Release" onPress={act('release', { ref: held.threadId })} />
-                <Text wrap="truncate-end">{held.title ?? held.threadId}</Text>
+        ))}
+      </Box>
+    )
+
+    let body
+    if (tab === 'inbox') {
+      body = !connected ? (
+        <Text dimColor>Not connected: what waits shows once this session is.</Text>
+      ) : waiting === 0 ? (
+        <Text dimColor>Nothing waits for this session.</Text>
+      ) : (
+        <Box flexDirection="column" rowGap={1}>
+          {box.forYou.length ? <Text weight="semibold">For you</Text> : null}
+          {box.forYou.map(row)}
+          {box.open.length ? <Text weight="semibold">Open</Text> : null}
+          {box.open.map(row)}
+          {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
+        </Box>
+      )
+    } else if (tab === 'held') {
+      body = !connected ? (
+        <Text dimColor>Not connected.</Text>
+      ) : (
+        <Box flexDirection="column">
+          {s.holds.length === 0 ? <Text dimColor>None. Take one from the Inbox.</Text> : null}
+          {s.holds.map(held => (
+            <Box key={`held:${held.threadId}`} flexDirection="row" columnGap={1}>
+              <Button key={`release:${held.threadId}`} label="Release" onPress={act('release', { ref: held.threadId })} />
+              <Button key={`view:${held.threadId}`} label="View" onPress={() => void viewThread($, held.threadId, held.title ?? held.threadId)} />
+              <Text wrap="truncate-end">{held.title ?? held.threadId}</Text>
+            </Box>
+          ))}
+          {s.holds.length > 0 ? <Text dimColor>{'Hand one over: /einweave handover N <session>'}</Text> : null}
+        </Box>
+      )
+    } else if (tab === 'session') {
+      body = (
+        <Box flexDirection="column">
+          <Text>{`agent ${s.session.agent ?? '-'} · ${s.session.kind ?? 'session'} · plugin ${s.version}`}</Text>
+          {s.staleSince ? <Text color="yellow">Plugin updated on disk: restart Claude Code to use it.</Text> : null}
+          {Input && connected ? (
+            <Input key="label" label="Name" value={s.session.label ?? ''} placeholder="this session's name" submitLabel="rename" onSubmit={(label: string) => act('set_session_label', { label })()} />
+          ) : (
+            <Text>{`name ${s.session.label ?? '-'}`}</Text>
+          )}
+          {s.session.scope && !Select ? <Text>{`scope ${scopeText(s.session.scope)}`}</Text> : null}
+          {s.session.scope && Select ? (
+            <Select
+              key="scope"
+              label="Scope"
+              value={s.session.scope.mode}
+              options={[
+                { value: 'none', label: scopeText({ mode: 'none', channelIds: [] }) },
+                { value: 'all', label: scopeText({ mode: 'all', channelIds: [] }) },
+                ...(s.session.scope.mode === 'channels' ? [{ value: 'channels', label: scopeText(s.session.scope) }] : []),
+              ]}
+              onSelect={(mode: string) => {
+                if (mode !== 'channels') act('scope', { channels: mode })()
+              }}
+            />
+          ) : null}
+        </Box>
+      )
+    } else {
+      const id = tab
+      const th = (await read($, threads))[id] ?? NO_THREAD
+      const title = th.title ?? t.threads.find(x => x.id === id)?.title ?? id
+      const held = s.holds.some(h => h.threadId === id)
+      body = (
+        <Box flexDirection="column">
+          <Text weight="semibold" wrap="truncate-end">{title}</Text>
+          <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
+          <Box flexDirection="row" columnGap={1}>
+            {held ? null : <Button key={`take:${id}`} label="Take" onPress={take(id)} />}
+            <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadThread($, id)} />
+          </Box>
+          {th.error ? <Text color="red">{th.error}</Text> : null}
+          {th.loading && !th.messages.length ? <Text dimColor>Loading…</Text> : null}
+          {th.messages.map((m, n) => (
+            <Box key={`msg:${id}:${n}`} flexDirection="column" marginTop={1}>
+              <Box flexDirection="row" columnGap={1}>
+                <Text weight="semibold">{m.sender ?? '?'}</Text>
+                {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
+                {m.type !== 'text' ? <Text color="yellow">{m.type}</Text> : null}
               </Box>
-            ))}
-            {s.holds.length > 0 ? <Text dimColor>{'Hand one over: /einweave handover N <session>'}</Text> : null}
-          </Box>
-        ) : null}
+              <Text>{m.content}</Text>
+            </Box>
+          ))}
+          {th.older !== 0 ? <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'} not shown: the web app has them.`}</Text> : null}
+          <Text dimColor>Read-only · no tokens · viewing does not mark it read.</Text>
+        </Box>
+      )
+    }
+
+    return (
+      <Box flexDirection="column">
+        {header}
+        {tabRow}
+        <Box flexDirection="column" marginTop={1}>
+          {body}
+        </Box>
       </Box>
     )
   })
 }
 
+/** A message's local time, `HH:MM`, or its date when not today. */
+function timeOf(ts: string): string {
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return d.toDateString() === new Date().toDateString() ? hm : `${d.toISOString().slice(0, 10)} ${hm}`
+}

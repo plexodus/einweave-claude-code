@@ -220,11 +220,19 @@ turn and without tokens:
 - **Hint line**, under the prompt: `einweave · holds 2 · 3 for you · 14 open`, or `· reconnecting`,
   `· disconnected`, `· not connected`, `· not answering`. Terminal only.
 - **Band** above the prompt, only after the connection has been lost for 10 s, with `[1: Connect]`.
-- **Pane** (`/einweave`): connection, the session (rename it, change its scope) and the threads it
-  holds, each with Release. In the VS Code panel the pane is where all of this shows.
+- **Pane** (`/einweave`), in tabs:
+  - **Inbox** (shown first): what waits for this session. For you, then Open, quiet longest first,
+    with how long since each thread's last post. Each row has View, Take and New session (copies
+    `claude "/einweave:take <id>"` for a new window).
+  - **Held**: the threads this session holds, with Release and View.
+  - **Session**: rename it, change its scope.
+  - **A tab per thread** opened with View: read-only, the newest 100 replies. Viewing neither marks
+    it read nor counts as delivered to Claude.
+
+  In the VS Code panel the pane is where all of this shows.
 - **`/einweave <verb>`** runs one action at once, even while Claude works: `status`, `connect`,
   `disconnect`, `rename <name>`, `scope [#a #b|all|none]`, `held`, `release [N|all]`,
-  `handover [N] [session]`. Taking a thread stays `/einweave:take`.
+  `handover [N] [session]`, `take [N|id]`, `find <words>`.
 
 ## Reading messages in full: `einweave tail`
 

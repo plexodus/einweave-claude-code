@@ -148,6 +148,19 @@ function startStub(): Stub {
         const q = url.searchParams;
         const limit = Number(q.get("limit") ?? 200);
         const since = q.get("sinceSeq");
+        const before = q.get("beforeSeq");
+        if (before !== null) {
+          const below = st.replies.filter((r) => Number(r.seq) < Number(before));
+          const page = below.slice(-limit);
+          return Response.json({
+            parent: st.root, replies: page,
+            thread: { id: THREAD, channelId: CHANNEL_ID, title: "Bug: threaded replies", kind: "question", status: "open", replyCount: st.replies.length, readSeq: cursor },
+            hasMore: st.replies.some((r) => Number(r.seq) >= Number(before)),
+            hasOlder: below.length > page.length,
+            olderCount: below.length - page.length,
+            nextSinceSeq: page.at(-1)?.seq ?? 0,
+          });
+        }
         const after = since === null ? st.replies : st.replies.filter((r) => Number(r.seq) > Number(since));
         const page = after.slice(0, limit);
         const last = page[page.length - 1];
@@ -431,6 +444,34 @@ describe("read_thread / list_threads", () => {
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline && stub.acks.length === 0) await Bun.sleep(25);
     expect(stub.acks).toEqual([{ ids: [body.root.id, ...body.replies.map((r: any) => r.id)], how: "model" }]);
+  });
+
+  test("ui_thread on a thread longer than its page shows the newest 100 and says how many older ones it left out", async () => {
+    stub.set({ replies: Array.from({ length: 103 }, (_, i) => msg(20 + i, `r${i + 1}`)) });
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    const contents = view.messages.map((m: any) => m.content);
+    expect(contents).toHaveLength(101); // the root, then the newest 100
+    expect([contents[1], contents.at(-1)]).toEqual(["r4", "r103"]);
+    expect(view).toMatchObject({ has_older: true, older_count: 3 });
+  });
+
+  test("ui_thread (the mod's View) shows the thread but marks nothing read and acks nothing: a person looking is not the model reading", async () => {
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    expect(view.messages.map((m: any) => m.content)).toEqual(["Bug: Threaded replies do not work", "r1", "r2", "r3"]);
+    expect(view.messages[0]).toMatchObject({ sender: "Kevin", ts: "2026-09-23T05:55:07.000Z" });
+    expect(view).toMatchObject({ channel_id: CHANNEL_ID, has_older: false, older_count: 0 });
+    // The NEWEST page (backward from the top), never the first: a long thread's open question is at its end.
+    const q = new URLSearchParams(stub.calls.filter((c) => c.includes("/messages")).at(-1)!.split("?")[1]);
+    expect(q.get("sinceSeq")).toBeNull();
+    expect(Number(q.get("beforeSeq"))).toBe(Number.MAX_SAFE_INTEGER);
+    // Barrier, not a sleep: the model's read of ONE reply is acked on the same socket after anything
+    // ui_thread could have sent, so once that ack is here an ack from ui_thread would be here before it.
+    const one = await ok("read_thread", { thread_id: THREAD, limit: 1, mark_read: false });
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && stub.acks.length === 0) await Bun.sleep(25);
+    expect(stub.acks).toEqual([{ ids: [one.root.id, ...one.replies.map((r: any) => r.id)], how: "model" }]);
+    expect(one.replies).toHaveLength(1);
+    expect(stub.readBodies).toEqual([]);
   });
 
   test("read_thread prints a work item's header: the server's text, what this reader may do, the result to approve (RFC-029 G11)", async () => {

@@ -3,7 +3,7 @@
  * period and the `/einweave` verbs. The wiring to `$` is covered by the kit tests under mod/.
  */
 import { describe, test, expect } from "bun:test";
-import { applySnapshot, BAND_GRACE_MS, EMPTY_VIEW, fromTool, indicator, needsBand, parseCommand, parseLine, scopeText, statusSummary } from "../mod/model";
+import { ago, applySnapshot, BAND_GRACE_MS, closeThread, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, inbox, indicator, needsBand, openThread, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, threadView } from "../mod/model";
 import type { UiSnapshot, View } from "../types";
 
 const SNAP: UiSnapshot = {
@@ -119,9 +119,9 @@ describe("parseCommand", () => {
   });
   test("rename without a name, and unknown verbs, answer with usage and call nothing", () => {
     expect(parseCommand("rename").kind).toBe("usage");
-    const u = parseCommand("take 3");
+    const u = parseCommand("frobnicate 3");
     expect(u.kind).toBe("usage");
-    expect(u.kind === "usage" && u.text).toContain("/einweave:take");
+    expect(u.kind === "usage" && u.text).toContain("/einweave take [N|id]");
   });
 });
 
@@ -190,5 +190,65 @@ describe("scopeText", () => {
   test("none and all say what they let in", () => {
     expect(scopeText({ mode: "none", channelIds: [] })).toBe("none · only threads this session holds");
     expect(scopeText({ mode: "all", channelIds: [] })).toBe("all · unheld work from every channel");
+  });
+});
+
+describe("the Inbox and thread tabs", () => {
+  const now = Date.parse("2026-10-30T10:00:00.000Z");
+  const item = (threadId: string, why: "addressed" | "participant" | "channel", quietSince: string | null) =>
+    ({ threadId, title: `T ${threadId}`, channel: "ops", why, hold: "unheld" as const, quietSince });
+
+  test("For you holds addressed + participant, Open the channel tier, in the snapshot's order; quiet counts from the last post", () => {
+    const box = inbox({ forYou: 3, channel: 1, more: false, top: [item("old", "participant", "2026-10-30T07:00:00.000Z"), item("new", "addressed", "2026-10-30T09:59:00.000Z"), item("bad", "addressed", "not a time"), item("none", "addressed", null), item("ch", "channel", "2026-10-29T10:00:00.000Z")] }, now);
+    expect(box.forYou.map((r) => r.threadId)).toEqual(["old", "new", "bad", "none"]);
+    expect(box.forYou.map((r) => r.quiet)).toEqual(["quiet 3h", "quiet 1m", null, null]);
+    expect(box.open.map((r) => [r.threadId, r.quiet, r.meta])).toEqual([["ch", "quiet 1d", "unheld · new posts in your channel"]]);
+    expect(inbox(null, now)).toEqual({ forYou: [], open: [] });
+  });
+
+  test("ago: one short unit", () => {
+    expect([ago(5_000), ago(125_000), ago(3 * 3_600_000), ago(50 * 3_600_000), ago(-1)]).toEqual(["5s", "2m", "3h", "2d", "0s"]);
+  });
+
+  test("takeOutcome: anything but the two known answers is shown as it came", () => {
+    expect(takeOutcome("No takeable thread matches \"x\". Nothing was taken.")).toEqual({ kind: "other" });
+    expect(takeOutcome("This session already held Fix the build.")).toEqual({ kind: "taken" });
+    // The question without an id to confirm is not a question the mod can answer.
+    expect(takeOutcome("Bob is online and working on this. Take it anyway?")).toEqual({ kind: "other" });
+  });
+
+  test("threadView: ui_thread's JSON, or its text as the error", () => {
+    const v = threadView(JSON.stringify({ thread: { id: "t", title: "Hi", status: "open" }, messages: [{ sender: "K", content: "c", type: "text", ts: null }], has_older: true, older_count: 7 }));
+    expect(v).toEqual({ title: "Hi", status: "open", messages: [{ sender: "K", content: "c", type: "text", ts: null }], older: 7, error: null, loading: false });
+    // Older replies a server did not count: some; none at all: 0.
+    expect(threadView(JSON.stringify({ messages: [], has_older: true, older_count: null })).older).toBeNull();
+    expect(threadView(JSON.stringify({ messages: [], has_older: false, older_count: 0 })).older).toBe(0);
+    expect(threadView("einweave is not connected")).toMatchObject({ error: "einweave is not connected", messages: [] });
+  });
+
+  test("thread tabs open once and show; closing the shown one goes back to the Inbox, another keeps what shows", () => {
+    const a = openThread(EMPTY_TABS, "a", "A");
+    const ab = openThread(openThread(a, "b", "B"), "a", "A again");
+    expect(ab).toEqual({ tab: "a", threads: [{ id: "a", title: "A" }, { id: "b", title: "B" }] });
+    expect(closeThread(ab, "a")).toEqual({ tab: "inbox", threads: [{ id: "b", title: "B" }] });
+    // A tab naming a thread no longer in the list (closed meanwhile) draws the Inbox.
+    expect(shownTab({ tab: "gone", threads: [{ id: "b", title: "B" }] })).toBe("inbox");
+    expect(shownTab(ab)).toBe("a");
+    expect(shownTab({ ...ab, tab: "held" })).toBe("held");
+    expect(closeThread(ab, "b")).toEqual({ tab: "a", threads: [{ id: "a", title: "A" }] });
+  });
+
+  test("find keeps the list's own numbers, needs every word, and passes a non-list answer through", () => {
+    const list = "Threads this session could take:\n1. #general · Fix the build — unheld\n2. #ops · Review the build PR — unheld\n3. #ops · Release notes — unheld";
+    expect(findInList(list, "BUILD pr")).toBe("2. #ops · Review the build PR — unheld\nTake one with /einweave take N.");
+    expect(findInList(list, "nothing")).toBe('No takeable thread matches "nothing".');
+    expect(findInList("No threads to take: nothing open.", "x")).toBe("No threads to take: nothing open.");
+  });
+
+  test("verbs: take [ref], find <words>", () => {
+    expect(parseCommand("take")).toEqual({ kind: "tool", tool: "take", args: {} });
+    expect(parseCommand("take 2")).toEqual({ kind: "take", ref: "2" });
+    expect(parseCommand("find release notes")).toEqual({ kind: "find", words: "release notes" });
+    expect(parseCommand("find").kind).toBe("usage");
   });
 });
