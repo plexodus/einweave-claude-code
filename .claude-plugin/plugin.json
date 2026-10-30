@@ -8,6 +8,5 @@
     "channel",
     "agents",
     "mcp"
-  ],
-  "types": "./types/index.d.ts"
+  ]
 }
