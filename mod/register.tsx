@@ -451,7 +451,7 @@ export const register: Register = on => {
       const isOpen = !!open[name]
       return [
         ...shown,
-        <Button key={key} plain label={`${isOpen ? '▾' : '▸'} Older (${older.length})`} onPress={() => void update($, unfolded, u => ({ ...u, [name]: !isOpen }))} />,
+        <Button key={key} plain dimColor label={`${isOpen ? '▾' : '▸'} Older (${older.length})`} onPress={() => void update($, unfolded, u => ({ ...u, [name]: !isOpen }))} />,
         ...(isOpen ? older.map(draw) : []),
       ]
     }
@@ -472,17 +472,18 @@ export const register: Register = on => {
         {!s && v.error ? <Text dimColor>{v.error}</Text> : null}
         {s && !connected ? (
           i.kind === 'superseded' ? (
-            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(toastFirst($))} />
+            <Button key="take-back" label="Take it back" variant="primary" onPress={() => void takeBack($).then(toastFirst($))} />
           ) : (
-            <Button key="connect" label="Connect" onPress={() => void connect($).then(toastFirst($))} />
+            <Button key="connect" label="Connect" variant="primary" onPress={() => void connect($).then(toastFirst($))} />
           )
         ) : null}
       </Box>
     )
     if (!s) return header
 
-    // The shown tab: primary (the terminal's accent); the others dim. A desktop draws no variant (VS Code
-    // keeps only label and dimness), so the dimness alone must tell which tab shows.
+    // The pane's button standard (Jörgen, 2026-10-30). A desktop draws no variant (VS Code keeps only label
+    // and dimness), so dimness carries it: full strength is where you are (the shown tab) or the one thing
+    // to do (Take, Connect), primary for the terminal's accent; every other button is dim; titles are links.
     const shownIf = (id: string) => (tab === id ? { variant: 'primary' as const } : { dimColor: true })
 
     const tabRow = (
@@ -498,6 +499,7 @@ export const register: Register = on => {
               key={`close:${o.id}`}
               label="×"
               plain
+              dimColor
               onPress={() => {
                 void update($, tabs, x => closeTab(x, o.id))
                 if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
@@ -560,7 +562,7 @@ export const register: Register = on => {
             }),
           )}
           <Box flexDirection="row" columnGap={1} marginTop={1}>
-            <Button key="refresh:channels" label="Refresh" onPress={() => void loadChannels($)} />
+            <Button key="refresh:channels" label="Refresh" dimColor onPress={() => void loadChannels($)} />
           </Box>
         </Box>
       )
@@ -604,8 +606,8 @@ export const register: Register = on => {
           <Text weight="semibold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
           {row ? <Text dimColor wrap="truncate-end">{[channelMeta(row.threads, now), member ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text> : null}
           <Box flexDirection="row" columnGap={1}>
-            {member ? null : <Button key={`joinch:${id}`} label="Join" onPress={join(id, () => loadChannel($, id))} />}
-            <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadChannel($, id)} />
+            {member ? null : <Button key={`joinch:${id}`} label="Join" dimColor onPress={join(id, () => loadChannel($, id))} />}
+            <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadChannel($, id)} />
           </Box>
           {cv.error ? <Text color="red">{cv.error}</Text> : null}
           {cv.loading && !cv.threads.length ? <Text dimColor>Loading…</Text> : null}
@@ -645,18 +647,18 @@ export const register: Register = on => {
           <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
           <Box flexDirection="row" columnGap={1}>
             {held ? (
-              <Button key={`release:${id}`} hotkey="r" onPress={act('release', { ref: id })}>
+              <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>
                 <Text color="suggestion">r</Text> Release
               </Button>
             ) : (
-              <Button key={`take:${id}`} hotkey="t" onPress={take(id)}>
+              <Button key={`take:${id}`} hotkey="t" variant="primary" onPress={take(id)}>
                 <Text color="suggestion">t</Text> Take
               </Button>
             )}
-            <Button key={`new:${id}`} hotkey="n" onPress={newSession(id)}>
+            <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>
               <Text color="suggestion">n</Text> New session
             </Button>
-            <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadThread($, id)} />
+            <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadThread($, id)} />
           </Box>
           {th.error ? <Text color="red">{th.error}</Text> : null}
           {th.loading && !th.messages.length ? <Text dimColor>Loading…</Text> : null}

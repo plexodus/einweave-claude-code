@@ -760,3 +760,27 @@ test('a held thread\'s tab has Release (the desktop\'s only way to it); a follow
   expect(await ui.find({ key: `joinch:${CH_OPS}` })).toBeUndefined()
   await ui.unmount()
 })
+
+test('the button standard: full strength only for the shown tab and the one thing to do; all else dim (a desktop draws no variant)', async ($, on) => {
+  const old = '1900-01-01T00:00:00.000Z'
+  const top = WAITING.waiting!.top.map(w => (w.threadId === T_OLD ? { ...w, quietSince: old } : w))
+  const thread = (id: string) => ({ thread: { id, title: id }, messages: [], has_older: false, older_count: 0 })
+  const { clock } = engine(on, {
+    polled: { ...WAITING, holds: [{ threadId: T_NEW, title: 'Newer ask' }], waiting: { ...WAITING.waiting!, top } },
+    answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread(String(c.args.thread_id)))) : undefined),
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  const full = async () => (await ui.findAll({ type: 'Button' })).filter(b => !(b.props as { dimColor?: boolean }).dimColor).map(b => String(b.key))
+  await ui.press({ key: 'fold:forYou' })
+  expect(await full()).toEqual(['tab:inbox'])
+  // A thread not held: Take is the one thing to do. One held: nothing is (Release gives it up).
+  await ui.press({ key: `open:${T_CH}`, link: { href: `https://einweave.invalid/${T_CH}` } } as never)
+  await clock.settle()
+  expect(await full()).toEqual([`tab:${T_CH}`, `take:${T_CH}`])
+  await ui.press({ key: 'tab:inbox' })
+  await ui.press({ key: `open:${T_NEW}`, link: { href: `https://einweave.invalid/${T_NEW}` } } as never)
+  await clock.settle()
+  expect(await full()).toEqual([`tab:${T_NEW}`])
+  await ui.unmount()
+})
