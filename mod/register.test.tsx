@@ -523,6 +523,10 @@ for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     // Only the channel it follows without membership offers Join on its row; a desktop draws no row actions (no hover).
     expect((await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('join:'))).toEqual(surface === 'terminal' ? [`join:ch:${CH_FOLLOW}`] : [])
     expect(await ui.find({ type: 'Text', text: 'counts unknown' })).toBeDefined()
+    // A terminal row is one line: a dot parts the name from its meta (`#ops · 2 waiting …`); a desktop's meta has its own line.
+    const texts = (n: unknown): string[] =>
+      typeof n === 'string' ? [n] : Array.isArray(n) ? n.flatMap(texts) : n && typeof n === 'object' ? texts((n as { children?: unknown }).children ?? []) : []
+    for (const id of [CH_OPS, CH_FOLLOW, CH_BARE]) expect(texts(await ui.find({ key: `rec:ch:${id}` })).includes('·')).toBe(surface === 'terminal')
     expect(calls.every(c => PERSON_ONLY.includes(c.tool))).toBe(true)
     await ui.unmount()
   })

@@ -396,6 +396,8 @@ export const register: Register = on => {
       const hot = f === r.id
       const meta = r.meta ? (
         <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+          {/* Inline, a dot parts the title from its meta: run together they read as one name. */}
+          {r.inline ? <Text dimColor>·</Text> : null}
           {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
           <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
         </Box>
