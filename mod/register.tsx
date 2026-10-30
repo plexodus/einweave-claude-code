@@ -1,6 +1,6 @@
 /**
  * The einweave mod (plan 2026-10-25-terminal-ui.md, Phase 2): the hint-line indicator, a band while
- * the connection is lost, the pane (session, held threads) and one command, `/einweave [verb]`.
+ * the connection is lost, the pane (inbox, held threads, channels, session) and one command, `/einweave [verb]`.
  *
  * Data: this plugin's own MCP server is the single source. ui/ctl-watch.ts, started here for the
  * session's life, relays the control socket's `watch` stream (a snapshot per change); `ui_state`
@@ -10,10 +10,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ThreadView, UiSnapshot } from '../types'
+import type { ChannelView, OpenTab, ThreadView, UiSnapshot } from '../types'
 import {
-  applySnapshot, closeThread, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, inbox, indicator, needsBand, newSessionCommand, openThread, parseCommand, parseLine,
-  scopeText, shownTab, statusSummary, takeOutcome, textOf, threadView, BAND_GRACE_MS, type InboxRow,
+  ago, applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, holdBadge, inbox, indicator,
+  needsBand, newSessionCommand, NO_CHANNELS, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, textOf, threadView, waitingIn,
+  BAND_GRACE_MS, type InboxRow,
 } from './model'
 
 const SERVER = 'plugin:einweave:einweave'
@@ -24,9 +25,12 @@ const SETTLE_MS = 10_000
 const SETTLE_STEP_MS = 500
 
 const view = atom({ plugin: 'einweave', key: 'view' } as const, EMPTY_VIEW, { shape: 'view-1' })
-const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { shape: 'tabs-1' })
+const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { shape: 'tabs-2' })
 const threads = atom({ plugin: 'einweave', key: 'threads' } as const, {} as Record<string, ThreadView>, { shape: 'threads-1' })
+const channels = atom({ plugin: 'einweave', key: 'channels' } as const, NO_CHANNELS, { shape: 'channels-1' })
+const channel = atom({ plugin: 'einweave', key: 'channel' } as const, {} as Record<string, ChannelView>, { shape: 'channel-1' })
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
+const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
 /** Take a snapshot into the view; a drop that starts now redraws once its grace period has passed. */
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
@@ -119,13 +123,46 @@ async function loadThread($: EngineInterface, id: string): Promise<void> {
     got = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
   }
   // Closed (×) while it loaded: the tab is gone, so its content must not come back.
-  if (!(await read($, tabs)).threads.some(x => x.id === id)) return
+  if (!(await read($, tabs)).open.some(x => x.id === id)) return
   await update($, threads, m => ({ ...m, [id]: got }))
 }
 
 async function viewThread($: EngineInterface, id: string, title: string): Promise<void> {
-  await update($, tabs, t => openThread(t, id, title))
+  await update($, tabs, t => openTab(t, 'thread', id, title))
   await loadThread($, id)
+}
+
+/** Read the Channels tab with `ui_channels`: GET only, nothing marked. */
+async function loadChannels($: EngineInterface): Promise<void> {
+  await update($, channels, c => ({ ...c, loading: true }))
+  let got
+  try {
+    const r = await $.mcp.call(SERVER, 'ui_channels', {})
+    got = r.isError ? { ...NO_CHANNELS, loading: false, error: textOf(r) || 'ui_channels failed' } : channelsView(textOf(r))
+  } catch (err) {
+    got = { ...NO_CHANNELS, loading: false, error: String(err).slice(0, 200) }
+  }
+  await update($, channels, () => got)
+}
+
+/** Read a channel tab with `ui_channel`: its threads and their holds, nothing marked. */
+async function loadChannel($: EngineInterface, id: string): Promise<void> {
+  await update($, channel, m => ({ ...m, [id]: { ...(m[id] ?? NO_CHANNEL), loading: true } }))
+  let got: ChannelView
+  try {
+    const r = await $.mcp.call(SERVER, 'ui_channel', { channel_id: id })
+    got = r.isError ? { ...NO_CHANNEL, loading: false, error: textOf(r) || 'ui_channel failed' } : channelView(textOf(r))
+  } catch (err) {
+    got = { ...NO_CHANNEL, loading: false, error: String(err).slice(0, 200) }
+  }
+  // Closed (×) while it loaded, as a thread tab.
+  if (!(await read($, tabs)).open.some(x => x.id === id)) return
+  await update($, channel, m => ({ ...m, [id]: got }))
+}
+
+async function viewChannel($: EngineInterface, id: string, name: string): Promise<void> {
+  await update($, tabs, t => openTab(t, 'channel', id, `#${name}`))
+  await loadChannel($, id)
 }
 
 /** The first line of a tool's answer, as a toast. */
@@ -257,7 +294,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text, Button } = els
+    const { Box, Text, Button, Markdown } = els
     // The mobile surface has no fields (its table lacks them; drawn there they are empty): there the
     // name and scope are shown, not edited.
     const fields = e.surface !== 'mobile'
@@ -274,7 +311,13 @@ export const register: Register = on => {
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
         err => $.ui.toast(`${tool} failed: ${String(err).slice(0, 120)}`),
       )
-    const take = (ref: string) => () => void takeThread($, ref).then(toastFirst($), err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
+    const take = (ref: string, after?: () => Promise<void>) => () =>
+      void takeThread($, ref)
+        .then(async t => {
+          toastFirst($)(t)
+          await after?.()
+        })
+        .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
     const connected = s?.connection.state === 'connected'
     const box = connected ? inbox(s.waiting, now) : { forYou: [], open: [] }
     const waiting = box.forYou.length + box.open.length
@@ -282,6 +325,12 @@ export const register: Register = on => {
     const total = s?.waiting?.forYou != null && s.waiting.channel != null ? `${s.waiting.forYou + s.waiting.channel}` : `${waiting}${s?.waiting?.more ? '+' : ''}`
     const tab = shownTab(t)
     const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
+    // Channels and channel tabs load each time they are shown: nothing pushes them.
+    const showChannels = () => void update($, tabs, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
+    const showOpen = (o: OpenTab) => () => void update($, tabs, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : undefined))
+    const ch = await read($, channels)
+    // Channels with something waiting; unknown counts count as none.
+    const waitingChannels = ch.channels.filter(c => waitingIn(c.threads) > 0).length
 
     const row = (r: InboxRow) => (
       <Box key={`row:${r.threadId}`} flexDirection="column">
@@ -323,17 +372,19 @@ export const register: Register = on => {
       <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
         <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} variant={tab === 'inbox' ? 'primary' : undefined} onPress={show('inbox')} />
         <Button key="tab:held" label={`Held ${s.holds.length}`} variant={tab === 'held' ? 'primary' : undefined} onPress={show('held')} />
+        <Button key="tab:channels" label={`Channels ${waitingChannels}`} variant={tab === 'channels' ? 'primary' : undefined} onPress={showChannels} />
         <Button key="tab:session" label="Session" variant={tab === 'session' ? 'primary' : undefined} onPress={show('session')} />
-        {t.threads.map(th => (
-          <Box key={`tabbox:${th.id}`} flexDirection="row">
-            <Button key={`tab:${th.id}`} label={th.title.length > 18 ? `${th.title.slice(0, 17)}…` : th.title} variant={tab === th.id ? 'primary' : undefined} onPress={show(th.id)} />
+        {t.open.map(o => (
+          <Box key={`tabbox:${o.id}`} flexDirection="row">
+            <Button key={`tab:${o.id}`} label={o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title} variant={tab === o.id ? 'primary' : undefined} onPress={showOpen(o)} />
             <Button
-              key={`close:${th.id}`}
+              key={`close:${o.id}`}
               label="×"
               plain
               onPress={() => {
-                void update($, tabs, x => closeThread(x, th.id))
-                void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== th.id)))
+                void update($, tabs, x => closeTab(x, o.id))
+                if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
+                else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
               }}
             />
           </Box>
@@ -372,6 +423,27 @@ export const register: Register = on => {
           {s.holds.length > 0 ? <Text dimColor>{'Hand one over: /einweave handover N <session>'}</Text> : null}
         </Box>
       )
+    } else if (tab === 'channels') {
+      const who = ch.agent ? `@${ch.agent}` : 'This agent'
+      body = (
+        <Box flexDirection="column" rowGap={1}>
+          {ch.error ? <Text color="red">{ch.error}</Text> : null}
+          {ch.loading && !ch.channels.length ? <Text dimColor>Loading…</Text> : null}
+          {!ch.loading && !ch.error && !ch.channels.length ? <Text dimColor>{`${who} isn't in any channels · set up in the web app`}</Text> : null}
+          {ch.channels.map(c => (
+            <Box key={`chan:${c.id}`} flexDirection="column">
+              <Text weight="semibold" wrap="truncate-end">{`#${c.name}`}</Text>
+              <Text dimColor wrap="truncate-end">{[channelMeta(c.threads, now), c.role ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text>
+              <Box flexDirection="row" columnGap={1}>
+                <Button key={`viewch:${c.id}`} label="View" onPress={() => void viewChannel($, c.id, c.name)} />
+              </Box>
+            </Box>
+          ))}
+          <Box flexDirection="row" columnGap={1}>
+            <Button key="refresh:channels" label="Refresh" onPress={() => void loadChannels($)} />
+          </Box>
+        </Box>
+      )
     } else if (tab === 'session') {
       body = (
         <Box flexDirection="column">
@@ -400,10 +472,49 @@ export const register: Register = on => {
           ) : null}
         </Box>
       )
+    } else if (t.open.find(x => x.id === tab)?.kind === 'channel') {
+      const id = tab
+      const cv = (await read($, channel))[id] ?? NO_CHANNEL
+      const row = ch.channels.find(c => c.id === id)
+      // Take is refused outside membership; a row not (yet) in the Channels list is not judged here.
+      const member = row ? row.role !== null : true
+      const { rows, more } = channelRows(cv.threads)
+      body = (
+        <Box flexDirection="column">
+          <Text weight="semibold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
+          {row ? <Text dimColor wrap="truncate-end">{[channelMeta(row.threads, now), member ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text> : null}
+          <Box flexDirection="row" columnGap={1}>
+            <Button key={`refresh:${id}`} label="Refresh" onPress={() => void loadChannel($, id)} />
+          </Box>
+          {cv.error ? <Text color="red">{cv.error}</Text> : null}
+          {cv.loading && !cv.threads.length ? <Text dimColor>Loading…</Text> : null}
+          {!cv.loading && !cv.error && !cv.threads.length ? <Text dimColor>No threads yet.</Text> : null}
+          {rows.map(th => {
+            const here = s.holds.some(h => h.threadId === th.id)
+            const badge = holdBadge(th.hold, here)
+            const quiet = th.lastActivityAt && Number.isFinite(Date.parse(th.lastActivityAt)) ? `quiet ${ago(now - Date.parse(th.lastActivityAt))}` : null
+            return (
+              <Box key={`cth:${th.id}`} flexDirection="column" marginTop={1}>
+                <Text weight="semibold" dimColor={th.resolved} wrap="truncate-end">{th.title || th.id}</Text>
+                <Box flexDirection="row" columnGap={1}>
+                  {badge ? <Text color={th.resolved ? undefined : badge.color} dimColor={th.resolved}>{badge.text}</Text> : null}
+                  <Text dimColor wrap="truncate-end">{[th.resolved ? 'resolved' : th.status, th.kind, quiet].filter(Boolean).join(' · ')}</Text>
+                </Box>
+                <Box flexDirection="row" columnGap={1}>
+                  <Button key={`view:${th.id}`} label="View" onPress={() => void viewThread($, th.id, th.title || th.id)} />
+                  {here || !member || th.resolved ? null : <Button key={`take:${th.id}`} label="Take" onPress={take(th.id, () => loadChannel($, id))} />}
+                </Box>
+              </Box>
+            )
+          })}
+          {more ? <Text dimColor>{`${more} more in the web app.`}</Text> : null}
+          <Text dimColor>Read-only · no tokens · viewing marks nothing read.</Text>
+        </Box>
+      )
     } else {
       const id = tab
       const th = (await read($, threads))[id] ?? NO_THREAD
-      const title = th.title ?? t.threads.find(x => x.id === id)?.title ?? id
+      const title = th.title ?? t.open.find(x => x.id === id)?.title ?? id
       const held = s.holds.some(h => h.threadId === id)
       body = (
         <Box flexDirection="column">
@@ -422,7 +533,7 @@ export const register: Register = on => {
                 {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
                 {m.type !== 'text' ? <Text color="yellow">{m.type}</Text> : null}
               </Box>
-              <Text>{m.content}</Text>
+              <Markdown key={`md:${id}:${n}`} text={m.content} />
             </Box>
           ))}
           {th.older !== 0 ? <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'} not shown: the web app has them.`}</Text> : null}

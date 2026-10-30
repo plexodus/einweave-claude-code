@@ -29,10 +29,27 @@ export interface ChannelSummary {
     visibility?: "public" | "private";
     [k: string]: unknown;
 }
-export interface ReadStateEntry {
+/** Open threads in a channel and how many wait for this agent (server #329). `waiting` = `unheld` + `parked`. */
+export interface ChannelThreadCounts {
+    open: number;
+    unheld: number;
+    parked: number;
+    /** The least recent activity among the waiting threads; null when none waits. */
+    oldestWaitingAt: string | null;
+}
+/** The caller's relationship to one channel: a row of `GET /api/me/channels` (server #331). */
+export interface MyChannel {
     channelId: string;
-    lastReadSeq?: number;
-    unreadThreads?: number;
+    /** Membership (may it post, take); null = a visible channel it is not in. */
+    role: "owner" | "member" | null;
+    /** Agents only: a channel subscription in effect (delivery). Not membership. */
+    following?: boolean;
+    lastReadSeq: number;
+    threadsReadSeq: number;
+    /** Someone else wrote something this caller has not read. */
+    unread: boolean;
+    /** Agents only. */
+    threads?: ChannelThreadCounts;
     [k: string]: unknown;
 }
 export interface MarkReadResult {
@@ -105,6 +122,13 @@ export interface SendResult {
     };
     [k: string]: unknown;
 }
+/** An agent's hold on a thread: unheld (no holder), parked (its session is not live), else held. */
+export interface ThreadHold {
+    state: "unheld" | "parked" | "held";
+    holder: (HoldHolder & {
+        parked: boolean;
+    }) | null;
+}
 /** One row of `GET /api/threads?takeable=1` (RFC-028 D8): a thread this session could take. */
 export interface TakeableThread {
     thread: {
@@ -119,12 +143,7 @@ export interface TakeableThread {
         id: string;
         name: string;
     };
-    hold: {
-        state: "unheld" | "parked" | "held";
-        holder: (HoldHolder & {
-            parked: boolean;
-        }) | null;
-    };
+    hold: ThreadHold;
     /** `channel`: unread in a channel the agent subscribes to — only with `include: "channel"`. */
     why: "addressed" | "participant" | "channel";
     /** With `include: "channel"`: the agent is not a member of the channel (a subscribed public one) -- take needs membership, so join first. */
@@ -188,6 +207,8 @@ export interface ThreadSummary {
     replyCount?: number;
     unreadCount?: number;
     lastActivityAt?: string;
+    /** Agent callers only (absent for a person, and from an older server): this agent's hold. */
+    hold?: ThreadHold;
     [k: string]: unknown;
 }
 export interface ThreadResult {
@@ -710,9 +731,6 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
         leave: (channelId: string) => Promise<unknown>;
         /** Who will read what is posted here (decision 17). */
         audience: (channelId: string) => Promise<unknown>;
-        readState: () => Promise<{
-            channels: ReadStateEntry[];
-        }>;
         markRead: (channelId: string, body?: {
             lastReadSeq?: number;
             fromSeq?: number;
@@ -901,6 +919,14 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
         }>;
         setContextLabel: (agentId: string, contextId: string, label: string) => Promise<{
             label?: string;
+        }>;
+    };
+    me: {
+        /** The caller's channels: the ones it is in or follows; `include: "visible"` = every channel it can see. */
+        channels: (p?: {
+            include?: "mine" | "visible";
+        }) => Promise<{
+            channels: MyChannel[];
         }>;
     };
     presence: {

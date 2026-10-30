@@ -4,7 +4,8 @@
  * WHY THIS EXISTS — the tool was silently wrong for a whole server release.
  *
  * `GET /api/channels` used to carry `unreadCount` per channel. The server moved
- * read state to `GET /api/channels/read-state` so the channel list is identical
+ * read state to `GET /api/channels/read-state` (now `GET /api/me/channels?include=visible`,
+ * server #331) so the channel list is identical
  * bytes for every member and can be cached (RFC-008). This handler kept reading
  * `ch.unreadCount ?? 0`.
  *
@@ -20,7 +21,7 @@
  * particular server build — and lets the last test impersonate a server that
  * predates `/read-state`, which no real server can be asked to be any more.
  *
- * The server half lives in the bridge repo, `packages/api/test/read-state.test.ts`
+ * The server half lives in the bridge repo, `packages/api/test/my-channels.test.ts`
  * ("the channel list no longer carries read state"). Both halves must move together.
  */
 import { test, expect, describe, beforeAll, beforeEach, afterAll } from "bun:test";
@@ -43,7 +44,7 @@ type Stub = {
   paths: string[];
   setChannels: (rows: Row[]) => void;
   setReadState: (rows: Row[]) => void;
-  /** Answer `/api/channels/read-state` with this status instead (404 = old server). */
+  /** Answer `/api/me/channels` with this status instead (404 = old server). */
   setReadStateError: (status: number) => void;
   stop: () => void;
 };
@@ -71,9 +72,10 @@ function startStub(): Stub {
       paths.push(url.pathname);
       // ⚠️ BEFORE the `/api/channels` arm — it is a PREFIX of this path, and the
       // bridge repo has already taken an outage from exactly that ordering bug.
-      if (url.pathname === "/api/channels/read-state") {
+      if (url.pathname === "/api/me/channels") {
         if (readStateError !== null) return new Response("no", { status: readStateError });
-        return Response.json({ readState });
+        // Without include=visible the server answers only the channels it is in: rows for the rest go missing.
+        return Response.json({ channels: url.searchParams.get("include") === "visible" ? readState : [] });
       }
       if (url.pathname === "/api/channels") return Response.json({ channels });
       return new Response("no", { status: 404 });
@@ -225,7 +227,7 @@ describe("list_channels reports read state, or says it does not know", () => {
   test("the read-state endpoint is actually called", async () => {
     await list();
     // The bug was not a wrong value — it was a request that never happened.
-    expect(stub.paths).toContain("/api/channels/read-state");
+    expect(stub.paths).toContain("/api/me/channels");
   });
 
   test("an unread channel reports hasUnread, and a read one reports false", async () => {
