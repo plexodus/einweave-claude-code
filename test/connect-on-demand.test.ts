@@ -618,7 +618,7 @@ function startGuardStub() {
       if (url.pathname === "/ws" || req.headers.get("upgrade") === "websocket") {
         if (srv.upgrade(req)) return;
       }
-      if (url.pathname === "/api/channels/read-state") return Response.json({ readState: [] });
+      if (url.pathname === "/api/me/channels") return Response.json({ channels: [] });
       if (url.pathname === "/api/channels") return Response.json({ channels: [] });
       return new Response("no", { status: 404 });
     },

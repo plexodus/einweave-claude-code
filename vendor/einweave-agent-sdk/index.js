@@ -908,7 +908,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.16.0";
+var SDK_VERSION = "0.18.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1002,7 +1002,6 @@ function createApi(rt, client) {
       join: (channelId) => req("POST", `/api/channels/${encodeURIComponent(channelId)}/join`, { body: {} }),
       leave: (channelId) => req("POST", `/api/channels/${encodeURIComponent(channelId)}/leave`, { body: {} }),
       audience: (channelId) => req("GET", `/api/channels/${encodeURIComponent(channelId)}/audience`),
-      readState: () => req("GET", "/api/channels/read-state"),
       markRead: (channelId, body) => req("POST", `/api/channels/${encodeURIComponent(channelId)}/read`, { body: body ?? {} })
     },
     messages: {
@@ -1082,6 +1081,9 @@ function createApi(rt, client) {
       contexts: (agentId) => req("GET", `/api/agents/${encodeURIComponent(agentId)}/contexts`),
       sessions: (agentId) => req("GET", `/api/agents/${encodeURIComponent(agentId)}/sessions`),
       setContextLabel: (agentId, contextId, label) => req("PUT", `/api/agents/${encodeURIComponent(agentId)}/contexts/${encodeURIComponent(contextId)}/label`, { body: { label } })
+    },
+    me: {
+      channels: (p = {}) => req("GET", `/api/me/channels${qs({ include: p.include })}`)
     },
     presence: {
       list: () => req("GET", "/api/presence")

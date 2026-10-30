@@ -42,11 +42,18 @@ export interface View {
   downSince: number | null
 }
 
-/** Which tab of the pane shows, and the thread tabs View opened (in open order). */
+/** A tab View opened: a thread, or a channel's thread list. */
+export interface OpenTab {
+  kind: 'thread' | 'channel'
+  id: string
+  title: string
+}
+
+/** Which tab of the pane shows, and the tabs View opened (in open order). */
 export interface PaneTabs {
-  /** 'inbox' | 'held' | 'session', or an open thread's id. */
+  /** 'inbox' | 'held' | 'channels' | 'session', or an open tab's id. */
   tab: string
-  threads: { id: string; title: string }[]
+  open: OpenTab[]
 }
 
 /** One message as `ui_thread` returns it. */
@@ -68,8 +75,67 @@ export interface ThreadView {
   loading: boolean
 }
 
+/** Open threads in a channel and how many wait for this agent (`waiting` = unheld + parked). */
+export interface ChannelCounts {
+  open: number
+  unheld: number
+  parked: number
+  oldestWaitingAt: string | null
+}
+
+/** One row of `ui_channels`: a channel this agent is in or follows. */
+export interface ChannelRow {
+  id: string
+  name: string
+  /** Membership; null = it follows the channel without being a member (it cannot post or take there). */
+  role: 'owner' | 'member' | null
+  following: boolean
+  /** Absent when the server did not say: never shown as 0. */
+  threads?: ChannelCounts
+}
+
+/** `ui_channels`' answer for the Channels tab, or why it is missing. */
+export interface ChannelsView {
+  agent: string | null
+  channels: ChannelRow[]
+  error: string | null
+  loading: boolean
+}
+
+/** A session holding a thread, as a hold shows it. */
+export interface HoldHolderView {
+  id: string
+  label: string | null
+  online: boolean
+  parked?: boolean
+}
+
+/** One thread of `ui_channel`. */
+export interface ChannelThread {
+  id: string
+  title: string
+  status: string | null
+  kind: string | null
+  lastActivityAt: string | null
+  /** Absent from an older server. */
+  hold?: { state: 'unheld' | 'parked' | 'held'; holder: HoldHolderView | null }
+}
+
+/** `ui_channel`'s answer for one channel tab, or why it is missing. Name and membership come from its Channels row. */
+export interface ChannelView {
+  threads: ChannelThread[]
+  error: string | null
+  loading: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    einweave: { view: Shaped<View>; tabs: Shaped<PaneTabs>; threads: Shaped<Record<string, ThreadView>> }
+    einweave: {
+      view: Shaped<View>
+      tabs: Shaped<PaneTabs>
+      threads: Shaped<Record<string, ThreadView>>
+      channels: Shaped<ChannelsView>
+      channel: Shaped<Record<string, ChannelView>>
+    }
   }
 }

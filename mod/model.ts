@@ -3,7 +3,7 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { PaneTabs, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
+import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
 
 /** A drop shorter than this shows as "reconnecting", not in the band (plan decision 5). */
 export const BAND_GRACE_MS = 10_000
@@ -236,7 +236,7 @@ export function textOf(r: { content: readonly { type: string; text?: string }[] 
   return r.content.map((c) => (c.type === 'text' ? (c.text ?? '') : '')).join('\n').trim()
 }
 
-export const EMPTY_TABS: PaneTabs = { tab: 'inbox', threads: [] }
+export const EMPTY_TABS: PaneTabs = { tab: 'inbox', open: [] }
 
 /** How long ago, in one short unit: `40s`, `12m`, `3h`, `2d`. */
 export function ago(ms: number): string {
@@ -299,19 +299,80 @@ export function threadView(text: string): ThreadView {
   }
 }
 
-/** Open a thread tab (once) and show it. */
-export function openThread(t: PaneTabs, id: string, title: string): PaneTabs {
-  return { tab: id, threads: t.threads.some(x => x.id === id) ? t.threads : [...t.threads, { id, title }] }
+/** Open a thread or channel tab (once) and show it. */
+export function openTab(t: PaneTabs, kind: OpenTab['kind'], id: string, title: string): PaneTabs {
+  return { tab: id, open: t.open.some(x => x.id === id) ? t.open : [...t.open, { kind, id, title }] }
 }
 
-/** The tab to draw: a thread tab whose thread is gone from the list (closed meanwhile) falls back to the Inbox. */
+const FIXED_TABS = ['inbox', 'held', 'channels', 'session']
+
+/** The tab to draw: an opened tab that is gone from the list (closed meanwhile) falls back to the Inbox. */
 export function shownTab(t: PaneTabs): string {
-  return t.tab === 'inbox' || t.tab === 'held' || t.tab === 'session' || t.threads.some(x => x.id === t.tab) ? t.tab : 'inbox'
+  return FIXED_TABS.includes(t.tab) || t.open.some(x => x.id === t.tab) ? t.tab : 'inbox'
 }
 
-/** Close a thread tab; the Inbox shows if it was the one showing. */
-export function closeThread(t: PaneTabs, id: string): PaneTabs {
-  return { tab: t.tab === id ? 'inbox' : t.tab, threads: t.threads.filter(x => x.id !== id) }
+/** Close an opened tab; the Inbox shows if it was the one showing. */
+export function closeTab(t: PaneTabs, id: string): PaneTabs {
+  return { tab: t.tab === id ? 'inbox' : t.tab, open: t.open.filter(x => x.id !== id) }
+}
+
+export const NO_CHANNELS: ChannelsView = { agent: null, channels: [], error: null, loading: true }
+
+/** `ui_channels`' JSON → the Channels tab; anything else is an error to show. */
+export function channelsView(text: string): ChannelsView {
+  try {
+    const o = JSON.parse(text) as { agent?: string | null; channels?: ChannelsView['channels'] }
+    if (!o || !Array.isArray(o.channels)) throw new Error('no channels')
+    return { agent: o.agent ?? null, channels: o.channels, error: null, loading: false }
+  } catch {
+    return { ...NO_CHANNELS, loading: false, error: text || 'ui_channels answered nothing' }
+  }
+}
+
+/** `ui_channel`'s JSON → a channel tab; anything else is an error to show. */
+export function channelView(text: string): ChannelView {
+  try {
+    const o = JSON.parse(text) as { threads?: ChannelThread[] }
+    if (!o || !Array.isArray(o.threads)) throw new Error('no threads')
+    return { threads: o.threads, error: null, loading: false }
+  } catch {
+    return { threads: [], error: text || 'ui_channel answered nothing', loading: false }
+  }
+}
+
+/** Threads waiting for this agent in a channel: unheld or parked. */
+export function waitingIn(c: ChannelCounts | undefined): number {
+  return c ? c.unheld + c.parked : 0
+}
+
+/** A channel row's meta: `open 4 · waiting 2 · oldest 3h`; "counts unknown" when the server did not say (never 0). */
+export function channelMeta(c: ChannelCounts | undefined, now: number): string {
+  if (!c) return 'counts unknown'
+  const parts = [`open ${c.open}`]
+  const w = waitingIn(c)
+  if (w) parts.push(`waiting ${w}`)
+  if (w && c.oldestWaitingAt && Number.isFinite(Date.parse(c.oldestWaitingAt))) parts.push(`oldest ${ago(now - Date.parse(c.oldestWaitingAt))}`)
+  return parts.join(' · ')
+}
+
+/** Who holds a thread, for its row: here, another session (online or not), or nobody. Absent hold (older server): null. */
+export function holdBadge(hold: ChannelThread['hold'], heldHere: boolean): { text: string; color: 'cyan' | 'yellow' | undefined } | null {
+  if (heldHere) return { text: 'held here', color: 'cyan' }
+  if (!hold) return null
+  const who = hold.holder?.label ?? 'another session'
+  if (hold.state === 'unheld') return { text: 'unheld', color: 'yellow' }
+  if (hold.state === 'parked') return { text: `parked, ${who} offline`, color: 'yellow' }
+  return { text: `held by ${who} ${hold.holder?.online ? 'online' : 'offline'}`, color: undefined }
+}
+
+/** A channel tab shows at most this many threads; the web app has the rest. */
+export const CHANNEL_CAP = 50
+
+/** A channel tab's rows: open threads first, then resolved, each in the server's order; cut at the cap. */
+export function channelRows(threads: ChannelThread[]): { rows: (ChannelThread & { resolved: boolean })[]; more: number } {
+  const marked = threads.map(t => ({ ...t, resolved: t.status === 'resolved' }))
+  const ordered = [...marked.filter(t => !t.resolved), ...marked.filter(t => t.resolved)]
+  return { rows: ordered.slice(0, CHANNEL_CAP), more: Math.max(0, ordered.length - CHANNEL_CAP) }
 }
 
 /**

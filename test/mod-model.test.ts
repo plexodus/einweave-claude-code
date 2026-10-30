@@ -3,7 +3,11 @@
  * period and the `/einweave` verbs. The wiring to `$` is covered by the kit tests under mod/.
  */
 import { describe, test, expect } from "bun:test";
-import { ago, applySnapshot, BAND_GRACE_MS, closeThread, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, inbox, indicator, needsBand, openThread, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, threadView } from "../mod/model";
+import {
+  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, fromTool, holdBadge,
+  inbox, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, threadView, waitingIn,
+} from "../mod/model";
+import type { ChannelThread } from "../types";
 import type { UiSnapshot, View } from "../types";
 
 const SNAP: UiSnapshot = {
@@ -226,16 +230,55 @@ describe("the Inbox and thread tabs", () => {
     expect(threadView("einweave is not connected")).toMatchObject({ error: "einweave is not connected", messages: [] });
   });
 
-  test("thread tabs open once and show; closing the shown one goes back to the Inbox, another keeps what shows", () => {
-    const a = openThread(EMPTY_TABS, "a", "A");
-    const ab = openThread(openThread(a, "b", "B"), "a", "A again");
-    expect(ab).toEqual({ tab: "a", threads: [{ id: "a", title: "A" }, { id: "b", title: "B" }] });
-    expect(closeThread(ab, "a")).toEqual({ tab: "inbox", threads: [{ id: "b", title: "B" }] });
-    // A tab naming a thread no longer in the list (closed meanwhile) draws the Inbox.
-    expect(shownTab({ tab: "gone", threads: [{ id: "b", title: "B" }] })).toBe("inbox");
+  test("tabs open once and show; closing the shown one goes back to the Inbox, another keeps what shows", () => {
+    const a = openTab(EMPTY_TABS, "thread", "a", "A");
+    const ab = openTab(openTab(a, "channel", "b", "#b"), "thread", "a", "A again");
+    expect(ab).toEqual({ tab: "a", open: [{ kind: "thread", id: "a", title: "A" }, { kind: "channel", id: "b", title: "#b" }] });
+    expect(closeTab(ab, "a")).toEqual({ tab: "inbox", open: [{ kind: "channel", id: "b", title: "#b" }] });
+    // A tab naming one no longer in the list (closed meanwhile) draws the Inbox.
+    expect(shownTab({ tab: "gone", open: [{ kind: "thread", id: "b", title: "B" }] })).toBe("inbox");
     expect(shownTab(ab)).toBe("a");
     expect(shownTab({ ...ab, tab: "held" })).toBe("held");
-    expect(closeThread(ab, "b")).toEqual({ tab: "a", threads: [{ id: "a", title: "A" }] });
+    expect(shownTab({ ...ab, tab: "channels" })).toBe("channels");
+    expect(closeTab(ab, "b")).toEqual({ tab: "a", open: [{ kind: "thread", id: "a", title: "A" }] });
+  });
+
+  test("channel meta: open, waiting (unheld + parked), oldest; counts the server did not send are unknown, never 0", () => {
+    const now = Date.parse("2026-10-30T12:00:00.000Z");
+    expect(channelMeta({ open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" }, now)).toBe("open 4 · waiting 2 · oldest 3h");
+    expect(channelMeta({ open: 3, unheld: 0, parked: 0, oldestWaitingAt: null }, now)).toBe("open 3");
+    expect(channelMeta(undefined, now)).toBe("counts unknown");
+    expect(waitingIn({ open: 9, unheld: 2, parked: 3, oldestWaitingAt: null })).toBe(5);
+    expect(waitingIn(undefined)).toBe(0);
+  });
+
+  test("hold badge: held here wins; else held by X online/offline, parked, unheld; no hold from an older server: none", () => {
+    const holder = { id: "s", label: "Bellman #cd34", online: true, parked: false };
+    expect(holdBadge({ state: "held", holder }, true)?.text).toBe("held here");
+    expect(holdBadge(undefined, true)?.text).toBe("held here");
+    expect(holdBadge({ state: "held", holder }, false)?.text).toBe("held by Bellman #cd34 online");
+    expect(holdBadge({ state: "held", holder: { ...holder, online: false } }, false)?.text).toBe("held by Bellman #cd34 offline");
+    expect(holdBadge({ state: "parked", holder: { ...holder, online: false, parked: true } }, false)?.text).toBe("parked, Bellman #cd34 offline");
+    expect(holdBadge({ state: "unheld", holder: null }, false)?.text).toBe("unheld");
+    expect(holdBadge(undefined, false)).toBeNull();
+  });
+
+  test("channel rows: open first, then resolved, each in server order; cut at the cap with the rest counted", () => {
+    const t = (id: string, status: string): ChannelThread => ({ id, title: id, status, kind: null, lastActivityAt: null });
+    const { rows, more } = channelRows([t("r1", "resolved"), t("o1", "open"), t("r2", "resolved"), t("o2", "in_progress")]);
+    expect(rows.map(r => [r.id, r.resolved])).toEqual([["o1", false], ["o2", false], ["r1", true], ["r2", true]]);
+    expect(more).toBe(0);
+    const many = channelRows(Array.from({ length: CHANNEL_CAP + 7 }, (_, n) => t(`t${n}`, "open")));
+    expect(many.rows.length).toBe(CHANNEL_CAP);
+    expect(many.more).toBe(7);
+  });
+
+  test("ui_channels / ui_channel JSON → views; anything else is an error to show", () => {
+    const rows = [{ id: "c", name: "ops", role: "member" as const, following: false }];
+    expect(channelsView(JSON.stringify({ agent: "bellman", channels: rows }))).toEqual({ agent: "bellman", channels: rows, error: null, loading: false });
+    expect(channelsView("This einweave server is too old")).toMatchObject({ channels: [], error: "This einweave server is too old", loading: false });
+    expect(channelView(JSON.stringify({ channel_id: "c", threads: [] }))).toEqual({ threads: [], error: null, loading: false });
+    expect(channelView("")).toMatchObject({ error: "ui_channel answered nothing", loading: false });
   });
 
   test("find keeps the list's own numbers, needs every word, and passes a non-list answer through", () => {

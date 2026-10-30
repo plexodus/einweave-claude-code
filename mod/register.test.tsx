@@ -419,7 +419,8 @@ test('View opens a thread tab read through ui_thread (never read_thread, which w
   expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_OLD }])
   expect(calls.some(c => c.tool === 'read_thread')).toBe(false)
   expect(await ui.find({ key: `tab:${T_OLD}` })).toMatchObject({ props: { variant: 'primary' } })
-  expect(await ui.find({ type: 'Text', text: 'Can I take the NAS at 14:00?' })).toBeDefined()
+  // Messages are Markdown, as Claude's own replies draw (plan decision 1); a title stays plain Text.
+  expect(await ui.find({ key: `md:${T_OLD}:0` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at 14:00?' } })
   expect(await ui.find({ type: 'Text', text: '12 older replies not shown: the web app has them.' })).toBeDefined()
   expect(await ui.find({ key: `take:${T_OLD}` })).toBeDefined()
   await ui.press({ key: `close:${T_OLD}` })
@@ -476,4 +477,135 @@ test('/einweave take N and /einweave find: take by ref, find filters the takeabl
   const found = await $.command.run({ command: 'einweave', args: 'find review' })
   expect(calls.filter(c => c.tool === 'list_threads').map(c => c.args)).toEqual([{ takeable: true, limit: 50 }])
   expect(found.text).toBe('2. #ops · Review the PR — held by Bellman #cd34 (online)\nTake one with /einweave take N.')
+})
+
+const CH_OPS = 'c0000000-0000-7000-8000-00000000000a'
+const CH_FOLLOW = 'c0000000-0000-7000-8000-00000000000b'
+const CH_BARE = 'c0000000-0000-7000-8000-00000000000c'
+const CHANNELS = {
+  agent: 'bellman',
+  channels: [
+    { id: CH_OPS, name: 'ops', role: 'member', following: false, threads: { open: 4, unheld: 1, parked: 1, oldestWaitingAt: '2026-10-30T07:00:00.000Z' } },
+    { id: CH_FOLLOW, name: 'news', role: null, following: true, threads: { open: 2, unheld: 2, parked: 0, oldestWaitingAt: null } },
+    // An older server, or a count it could not read: no `threads`.
+    { id: CH_BARE, name: 'misc', role: 'owner', following: false },
+  ],
+}
+const holder = (label: string, online: boolean, parked = false) => ({ id: `s-${label}`, label, online, parked })
+const OPS_THREADS = {
+  channel_id: CH_OPS,
+  threads: [
+    { id: 'r1', title: 'Shipped', status: 'resolved', kind: 'task', lastActivityAt: null, hold: { state: 'unheld', holder: null } },
+    { id: 't1', title: 'Fix the build', status: 'open', kind: 'task', lastActivityAt: null, hold: { state: 'held', holder: holder('probe', true) } },
+    { id: 'u1', title: 'Nobody has it', status: 'open', kind: 'question', lastActivityAt: null, hold: { state: 'unheld', holder: null } },
+    { id: 'p1', title: 'Gone quiet', status: 'open', kind: null, lastActivityAt: null, hold: { state: 'parked', holder: holder('Kevin #ab12', false, true) } },
+    { id: 'h1', title: 'Someone on it', status: 'open', kind: null, lastActivityAt: null, hold: { state: 'held', holder: holder('Kevin #ab12', true) } },
+  ],
+}
+const PERSON_ONLY = ['ui_state', 'ui_channels', 'ui_channel', 'ui_thread', 'take']
+
+for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
+  test(`${surface}: the Channels tab reads ui_channels on show: rows with counts, follow-only marked, unknown counts said; its tab counts channels with waiting`, async ($, on) => {
+    const { calls, clock } = engine(on, { answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : undefined) })
+    await start($, clock)
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'tab:channels' })
+    await clock.settle()
+    expect(calls.filter(c => c.tool === 'ui_channels').map(c => c.args)).toEqual([{}])
+    expect(await ui.find({ key: 'tab:channels' })).toMatchObject({ props: { label: 'Channels 2', variant: 'primary' } })
+    expect(await ui.find({ type: 'Text', text: /^open 4 · waiting 2 · oldest \d+[smhd]$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'open 2 · waiting 2 · not a member · join to take' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'counts unknown' })).toBeDefined()
+    expect(calls.every(c => PERSON_ONLY.includes(c.tool))).toBe(true)
+    await ui.unmount()
+  })
+}
+
+test('a failed ui_channels shows its error, never "isn\'t in any channels"; an empty answer names the agent and where to set it up', async ($, on) => {
+  let answer = { content: [{ type: 'text', text: 'This einweave server is too old for the Channels tab' }], isError: true }
+  const { clock } = engine(on, { answer: c => (c.tool === 'ui_channels' ? answer : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'This einweave server is too old for the Channels tab' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /isn't in any channels/ })).toBeUndefined()
+  answer = text(JSON.stringify({ agent: 'bellman', channels: [] }))
+  await ui.press({ key: 'refresh:channels' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: "@bellman isn't in any channels · set up in the web app" })).toBeDefined()
+  await ui.unmount()
+})
+
+test('View on a channel opens its tab via ui_channel: open threads first, resolved dimmed with no Take, badges, no Take where held here; Take reloads it', async ($, on) => {
+  const { calls, clock } = engine(on, {
+    answer: c =>
+      c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool === 'ui_channel' ? text(JSON.stringify(OPS_THREADS)) : c.tool === 'take' ? text('This session now holds Nobody has it.') : undefined,
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  await ui.press({ key: `viewch:${CH_OPS}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_channel').map(c => c.args)).toEqual([{ channel_id: CH_OPS }])
+  expect(await ui.find({ key: `tab:${CH_OPS}` })).toMatchObject({ props: { label: '#ops', variant: 'primary' } })
+  const views = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('view:'))
+  expect(views).toEqual(['view:t1', 'view:u1', 'view:p1', 'view:h1', 'view:r1'])
+  // SNAP holds t1 in this session.
+  expect(await ui.find({ type: 'Text', text: 'held here' })).toBeDefined()
+  expect(await ui.find({ key: 'take:t1' })).toBeUndefined()
+  expect(await ui.find({ key: 'take:r1' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Shipped' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: 'parked, Kevin #ab12 offline' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'held by Kevin #ab12 online' })).toBeDefined()
+  await ui.press({ key: 'take:u1' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: 'u1' }])
+  expect(calls.filter(c => c.tool === 'ui_channel').length).toBe(2)
+  await ui.press({ key: 'view:u1' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: 'u1' }])
+  expect(calls.every(c => PERSON_ONLY.includes(c.tool))).toBe(true)
+  await ui.unmount()
+})
+
+test('a channel it only follows offers no Take: Take is refused outside membership', async ($, on) => {
+  const { clock } = engine(on, {
+    answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool === 'ui_channel' ? text(JSON.stringify({ ...OPS_THREADS, channel_id: CH_FOLLOW })) : undefined),
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  await ui.press({ key: `viewch:${CH_FOLLOW}` })
+  await clock.settle()
+  expect(await ui.find({ key: 'view:u1' })).toBeDefined()
+  expect((await ui.findAll({ type: 'Button' })).some(b => String(b.key).startsWith('take:'))).toBe(false)
+  await ui.unmount()
+})
+
+test('× on a channel tab while it loads: the late answer does not bring its content back', async ($, on) => {
+  let clockRef: { sleep: (ms: number) => Promise<void> } | null = null
+  let reads = 0
+  const { clock } = engine(on, {
+    answer: c =>
+      c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool !== 'ui_channel' ? undefined : ++reads === 1 ? clockRef!.sleep(5_000).then(() => text(JSON.stringify(OPS_THREADS))) : new Promise(() => {}),
+  })
+  clockRef = clock
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  await ui.press({ key: `viewch:${CH_OPS}` })
+  await ui.press({ key: `close:${CH_OPS}` })
+  await clock.advance(6_000)
+  await clock.settle()
+  void ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  void ui.press({ key: `viewch:${CH_OPS}` })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'Loading…' })).toBeDefined()
+  expect(await ui.find({ key: 'view:t1' })).toBeUndefined()
+  await ui.unmount()
 })

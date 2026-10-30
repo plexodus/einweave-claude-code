@@ -75,11 +75,16 @@ import { ReturnedAcks } from "./delivery/returned-acks";
 import type { NoticeEntry } from "./delivery/notice";
 import { deliveryState } from "./delivery/state";
 import { localIso } from "./local-time";
-import { sanitizeChannelParams } from "./control-chars";
+import { sanitizeChannelParams, stripControlChars } from "./control-chars";
 import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type FeedTap } from "./feed-tap";
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
+
+/** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
+function cleanOrNull(v: unknown): string | null {
+  return v == null ? null : stripControlChars(String(v));
+}
 
 /** ui_thread shows this many replies, the NEWEST: the pane is a glance, the web app the full read. */
 const UI_THREAD_LIMIT = 100;
@@ -2921,6 +2926,22 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["thread_id"],
       },
     },
+    {
+      name: "ui_channels",
+      description:
+        "For the einweave terminal mod, not for conversation: the channels this agent is in or follows, with what waits in each, as the PERSON views them in the mod's pane. Use list_channels yourself.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "ui_channel",
+      description:
+        "For the einweave terminal mod, not for conversation: a channel's threads and who holds each, as the PERSON views them in the mod's pane. It marks nothing read. Use list_threads yourself.",
+      inputSchema: {
+        type: "object",
+        properties: { channel_id: { type: "string", description: "The channel's id." } },
+        required: ["channel_id"],
+      },
+    },
   ],
 }));
 
@@ -3395,7 +3416,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
          */
         const [res, stateRes] = await Promise.all([
           apiFetch("/api/channels"),
-          apiFetch("/api/channels/read-state"),
+          // Every channel it can see, not only its own: this tool lists them all.
+          apiFetch("/api/me/channels?include=visible"),
         ]);
         if (!res.ok) throw new Error(`einweave API error ${res.status}`);
         const data = (await res.json()) as any;
@@ -3411,7 +3433,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
          */
         const readState = stateRes.ok
           ? new Map<string, any>(
-              (((await stateRes.json()) as any).readState ?? []).map((r: any) => [
+              (((await stateRes.json()) as any).channels ?? []).map((r: any) => [
                 r.channelId,
                 r,
               ])
@@ -4223,9 +4245,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         // The newest page (backward from the top), not the first: the open question is at the end of a long thread.
         const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq: Number.MAX_SAFE_INTEGER, limit: UI_THREAD_LIMIT, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
         if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
-        const shape = (m: any) => ({ sender: m.senderName ?? m.agentName ?? m.agentId, content: m.content, type: m.type ?? "text", ts: m.createdAt });
+        // The pane draws all of this: a control character in any of it refuses the whole pane (and styles the terminal).
+        const shape = (m: any) => ({ sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId), content: stripControlChars(String(m.content ?? "")), type: m.type ?? "text", ts: m.createdAt });
         const view = {
-          thread: { id: data.thread?.id ?? threadId, title: data.thread?.title ?? null, kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
+          thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
           channel_id: data.thread?.channelId ?? data.parent?.channelId ?? null,
           messages: [...(data.parent ? [shape(data.parent)] : []), ...(data.replies ?? []).map(shape)],
           // Replies older than those shown, and how many (null from a server that does not count them).
@@ -4233,6 +4256,43 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           older_count: typeof data.olderCount === "number" ? data.olderCount : null,
         };
         return { content: [{ type: "text", text: JSON.stringify(view) }] };
+      }
+
+      case "ui_channels": {
+        { const gate = requireBridge(); if (gate) return gate; }
+        // A person looking: GET only, nothing marked. Membership comes from /api/me/channels (mine = in or
+        // following), names from the channel list. Counts the server did not send stay ABSENT, never 0.
+        const [list, mine] = await Promise.all([
+          sdkApi((api) => api.channels.list()),
+          sdkApi((api) => api.me.channels(), "This einweave server is too old for the Channels tab (no /api/me/channels): ask its admin to update it."),
+        ]);
+        const names = new Map(list.channels.map((c) => [c.id, c.name]));
+        const channels = mine.channels.map((r) => ({
+          id: r.channelId,
+          name: stripControlChars(names.get(r.channelId) ?? r.channelId),
+          role: r.role ?? null,
+          following: r.following === true,
+          ...(r.threads ? { threads: r.threads } : {}),
+        }));
+        return { content: [{ type: "text", text: JSON.stringify({ agent: cleanOrNull(agentHandle || agentName || null), channels }) }] };
+      }
+
+      case "ui_channel": {
+        { const gate = requireBridge(); if (gate) return gate; }
+        const channelId = typeof args.channel_id === "string" ? args.channel_id.trim() : "";
+        if (!channelId) throw new Error("channel_id is required.");
+        const data = await sdkApi((api) => api.threads.list({ channel: channelId }), `Channel ${channelId} not found, or not visible to this agent.`);
+        const threads = data.threads.map((t) => ({
+          id: t.id,
+          title: stripControlChars(String(t.title ?? "")),
+          status: t.status ?? null,
+          kind: t.kind ?? null,
+          lastActivityAt: t.lastActivityAt ?? null,
+          ...(t.hold
+            ? { hold: { state: t.hold.state, holder: t.hold.holder ? { id: t.hold.holder.id, label: cleanOrNull(t.hold.holder.label), online: t.hold.holder.online, parked: t.hold.holder.parked } : null } }
+            : {}),
+        }));
+        return { content: [{ type: "text", text: JSON.stringify({ channel_id: channelId, threads }) }] };
       }
 
       case "status": {

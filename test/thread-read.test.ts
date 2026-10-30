@@ -71,6 +71,8 @@ type State = {
   eventsStatus: number;
   /** `thread.work` (RFC-029 G11): a work item's header for this reader; null for a conversation kind. */
   work: Row | null;
+  /** GET /api/me/channels rows; null = a server without the route (404). */
+  myChannels: Row[] | null;
 };
 
 function startStub(): Stub {
@@ -79,7 +81,7 @@ function startStub(): Stub {
   const readBodies: { path: string; body: any }[] = [];
   const answerBodies: any[] = [];
   const acks: { ids: string[]; how: string }[] = [];
-  let st: State = { root: null, replies: [], threadStatus: 200, readStatus: 200, threads: [], legacyList: false, answerStatus: 200, answerError: "", events: [], eventsStatus: 200, work: null };
+  let st: State = { root: null, replies: [], threadStatus: 200, readStatus: 200, threads: [], legacyList: false, answerStatus: 200, answerError: "", events: [], eventsStatus: 200, work: null, myChannels: [] };
   let answer: string | null = null; // the thread's accepted answer
   let cursor = 0; // the stored thread read position
   const agentAuth = createAgentAuthRoutes();
@@ -100,6 +102,9 @@ function startStub(): Stub {
 
       if (url.pathname === "/api/channels") {
         return Response.json({ channels: [{ id: CHANNEL_ID, name: CHANNEL_NAME }] });
+      }
+      if (url.pathname === "/api/me/channels") {
+        return st.myChannels === null ? new Response("no", { status: 404 }) : Response.json({ channels: st.myChannels });
       }
       if (url.pathname === "/api/threads" && req.method === "GET") {
         // Models threads.ts: resolves a name OR an id; an unknown channel is a
@@ -471,6 +476,59 @@ describe("read_thread / list_threads", () => {
     while (Date.now() < deadline && stub.acks.length === 0) await Bun.sleep(25);
     expect(stub.acks).toEqual([{ ids: [one.root.id, ...one.replies.map((r: any) => r.id)], how: "model" }]);
     expect(one.replies).toHaveLength(1);
+    expect(stub.readBodies).toEqual([]);
+  });
+
+  test("ui_thread strips control characters from what the pane draws: one would refuse the whole pane and style the terminal", async () => {
+    stub.set({ root: { ...msg(12, "\x1b[31mred\x1b[0m alert\x07"), senderName: "Ke\x1b]0;x\x07vin" }, replies: [] });
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    expect(view.messages[0]).toMatchObject({ sender: "Kevin", content: "red alert" });
+  });
+
+  test("ui_channels: the channels it is in or follows (mine, no include), named from the list; counts passed through, ABSENT ones stay absent", async () => {
+    const counts = { open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" };
+    stub.set({
+      myChannels: [
+        { channelId: CHANNEL_ID, role: "member", following: false, lastReadSeq: 3, threadsReadSeq: 3, unread: true, threads: counts },
+        { channelId: "ch-follow", role: null, following: true, lastReadSeq: 0, threadsReadSeq: 0, unread: false },
+      ],
+    });
+    const view = await ok("ui_channels", {});
+    expect(view.channels).toEqual([
+      { id: CHANNEL_ID, name: CHANNEL_NAME, role: "member", following: false, threads: counts },
+      // Not in the channel list (it names only what it was given): the id stands in; no counts → no `threads`, never zeros.
+      { id: "ch-follow", name: "ch-follow", role: null, following: true },
+    ]);
+    const asked = stub.calls.filter((c) => c.includes("/api/me/channels"));
+    expect(asked).toEqual(["GET /api/me/channels"]);
+    expect(stub.calls.every((c) => c.startsWith("GET "))).toBe(true);
+    expect(stub.readBodies).toEqual([]);
+  });
+
+  test("ui_channels against a server without /api/me/channels says it is too old, never 'no channels'", async () => {
+    stub.set({ myChannels: null });
+    const r = await callTool("ui_channels", {});
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("too old for the Channels tab");
+  });
+
+  test("ui_channel: a channel's threads with their holds, titles and holder labels stripped of control characters; GET only, nothing marked", async () => {
+    stub.set({
+      threads: [
+        { id: "t1", title: "Fix \x1b[1mthe\x1b[0m build", status: "open", kind: "task", lastActivityAt: "2026-10-30T09:00:00.000Z", hold: { state: "held", holder: { id: "s1", label: "Bell\x07man", online: true, parked: false } } },
+        { id: "t2", title: "Old", status: "resolved", replyCount: 2 },
+      ],
+    });
+    const view = await ok("ui_channel", { channel_id: CHANNEL_ID });
+    expect(view).toEqual({
+      channel_id: CHANNEL_ID,
+      threads: [
+        { id: "t1", title: "Fix the build", status: "open", kind: "task", lastActivityAt: "2026-10-30T09:00:00.000Z", hold: { state: "held", holder: { id: "s1", label: "Bellman", online: true, parked: false } } },
+        // An older server sends no hold: absent, not "unheld".
+        { id: "t2", title: "Old", status: "resolved", kind: null, lastActivityAt: null },
+      ],
+    });
+    expect(stub.calls.filter((c) => c.includes("/api/threads"))).toEqual([`GET /api/threads?channel=${CHANNEL_ID}`]);
     expect(stub.readBodies).toEqual([]);
   });
 
