@@ -481,15 +481,19 @@ export const register: Register = on => {
     )
     if (!s) return header
 
+    // The shown tab: primary (the terminal's accent); the others dim. A desktop draws no variant (VS Code
+    // keeps only label and dimness), so the dimness alone must tell which tab shows.
+    const shownIf = (id: string) => (tab === id ? { variant: 'primary' as const } : { dimColor: true })
+
     const tabRow = (
       <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
-        <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} variant={tab === 'inbox' ? 'primary' : undefined} onPress={show('inbox')} />
-        <Button key="tab:held" label={`Held ${s.holds.length}`} variant={tab === 'held' ? 'primary' : undefined} onPress={show('held')} />
-        <Button key="tab:channels" label={`Channels ${waitingChannels}`} variant={tab === 'channels' ? 'primary' : undefined} onPress={showChannels} />
-        <Button key="tab:session" label="Session" variant={tab === 'session' ? 'primary' : undefined} onPress={show('session')} />
+        <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} {...shownIf('inbox')} onPress={show('inbox')} />
+        <Button key="tab:held" label={`Held ${s.holds.length}`} {...shownIf('held')} onPress={show('held')} />
+        <Button key="tab:channels" label={`Channels ${waitingChannels}`} {...shownIf('channels')} onPress={showChannels} />
+        <Button key="tab:session" label="Session" {...shownIf('session')} onPress={show('session')} />
         {t.open.map(o => (
           <Box key={`tabbox:${o.id}`} flexDirection="row">
-            <Button key={`tab:${o.id}`} label={o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title} variant={tab === o.id ? 'primary' : undefined} onPress={showOpen(o)} />
+            <Button key={`tab:${o.id}`} label={o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title} {...shownIf(o.id)} onPress={showOpen(o)} />
             <Button
               key={`close:${o.id}`}
               label="×"

@@ -374,6 +374,9 @@ test('the Inbox is the default tab: For you, then Open, each with how long it ha
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'tab:inbox' })).toMatchObject({ props: { label: 'Inbox 29', variant: 'primary' } })
+  // A desktop draws no variant: the tabs not shown are dim, so the shown one stands out everywhere.
+  expect(await ui.find({ key: 'tab:inbox' })).not.toMatchObject({ props: { dimColor: true } })
+  for (const k of ['tab:held', 'tab:channels', 'tab:session']) expect(await ui.find({ key: k })).toMatchObject({ props: { dimColor: true } })
   const keys = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('open:'))
   expect(keys).toEqual([`open:${T_OLD}`, `open:${T_NEW}`, `open:${T_CH}`])
   expect(await ui.find({ type: 'Text', text: 'Open' })).toBeDefined()
