@@ -66,7 +66,7 @@ import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
-import { buildUiState, toWaiting, UiWatch, type UiWaiting } from "./ui/ui-state";
+import { buildUiState, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath } from "./delivery/ctl-path";
@@ -80,6 +80,9 @@ import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type 
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
+
+/** ui_thread shows this many replies, the NEWEST: the pane is a glance, the web app the full read. */
+const UI_THREAD_LIMIT = 100;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -2908,6 +2911,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["rev", "v", "connection", "session", "holds", "waiting", "version", "staleSince"],
       },
     },
+    {
+      name: "ui_thread",
+      description:
+        "For the einweave terminal mod, not for conversation: a thread as the PERSON views it in the mod's pane. It neither marks the thread read nor counts as delivered to you. To read a thread yourself use read_thread.",
+      inputSchema: {
+        type: "object",
+        properties: { thread_id: { type: "string", description: "The thread's id." } },
+        required: ["thread_id"],
+      },
+    },
   ],
 }));
 
@@ -3052,7 +3065,7 @@ async function refreshWaiting(): Promise<void> {
   if (!authenticated || creds.configError()) uiWaiting = null;
   else {
     try {
-      uiWaiting = toWaiting(await holds.needSomeone(5));
+      uiWaiting = toWaiting(await holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES));
     } catch {}
   }
   refreshUi();
@@ -4199,6 +4212,27 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const cur = uiWatch.current()!;
         const structured = { rev: cur.rev, ...cur.state };
         return { content: [{ type: "text", text: JSON.stringify(structured) }], structuredContent: structured };
+      }
+
+      case "ui_thread": {
+        { const gate = requireBridge(); if (gate) return gate; }
+        const threadId = typeof args.thread_id === "string" ? args.thread_id.trim() : "";
+        if (!threadId) throw new Error("thread_id is required.");
+        // A person looking is not the model reading: markRead false, and NO confirmReturned -- an ack here
+        // would tell the server the model has these entries and end their missed-tracking (silent loss).
+        // The newest page (backward from the top), not the first: the open question is at the end of a long thread.
+        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq: Number.MAX_SAFE_INTEGER, limit: UI_THREAD_LIMIT, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
+        if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
+        const shape = (m: any) => ({ sender: m.senderName ?? m.agentName ?? m.agentId, content: m.content, type: m.type ?? "text", ts: m.createdAt });
+        const view = {
+          thread: { id: data.thread?.id ?? threadId, title: data.thread?.title ?? null, kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
+          channel_id: data.thread?.channelId ?? data.parent?.channelId ?? null,
+          messages: [...(data.parent ? [shape(data.parent)] : []), ...(data.replies ?? []).map(shape)],
+          // Replies older than those shown, and how many (null from a server that does not count them).
+          has_older: data.hasOlder === true,
+          older_count: typeof data.olderCount === "number" ? data.olderCount : null,
+        };
+        return { content: [{ type: "text", text: JSON.stringify(view) }] };
       }
 
       case "status": {

@@ -73,7 +73,7 @@ export interface HoldsDeps {
 }
 
 export interface TakeableRow {
-  thread: { id: string; title: string };
+  thread: { id: string; title: string; lastActivityAt?: string };
   channel: { id: string; name: string };
   hold: { state: "unheld" | "parked" | "held"; holder: { id: string; label: string | null; online: boolean; parked: boolean } | null };
   why: "addressed" | "participant" | "channel";
@@ -237,8 +237,15 @@ export function createHolds(deps: HoldsDeps) {
     /** `list_threads(takeable)` and `take` with no argument. */
     listTakeable: showTakeable,
     /** The few threads `status` / the connect result name: unheld and parked ones, best first. */
-    async needSomeone(limit = 5): Promise<{ lines: string[]; text: string; count: number; more: boolean; counts: TakeableCounts | null; rows: TakeableRow[] }> {
-      const { rows, next, counts } = await fetchTakeable({ limit: 10 });
+    async needSomeone(limit = 5, page = 10, pages = 1): Promise<{ lines: string[]; text: string; count: number; more: boolean; counts: TakeableCounts | null; rows: TakeableRow[] }> {
+      // The server orders newest activity first, so a caller after the LONGEST waits (the mod's Inbox) reads
+      // several pages and sorts them itself: one page is only the newest.
+      let { rows, next, counts } = await fetchTakeable({ limit: page });
+      for (let n = 1; n < pages && next; n++) {
+        const more = await fetchTakeable({ limit: page, cursor: next });
+        rows = [...rows, ...more.rows];
+        next = more.next;
+      }
       const unheldOrParked = rows.filter((r) => r.hold.state !== "held");
       const open = unheldOrParked.slice(0, limit);
       // Deliberately NOT remembered and NOT numbered: `take N` means the list `take` itself showed last, and a
@@ -247,7 +254,7 @@ export function createHolds(deps: HoldsDeps) {
       return {
         lines,
         text: lines.length ? `Threads that need someone (run take for the numbered list to pick from):\n${lines.map((l) => `- ${l}`).join("\n")}` : "",
-        // Of the first page only: `more` says the server has another page, so the count is a floor.
+        // Of the pages read only: `more` says the server has another page, so the count is a floor.
         count: unheldOrParked.length,
         more: next !== null,
         // Exact, all pages: prefer these when the server sends them.

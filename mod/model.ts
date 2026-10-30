@@ -3,7 +3,7 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { UiSnapshot, View } from '../types'
+import type { PaneTabs, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
 
 /** A drop shorter than this shows as "reconnecting", not in the band (plan decision 5). */
 export const BAND_GRACE_MS = 10_000
@@ -105,6 +105,8 @@ export type Action =
   | { kind: 'connect' }
   | { kind: 'status'; full: boolean }
   | { kind: 'usage'; text: string }
+  | { kind: 'take'; ref: string }
+  | { kind: 'find'; words: string }
 
 export const USAGE = [
   '/einweave                       open the pane',
@@ -115,7 +117,8 @@ export const USAGE = [
   '/einweave held                  the threads this session holds, numbered',
   '/einweave release [N|all]       let go of a thread',
   '/einweave handover [N] [to]     move a thread to another session of this agent',
-  'Take a thread with /einweave:take.',
+  '/einweave take [N|id]           take a thread for this session (no ref: the numbered list)',
+  '/einweave find <words>          the takeable threads whose titles hold these words',
 ].join('\n')
 
 /** `/einweave <verb> <rest>` → what to do. Every tool named here is the plugin's own. */
@@ -143,6 +146,11 @@ export function parseCommand(args: string): Action {
       return { kind: 'tool', tool: 'release', args: {} }
     case 'release':
       return { kind: 'tool', tool: 'release', args: rest ? { ref: rest } : {} }
+    case 'take':
+      return rest ? { kind: 'take', ref: rest } : { kind: 'tool', tool: 'take', args: {} }
+    case 'find':
+      if (!rest) return { kind: 'usage', text: 'Usage: /einweave find <words>' }
+      return { kind: 'find', words: rest }
     case 'handover': {
       if (!rest) return { kind: 'tool', tool: 'handover', args: {} }
       const s = rest.search(/\s/)
@@ -226,4 +234,98 @@ export function statusSummary(text: string, waiting: UiSnapshot['waiting'] = nul
 /** An MCP result's text blocks, joined. */
 export function textOf(r: { content: readonly { type: string; text?: string }[] }): string {
   return r.content.map((c) => (c.type === 'text' ? (c.text ?? '') : '')).join('\n').trim()
+}
+
+export const EMPTY_TABS: PaneTabs = { tab: 'inbox', threads: [] }
+
+/** How long ago, in one short unit: `40s`, `12m`, `3h`, `2d`. */
+export function ago(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  if (s < 86_400) return `${Math.floor(s / 3600)}h`
+  return `${Math.floor(s / 86_400)}d`
+}
+
+export interface InboxRow {
+  threadId: string
+  title: string
+  channel: string
+  /** `unheld · addressed to you`, `parked · you took part` ... */
+  meta: string
+  /** `quiet 3h`: since the thread's last post; null when the server sent no time. */
+  quiet: string | null
+}
+
+const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts in your channel' }
+
+/**
+ * The Inbox tab: For you (addressed, or taken part in) and Open (new posts in a followed channel),
+ * in the snapshot's order -- quiet longest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
+ */
+export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: InboxRow[]; open: InboxRow[] } {
+  const rows = waiting?.top ?? []
+  const row = (w: UiWaitingItem): InboxRow => ({
+    threadId: w.threadId,
+    title: w.title,
+    channel: w.channel,
+    meta: `${w.hold} · ${WHY[w.why]}`,
+    quiet: w.quietSince && Number.isFinite(Date.parse(w.quietSince)) ? `quiet ${ago(now - Date.parse(w.quietSince))}` : null,
+  })
+  return { forYou: rows.filter(w => w.why !== 'channel').map(row), open: rows.filter(w => w.why === 'channel').map(row) }
+}
+
+/** The opening of `take`'s answer when an online holder must be asked about first (holds.ts; pinned by test/mod-model.test.ts). */
+export const TAKE_ASKS = 'is online and working on this. Take it anyway?'
+
+/** What `take` answered: taken, a question to put to the person (with the id to confirm), or anything else (shown as is). */
+export function takeOutcome(text: string): { kind: 'taken' } | { kind: 'ask'; question: string; id: string } | { kind: 'other' } {
+  if (/^This session (now holds|already held) /.test(text)) return { kind: 'taken' }
+  const ask = text.indexOf(TAKE_ASKS)
+  const id = /ref "([0-9a-f-]{36})"/i.exec(text)?.[1]
+  if (ask > 0 && id) return { kind: 'ask', question: text.slice(0, ask + TAKE_ASKS.length), id }
+  return { kind: 'other' }
+}
+
+/** `ui_thread`'s JSON → a thread tab's content; anything else is an error to show. */
+export function threadView(text: string): ThreadView {
+  try {
+    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null }; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
+    if (!o || !Array.isArray(o.messages)) throw new Error('no messages')
+    const older = o.has_older !== true ? 0 : typeof o.older_count === 'number' ? o.older_count : null
+    return { title: o.thread?.title ?? null, status: o.thread?.status ?? null, messages: o.messages, older, error: null, loading: false }
+  } catch {
+    return { title: null, status: null, messages: [], older: 0, error: text || 'ui_thread answered nothing', loading: false }
+  }
+}
+
+/** Open a thread tab (once) and show it. */
+export function openThread(t: PaneTabs, id: string, title: string): PaneTabs {
+  return { tab: id, threads: t.threads.some(x => x.id === id) ? t.threads : [...t.threads, { id, title }] }
+}
+
+/** The tab to draw: a thread tab whose thread is gone from the list (closed meanwhile) falls back to the Inbox. */
+export function shownTab(t: PaneTabs): string {
+  return t.tab === 'inbox' || t.tab === 'held' || t.tab === 'session' || t.threads.some(x => x.id === t.tab) ? t.tab : 'inbox'
+}
+
+/** Close a thread tab; the Inbox shows if it was the one showing. */
+export function closeThread(t: PaneTabs, id: string): PaneTabs {
+  return { tab: t.tab === id ? 'inbox' : t.tab, threads: t.threads.filter(x => x.id !== id) }
+}
+
+/**
+ * `/einweave find`: the lines of `list_threads(takeable)`'s numbered list whose text holds every word,
+ * numbers kept -- they are the server-remembered list's, so `/einweave take N` acts on them.
+ */
+export function findInList(text: string, words: string): string {
+  const want = words.toLowerCase().split(/\s+/).filter(Boolean)
+  const hits = text.split('\n').filter(l => /^\d+\. /.test(l) && want.every(w => l.toLowerCase().includes(w)))
+  if (!/^\d+\. /m.test(text)) return text
+  return hits.length ? `${hits.join('\n')}\nTake one with /einweave take N.` : `No takeable thread matches "${words}".`
+}
+
+/** The command a second window starts with to take this thread there. */
+export function newSessionCommand(threadId: string): string {
+  return `claude "/einweave:take ${threadId}"`
 }

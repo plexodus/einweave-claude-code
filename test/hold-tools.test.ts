@@ -17,13 +17,14 @@ const CH_OPS = "02000000-0000-7000-8000-00000000000b";
 const T1 = "01990000-0000-7000-8000-000000000001";
 const T2 = "01990000-0000-7000-8000-000000000002";
 const T3 = "01990000-0000-7000-8000-000000000003";
+const T4 = "01990000-0000-7000-8000-000000000004";
 const SIB = "00000000-0000-7000-8000-00000000bbbb";
 const CHANNELS = [{ id: CH_GENERAL, name: "general" }, { id: CH_OPS, name: "ops" }];
 
 type Call = { method: string; path: string; body: any };
 
 /** A server for the hold endpoints; `calls` records what the plugin asked. */
-function holdApi(over: { holderOnline?: boolean; oldServer?: boolean; channelCount?: number } = {}) {
+function holdApi(over: { holderOnline?: boolean; oldServer?: boolean; channelCount?: number; paged?: boolean } = {}) {
   const calls: Call[] = [];
   const api = async (req: Request, url: URL): Promise<Response | undefined> => {
     let body: any = null;
@@ -32,13 +33,17 @@ function holdApi(over: { holderOnline?: boolean; oldServer?: boolean; channelCou
     if (req.method === "GET" && url.pathname === "/api/threads" && url.searchParams.get("takeable") === "1") {
       // A server that predates include=channel ignores the key: no channel tier, no counts.
       const channelTier = url.searchParams.get("include") === "channel" && over.oldServer !== true;
+      // `paged`: a second page holding the longest-quiet thread, as the server's newest-first order puts it last.
+      if (over.paged && url.searchParams.get("cursor") === "p2") {
+        return Response.json({ threads: [{ thread: { id: T4, title: "Quiet for days", lastActivityAt: "2026-10-01T00:00:00.000Z" }, channel: { id: CH_GENERAL, name: "general" }, hold: { state: "parked", holder: null }, why: "addressed" }], next: null, counts: { forYou: 4, channel: 7 } });
+      }
       return Response.json({
         threads: [
           { thread: { id: T1, title: "Fix the build" }, channel: { id: CH_GENERAL, name: "general" }, hold: { state: "unheld", holder: null }, why: "addressed" },
           { thread: { id: T2, title: "Review the PR" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "held", holder: { id: SIB, label: "Bellman #cd34", online: true, parked: false } }, why: "participant" },
           ...(channelTier ? [{ thread: { id: T3, title: "Release notes" }, channel: { id: CH_OPS, name: "ops" }, hold: { state: "unheld", holder: null }, why: "channel", joinRequired: true }] : []),
         ],
-        next: null,
+        next: over.paged ? "p2" : null,
         // Deliberately not what the rows add up to: the notice must print the server's counts, not count rows.
         ...(channelTier ? { counts: { forYou: 4, channel: over.channelCount ?? 7 } } : {}),
       });
@@ -136,6 +141,18 @@ describe("the hold verbs, over HTTP", () => {
       expect(h.calls.at(-1)!.path).toBe("/api/agents/agent-1/sessions");
     }, { api: h.api });
   }, 40_000);
+
+  test("ui_state's Inbox reads the server's max page and follows the cursor: the longest-quiet thread (last in the server's order) leads", async () => {
+    const h = holdApi({ paged: true });
+    await setup({}, async (client) => {
+      expect(await until(async () => (await status(client)).websocket === "connected", 15_000)).toBe(true);
+      const w = ((await client.callTool({ name: "ui_state", arguments: {} })) as any).structuredContent.waiting;
+      expect(w.top.map((t: any) => t.threadId)).toEqual([T4, T1, T3]);
+      const reads = h.calls.filter((c) => c.path.startsWith("/api/threads?") && c.path.includes("takeable=1")).map((c) => new URLSearchParams(c.path.split("?")[1]));
+      // status/connect glance at one page of 10 meanwhile; the Inbox's reads are the 50s.
+      expect(reads.map((q) => [q.get("limit"), q.get("cursor")]).filter(([l]) => l === "50").slice(0, 2)).toEqual([["50", null], ["50", "p2"]]);
+    }, { api: h.api });
+  }, 60_000);
 
   test("status and a connect on a live window name the threads that need someone (the same list take N works on)", async () => {
     const h = holdApi();

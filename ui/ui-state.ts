@@ -15,13 +15,15 @@ export interface UiWaitingItem {
   channel: string;
   why: "addressed" | "participant" | "channel";
   hold: "unheld" | "parked" | "held";
+  /** The thread's last activity (ISO): how long it has been quiet. Null from a server that does not send it. */
+  quietSince: string | null;
 }
 
 export interface UiWaiting {
   /** Exact, all pages (server counts); null from a server that predates them. */
   forYou: number | null;
   channel: number | null;
-  /** The first page had a next page: `top` is not everything. */
+  /** `top` is not everything: rows were cut, or the server had pages not read. */
   more: boolean;
   top: UiWaitingItem[];
 }
@@ -131,19 +133,35 @@ export class UiWatch {
   }
 }
 
-/** needSomeone's raw rows, shaped down to what the mod draws. */
+/** The mod's Inbox lists this many, picked from up to UI_WAITING_PAGES pages of UI_WAITING_PAGE (the server's max). */
+export const UI_WAITING_LIMIT = 20;
+export const UI_WAITING_PAGE = 50;
+export const UI_WAITING_PAGES = 4;
+
+/**
+ * needSomeone's raw rows, shaped down to what the mod draws: held ones dropped, For you (addressed,
+ * taken part in) before Open (the channel tier), each quiet longest first, a row without a time last.
+ * The server sends newest first, so this sorts BEFORE it cuts: cutting first would keep the newest.
+ */
 export function toWaiting(r: {
-  rows: ReadonlyArray<{ thread: { id: string; title: string }; channel: { name: string }; why: UiWaitingItem["why"]; hold: { state: UiWaitingItem["hold"] } }>;
+  rows: ReadonlyArray<{ thread: { id: string; title: string; lastActivityAt?: string }; channel: { name: string }; why: UiWaitingItem["why"]; hold: { state: UiWaitingItem["hold"] } }>;
   more: boolean;
   counts: { forYou: number; channel: number } | null;
-}, limit = 5): UiWaiting {
+}, limit = UI_WAITING_LIMIT): UiWaiting {
+  const at = (iso: string | undefined) => {
+    const t = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+  };
+  const open = r.rows
+    .filter((x) => x.hold.state !== "held")
+    .map((x) => ({ x, tier: x.why === "channel" ? 1 : 0, t: at(x.thread.lastActivityAt) }))
+    .sort((a, b) => a.tier - b.tier || (a.t === b.t ? 0 : a.t < b.t ? -1 : 1));
   return {
     forYou: r.counts?.forYou ?? null,
     channel: r.counts?.channel ?? null,
-    more: r.more,
-    top: r.rows
-      .filter((x) => x.hold.state !== "held")
+    more: r.more || open.length > limit,
+    top: open
       .slice(0, limit)
-      .map((x) => ({ threadId: x.thread.id, title: x.thread.title, channel: x.channel.name, why: x.why, hold: x.hold.state })),
+      .map(({ x }) => ({ threadId: x.thread.id, title: x.thread.title, channel: x.channel.name, why: x.why, hold: x.hold.state, quietSince: x.thread.lastActivityAt ?? null })),
   };
 }

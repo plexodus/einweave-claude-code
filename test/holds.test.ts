@@ -5,6 +5,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { createHolds, parseRef, describeScope, type ApiResult, type HoldsDeps } from "../holds";
+import { takeOutcome } from "../mod/model";
 
 const ME = "00000000-0000-7000-8000-00000000aaaa";
 const AGENT = "00000000-0000-7000-8000-0000000000a1";
@@ -130,6 +131,26 @@ describe("take: N refers to the list this session showed last, and the server is
     expect(f.calls.at(-1)!.path).toBe(`/api/threads/${T2}/hold`);
   });
 
+  test("needSomeone reads up to `pages` pages of `page` rows, following the cursor: the server sends newest first, so the longest waits are on the later pages", async () => {
+    const pageOf: Record<string, { threads: any[]; next: string | null }> = {
+      "": { threads: [takeableRow(T1, "Newest")], next: "c1" },
+      c1: { threads: [takeableRow(T2, "Middle", "held")], next: "c2" },
+      c2: { threads: [takeableRow(T3, "Oldest")], next: "c3" },
+    };
+    const f = fake((c) => {
+      const q = new URLSearchParams(c.path.split("?")[1]);
+      return { status: 200, body: pageOf[q.get("cursor") ?? ""] ?? { threads: [], next: null } };
+    });
+    const r = await f.holds.needSomeone(20, 50, 3);
+    expect(f.calls.map((c) => new URLSearchParams(c.path.split("?")[1])).map((q) => [q.get("limit"), q.get("cursor")])).toEqual([["50", null], ["50", "c1"], ["50", "c2"]]);
+    expect(r.rows.map((x) => x.thread.id)).toEqual([T1, T3]);
+    expect(r.more).toBe(true); // a fourth page exists, unread
+    // The default is one page: status/connect stay one call.
+    const one = fake((c) => ({ status: 200, body: pageOf[new URLSearchParams(c.path.split("?")[1]).get("cursor") ?? ""]! }));
+    await one.holds.needSomeone(5);
+    expect(one.calls).toHaveLength(1);
+  });
+
   test("a link or id acts on that id without needing a list", async () => {
     const f = fake((c) => (c.method === "POST" ? { status: 200, body: { changed: true, moved: 0 } } : undefined));
     await f.holds.take({ ref: `https://einweave.example/w/ws/c/${CH_A}/t/${T3}` });
@@ -168,6 +189,12 @@ describe("take from an online holder asks first", () => {
     expect(text).toContain("confirm: true");
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0]!.body).toEqual({ action: "take" });
+  });
+
+  test("the mod reads take's answers by their words (mod/model.ts takeOutcome): the question with the id to confirm, then taken", async () => {
+    const f = fake(online);
+    expect(takeOutcome(await f.holds.take({ ref: T1 }))).toEqual({ kind: "ask", question: "Bellman #cd34 is online and working on this. Take it anyway?", id: T1 });
+    expect(takeOutcome(await f.holds.take({ ref: T1, confirm: true }))).toEqual({ kind: "taken" });
   });
 
   test("confirm: true sends the confirmation and takes it", async () => {

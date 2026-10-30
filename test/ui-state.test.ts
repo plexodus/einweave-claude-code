@@ -94,10 +94,37 @@ describe("toWaiting", () => {
     hold: { state: hold },
   });
 
-  test("drops threads someone holds, keeps the order, caps at the limit", () => {
+  test("drops threads someone holds, keeps the order of untimed rows, caps at the limit", () => {
     const w = toWaiting({ rows: [row("a", "unheld"), row("b", "held"), row("c", "parked"), row("d", "unheld")], more: true, counts: { forYou: 3, channel: 1 } }, 2);
     expect(w.top.map((t) => t.threadId)).toEqual(["a", "c"]);
     expect(w).toMatchObject({ forYou: 3, channel: 1, more: true });
+  });
+
+  const timed = (id: string, why: "addressed" | "participant" | "channel", at?: string) => ({ ...row(id, "unheld"), why, thread: { id, title: `T ${id}`, ...(at ? { lastActivityAt: at } : {}) } });
+
+  test("quietSince is the thread's last activity; null from a server that does not send it; the Inbox default is 20", () => {
+    const w = toWaiting({ rows: [timed("a", "addressed", "2026-10-30T08:00:00.000Z"), row("b", "unheld")], more: false, counts: null });
+    expect(w.top.map((t) => t.quietSince)).toEqual(["2026-10-30T08:00:00.000Z", null]);
+    const many = Array.from({ length: 30 }, (_, i) => row(`r${i}`, "unheld"));
+    expect(toWaiting({ rows: many, more: false, counts: null }).top).toHaveLength(20);
+  });
+
+  test("For you before Open, each quiet longest first, an untimed or unparseable row last; sorted BEFORE the cut, so the newest are what is dropped", () => {
+    // Server order: newest first.
+    const rows = [
+      timed("new", "addressed", "2026-10-30T09:59:00.000Z"),
+      timed("ch", "channel", "2026-10-28T10:00:00.000Z"),
+      timed("bad", "addressed", "not a time"),
+      timed("none", "participant"),
+      timed("mid", "participant", "2026-10-30T07:00:00.000Z"),
+      timed("old", "addressed", "2026-10-29T07:00:00.000Z"),
+    ];
+    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["old", "mid", "new", "bad", "none", "ch"]);
+    const cut = toWaiting({ rows, more: false, counts: null }, 2);
+    expect(cut.top.map((t) => t.threadId)).toEqual(["old", "mid"]);
+    // Rows were cut, so there is more than shown even with no next page.
+    expect(cut.more).toBe(true);
+    expect(toWaiting({ rows, more: false, counts: null }, 6).more).toBe(false);
   });
 
   test("a server without counts: null, not 0", () => {

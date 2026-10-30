@@ -75,12 +75,12 @@ function engine(
     while (!connected) await clock.sleep(100)
     return { value: { isConnected: true, server: 'plugin:einweave:einweave' } }
   })
-  on('mcp.call', ($, e) => {
+  on('mcp.call', async ($, e) => {
     calls.push({ tool: e.tool, args: e.args })
     if (!connected) throw new Error(`no connected MCP tool "${e.tool}" on a server named "plugin:einweave:einweave"`)
     if (o.hang) return new Promise<never>(() => {})
     if (e.tool === 'ui_state') return { value: o.polled === null ? { content: [], isError: true } : text(JSON.stringify({ rev: o.polledRev ?? 1, ...(o.polled ?? SNAP) })) }
-    return { value: o.answer?.({ tool: e.tool, args: e.args }) ?? text(`${e.tool} done`) }
+    return { value: (await o.answer?.({ tool: e.tool, args: e.args })) ?? text(`${e.tool} done`) }
   })
   on('process.spawn', async function* ($, e) {
     spawns.push({ env: e.env })
@@ -235,16 +235,19 @@ test('connect into standby, declined: no takeover', async ($, on) => {
   expect(calls.filter(c => c.tool === 'connect').map(c => c.args)).toEqual([{}])
 })
 
-test('the pane lists held threads; Release calls release with the thread id', async ($, on) => {
+test('the Held tab lists held threads, the Session tab has the name field; Release calls release with the thread id', async ($, on) => {
   const { calls, toasts, clock } = engine(on)
   await start($, clock)
   for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'tab:held' })
     expect(await ui.find({ type: 'Text', text: 'Fix the build' })).toBeDefined()
+    await ui.press({ key: 'tab:session' })
     expect(await ui.find({ key: 'label' })).toBeDefined()
     await ui.unmount()
   }
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
   await ui.press({ key: 'release:t1' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'release')).toEqual([{ tool: 'release', args: { ref: 't1' } }])
@@ -256,6 +259,7 @@ test('on mobile, which has no fields, the pane shows the name and scope as text'
   const { clock } = engine(on)
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  await ui.press({ key: 'tab:session' })
   expect(await ui.find({ type: 'Text', text: 'name probe' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'scope none' })).toBeDefined()
   await ui.unmount()
@@ -266,6 +270,7 @@ test('a window that does not hold the session shows its name, with no field to r
   const { clock } = engine(on, { polled: GONE })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:session' })
   expect(await ui.find({ type: 'Input' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'name probe' })).toBeDefined()
   await ui.unmount()
@@ -343,4 +348,132 @@ test('the relay is started with CLAUDE_PID blanked: one inherited from an outer 
   const { spawns, clock } = engine(on)
   await start($, clock)
   expect(spawns[0]?.env).toEqual({ CLAUDE_PID: '' })
+})
+
+const T_OLD = '01990000-0000-7000-8000-0000000000a1'
+const T_NEW = '01990000-0000-7000-8000-0000000000a2'
+const T_CH = '01990000-0000-7000-8000-0000000000a3'
+const WAITING: UiSnapshot = {
+  ...SNAP,
+  waiting: {
+    // Exact, all pages: more than the rows the snapshot carries.
+    forYou: 25,
+    channel: 4,
+    more: true,
+    // Snapshot order (toWaiting sorted it): For you quiet longest first, then Open.
+    top: [
+      { threadId: T_OLD, title: 'Older ask', channel: 'ops', why: 'participant', hold: 'parked', quietSince: '2026-10-30T08:00:00.000Z' },
+      { threadId: T_NEW, title: 'Newer ask', channel: 'ops', why: 'addressed', hold: 'unheld', quietSince: '2026-10-30T09:50:00.000Z' },
+      { threadId: T_CH, title: 'Demo notes', channel: 'general', why: 'channel', hold: 'unheld', quietSince: '2026-10-30T07:00:00.000Z' },
+    ],
+  },
+}
+
+test('the Inbox is the default tab: For you, then Open, each with how long it has been quiet; the tab counts all that waits, not the rows drawn', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'tab:inbox' })).toMatchObject({ props: { label: 'Inbox 29', variant: 'primary' } })
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('view:'))
+  expect(keys).toEqual([`view:${T_OLD}`, `view:${T_NEW}`, `view:${T_CH}`])
+  expect(await ui.find({ type: 'Text', text: 'Open' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^#ops · parked · you took part · quiet \d+[smhd]$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Take on an Inbox row takes it by id; from an online holder it asks the person first, and only a yes confirms', async ($, on) => {
+  const asked = `Bellman #cd34 is online and working on this. Take it anyway?\nAsk the person; if they agree, call take again with ref "${T_NEW}" and confirm: true. Nothing was taken.`
+  const { calls, toasts, clock } = engine(on, {
+    polled: WAITING,
+    answer: c => (c.tool === 'take' ? text(c.args.confirm ? `This session now holds Newer ask. Reply with thread_id "${T_NEW}".` : asked) : undefined),
+  })
+  const questions: string[] = []
+  let yes = false
+  on('tool.call', ($, e) => {
+    const q = (e as { questions: { question: string }[] }).questions[0]!.question
+    questions.push(q)
+    return { result: { answers: { [q]: yes ? 'Take it' : 'Leave it' } } }
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `take:${T_NEW}` })
+  await clock.settle()
+  expect(questions).toEqual(['Bellman #cd34 is online and working on this. Take it anyway?'])
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }])
+  expect(toasts.at(-1)).toBe('Nothing was taken.')
+  yes = true
+  await ui.press({ key: `take:${T_NEW}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }, { ref: T_NEW }, { ref: T_NEW, confirm: true }])
+  expect(toasts.at(-1)).toContain('now holds')
+  await ui.unmount()
+})
+
+test('View opens a thread tab read through ui_thread (never read_thread, which would ack it as the model\'s); × closes it', async ($, on) => {
+  const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [{ sender: 'Kevin', content: 'Can I take the NAS at 14:00?', type: 'question', ts: '2026-10-30T08:00:00.000Z' }], has_older: true, older_count: 12 }
+  const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `view:${T_OLD}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_OLD }])
+  expect(calls.some(c => c.tool === 'read_thread')).toBe(false)
+  expect(await ui.find({ key: `tab:${T_OLD}` })).toMatchObject({ props: { variant: 'primary' } })
+  expect(await ui.find({ type: 'Text', text: 'Can I take the NAS at 14:00?' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '12 older replies not shown: the web app has them.' })).toBeDefined()
+  expect(await ui.find({ key: `take:${T_OLD}` })).toBeDefined()
+  await ui.press({ key: `close:${T_OLD}` })
+  expect(await ui.find({ key: `tab:${T_OLD}` })).toBeUndefined()
+  expect(await ui.find({ key: 'tab:inbox' })).toMatchObject({ props: { variant: 'primary' } })
+  await ui.unmount()
+})
+
+test('× while the thread still loads: the late answer does not bring the closed tab\'s content back', async ($, on) => {
+  const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [{ sender: 'Kevin', content: 'late', type: 'text', ts: null }], has_older: false, older_count: 0 }
+  let clockRef: { sleep: (ms: number) => Promise<void> } | null = null
+  let reads = 0
+  // The first read answers late; the second (the tab opened again) never does, so all it can show is what was kept.
+  const { clock } = engine(on, {
+    polled: WAITING,
+    answer: c => (c.tool !== 'ui_thread' ? undefined : ++reads === 1 ? clockRef!.sleep(5_000).then(() => text(JSON.stringify(thread))) : new Promise(() => {})),
+  })
+  clockRef = clock
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `view:${T_OLD}` })
+  await ui.press({ key: `close:${T_OLD}` })
+  await clock.advance(6_000)
+  await clock.settle()
+  void ui.press({ key: `view:${T_OLD}` })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'Loading…' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'late' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('New session copies the command that takes the thread in a new window', async ($, on) => {
+  const { toasts, clock } = engine(on, { polled: WAITING })
+  const copied: string[] = []
+  on('ui.copy', ($, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `new:${T_CH}` })
+  await clock.settle()
+  expect(copied).toEqual([`claude "/einweave:take ${T_CH}"`])
+  expect(toasts.at(-1)).toContain('Copied')
+  await ui.unmount()
+})
+
+test('/einweave take N and /einweave find: take by ref, find filters the takeable list and keeps its numbers', async ($, on) => {
+  const list = 'Threads this session could take (pick with take N, a link, an id, or words from the title):\n1. #general · Fix the build — unheld\n2. #ops · Review the PR — held by Bellman #cd34 (online)'
+  const { calls, clock } = engine(on, { answer: c => (c.tool === 'list_threads' ? text(list) : c.tool === 'take' ? text('This session now holds Fix the build.') : undefined) })
+  await start($, clock)
+  expect((await $.command.run({ command: 'einweave', args: 'take 1' })).text).toBe('This session now holds Fix the build.')
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: '1' }])
+  const found = await $.command.run({ command: 'einweave', args: 'find review' })
+  expect(calls.filter(c => c.tool === 'list_threads').map(c => c.args)).toEqual([{ takeable: true, limit: 50 }])
+  expect(found.text).toBe('2. #ops · Review the PR — held by Bellman #cd34 (online)\nTake one with /einweave take N.')
 })
