@@ -685,7 +685,7 @@ export const register: Register = on => {
             s.gateway.online ? (
               <Text key="gateway" color={PALETTE.brand} wrap="truncate-end">{`● gateway ${s.gateway.label ?? ''} online · routing, usually picked within a minute`}</Text>
             ) : (
-              <Text key="gateway" color={PALETTE.amber} wrap="truncate-end">○ no gateway online · these wait until someone takes them</Text>
+              <Text key="gateway" color={PALETTE.amber} wrap="truncate-end">○ no gateway online · unheld work goes to sessions in scope, or waits for a take</Text>
             )
           ) : null}
           {folded('open', box.open, inboxRecord)}
