@@ -452,6 +452,8 @@ export const register: Register = on => {
     const f = await read($, focused)
     const keys = e.props.isFocused
     let footActs: Act[] = []
+    // The keyboard is on a record: the footer is drawn, its actions or none (a channel has none, enter still opens it).
+    let footOn = false
     const open = await read($, unfolded)
     const drawn: string[] = []
     const newSession = (id: string) => (press: Press) => {
@@ -476,13 +478,19 @@ export const register: Register = on => {
      * last line; the keyboard's record has them in the footer instead, on hotkeys. Escape leaves a grey
      * mark where the keyboard will land again. `label` names it (the link, the button's address); `title`
      * is how it is drawn, in the canvas's colours.
+     * THE STANDARD (as Inbox, Jörgen 2026-10-31): at rest a brand `#name` is regular weight and only a
+     * record's own text is semibold; bold is the pointer's and the keyboard's. Bold at rest leaves the
+     * hover nothing to change (Channels drew `#name` 600 and its hover showed nothing).
      */
     const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; acts: Act[] }) => {
       if (desk) return deskRecord(r)
       drawn.push(`mark:${r.id}`)
       const hot = keys && f === r.id
       const away = !keys && f === r.id
-      if (hot) footActs = r.acts
+      if (hot) {
+        footActs = r.acts
+        footOn = true
+      }
       const title = r.title ?? [{ text: r.label, weight: 'semibold' as const }]
       return (
         <Box key={`rec:${r.id}`} flexDirection="column">
@@ -639,17 +647,21 @@ export const register: Register = on => {
           return (
             <Box key={`tabbox:${o.id}`} flexDirection="row">
               {tabButton(`tab:${o.id}`, label, o.id, showOpen(o))}
+              {/* The shown tab's × sits inside its pill, drawn as the pill (Jörgen 2026-10-31); the rest dim. A desktop
+                  draws no fill, so there it stays dim: full strength is the shown tab's and the one thing to do. */}
               <Button
                 key={`close:${o.id}`}
                 label="×"
                 plain
-                dimColor
+                {...(tab === o.id && !desk ? { hover: { inverse: false } } : { dimColor: true })}
                 onPress={() => {
                   void update($, tabs, x => closeTab(x, o.id))
                   if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                   else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                 }}
-              />
+              >
+                {tab === o.id && !desk ? <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{'× '}</Text> : undefined}
+              </Button>
             </Box>
           )
         })}
@@ -700,7 +712,7 @@ export const register: Register = on => {
             record({
               id: `ch:${c.id}`,
               label: `#${c.name}`,
-              title: [{ text: `#${c.name}`, tone: 'brand', weight: 'semibold' }],
+              title: [{ text: `#${c.name}`, tone: 'brand' }],
               onOpen: () => void viewChannel($, c.id, c.name),
               meta: [{ text: [channelMeta(c.threads, now), c.role ? null : 'following, not a member'].filter(Boolean).join(' · '), tone: 'dim' }],
               acts: [],
@@ -867,7 +879,7 @@ export const register: Register = on => {
     stops = drawn
     const rule = (key: string) => <Text key={key} color={RULE}>{'─'.repeat(Math.max(1, e.props.bodyColumns - 2 * PANE_PAD))}</Text>
     // The keyboard's record's actions, on their hotkeys: one place to look, as a TUI's key bar.
-    const footer = footActs.length ? (
+    const footer = footOn ? (
       <Box key="footer" flexDirection="row">
         {footActs.map((a, n) => (
           <Box key={`footact:${a.key}`} flexDirection="row">
@@ -875,7 +887,7 @@ export const register: Register = on => {
             <Button key={`foot:${a.key}`} plain hotkey={a.hotkey} label={a.label} onPress={a.onPress} />
           </Box>
         ))}
-        <Text dimColor> · enter open · esc back</Text>
+        <Text dimColor>{`${footActs.length ? ' · ' : ''}enter open · esc back`}</Text>
       </Box>
     ) : null
     return (

@@ -592,6 +592,10 @@ test('View opens a thread tab read through ui_thread (never read_thread, which w
   expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_OLD }])
   expect(calls.some(c => c.tool === 'read_thread')).toBe(false)
   shownPill(await ui.find({ key: `tab:${T_OLD}` }))
+  // Its × inside the pill: the pill's fill, not dim.
+  const close = await ui.find({ key: `close:${T_OLD}` })
+  expect(close).toMatchObject({ children: [{ type: 'Text', props: { backgroundColor: PILL.backgroundColor, color: PILL.color }, children: ['× '] }] })
+  expect(close?.props).not.toHaveProperty('dimColor')
   // Unheld: amber, Claude has not seen it; Refresh, since nothing pushes it here.
   expect(await ui.find({ type: 'Text', text: 'not held here · Claude has not seen it · Take brings it here' })).toMatchObject({ props: { color: '#e8b04a' } })
   expect(await ui.find({ key: `refresh:${T_OLD}` })).toMatchObject({ props: { label: '↻ Refresh' } })
@@ -702,7 +706,13 @@ for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     expect((await ui.findAll({ type: 'Button' })).some(b => String(b.key).startsWith('join'))).toBe(false)
     expect(await ui.find({ type: 'Text', text: 'Join, leave and private channels: in the web app.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'counts unknown' })).toBeDefined()
-    if (surface === 'terminal') expect(await ui.find({ type: 'Text', text: '#ops' })).toMatchObject({ props: { color: '#4cc3ad', weight: 'semibold' } })
+    // The record standard (as Inbox's `#channel`): regular at rest, so the pointer's bold shows.
+    if (surface === 'terminal') {
+      const name = await ui.find({ type: 'Text', text: '#ops' })
+      expect(name).toMatchObject({ props: { color: '#4cc3ad' } })
+      expect((name.props as { weight?: string }).weight, '#name bold at rest: its hover changes nothing').toBeUndefined()
+      expect((name.props as { bold?: boolean }).bold).toBeFalsy()
+    }
     expect(calls.every(c => PERSON_ONLY.includes(c.tool))).toBe(true)
     await ui.unmount()
   })
@@ -861,6 +871,20 @@ test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n Ne
   await ui.press({ key: 'foot:take' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }])
+  await ui.unmount()
+})
+
+test('the keyboard on a channel, which has no actions: the footer still says enter open · esc back', async ($, on) => {
+  ring(on)
+  const { clock } = engine(on, { answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'enter open · esc back' })).toBeUndefined()
+  await focus($, `mark:ch:${CH_OPS}`)
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'enter open · esc back' }), 'no footer on a record with no actions').toBeDefined()
   await ui.unmount()
 })
 
