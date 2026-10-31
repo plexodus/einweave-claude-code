@@ -424,6 +424,12 @@ export function createHolds(deps: HoldsDeps) {
       return describeScope(scope, true);
     },
 
+    /** The agent's gateway for the mod's Unowned line: online only while a live gateway session is connected. */
+    async gateway(): Promise<{ online: boolean; label: string | null }> {
+      const gw = (await fetchSessions(deps.myAgentId())).find((s) => s.kind === "gateway" && s.state === "live" && s.online);
+      return gw ? { online: true, label: nameOf(gw.label, gw.id) } : { online: false, label: null };
+    },
+
     /** `list_sessions`: the agent's sessions (its own, or its managers' view). */
     async listSessions(p: { agentId?: string }): Promise<string> {
       const agentId = p.agentId || deps.myAgentId();

@@ -679,8 +679,22 @@ export const register: Register = on => {
           {box.forYou.length ? heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you') : null}
           {folded('forYou', box.forYou, inboxRecord)}
           {box.open.length ? heading('h:open', `Unowned ${openCount}`, 'nobody holds these · oldest first') : null}
+          {/* Board Unowned: whether the gateway routes these, brand when it does, amber while they wait for a take. */}
+          {box.open.length && s.gateway ? (
+            s.gateway.online ? (
+              <Text key="gateway" color={PALETTE.brand} wrap="truncate-end">{`● gateway ${s.gateway.label ?? ''} online · routing, usually picked within a minute`}</Text>
+            ) : (
+              <Text key="gateway" color={PALETTE.amber} wrap="truncate-end">○ no gateway online · these wait until someone takes them</Text>
+            )
+          ) : null}
           {folded('open', box.open, inboxRecord)}
           {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
+          {box.open.length ? (
+            <Box key="unowned-notes" flexDirection="column">
+              <Text dimColor>{`Every session of ${s.session.agent ? `@${s.session.agent}` : 'this agent'} sees this list. The band stays for things aimed at you.`}</Text>
+              <Text dimColor>Take brings it here. New session copies a command that starts another window and takes it there.</Text>
+            </Box>
+          ) : null}
         </Box>
       )
     } else if (tab === 'held') {

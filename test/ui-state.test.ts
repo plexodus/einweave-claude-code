@@ -33,6 +33,7 @@ const INPUTS: UiInputs = {
   holds: ["t1"],
   titles: new Map([["t1", "Fix the build"]]),
   waiting: { forYou: 2, channel: 0, more: false, top: [] },
+  gateway: { online: true, label: "bridge-gw" },
   version: "0.38.0",
   staleSince: null,
 };
@@ -44,6 +45,7 @@ describe("buildUiState", () => {
     expect(s.session).toEqual({ agent: "bellman", label: "probe", kind: "session", scope: { mode: "none" } });
     expect(s.holds).toEqual([{ threadId: "t1", title: "Fix the build" }]);
     expect(s.waiting?.forYou).toBe(2);
+    expect(s.gateway).toEqual({ online: true, label: "bridge-gw" });
   });
 
   test("a held thread whose title is not known yet (or has none) carries title null, in hold order", () => {
@@ -56,6 +58,7 @@ describe("buildUiState", () => {
     expect(s.connection).toEqual({ state: "disconnected", detail: "disconnected (reconnect attempt 2, in 4s)" });
     expect(s.holds).toEqual([]);
     expect(s.waiting).toBeNull();
+    expect(s.gateway).toBeNull();
     expect(s.session.scope).toBeNull();
   });
 

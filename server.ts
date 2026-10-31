@@ -66,7 +66,7 @@ import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
-import { buildUiState, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiWaiting } from "./ui/ui-state";
+import { buildUiState, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiGateway, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath } from "./delivery/ctl-path";
@@ -1229,6 +1229,7 @@ const forYou = forYouBox();
 // control socket's `watch`ers. Defined here, before anything can open the socket.
 const uiWatch = new UiWatch();
 let uiWaiting: UiWaiting | null = null;
+let uiGateway: UiGateway | null = null;
 /** Read-tool acks that found no live Session (delivery/returned-acks.ts). */
 const returnedAcks = new ReturnedAcks();
 /** Entries handed to the host in this process — `status`'s "idle" until the first. */
@@ -3069,6 +3070,7 @@ function uiSnapshot() {
     holds: serverHolds,
     titles: new Map([...heldTitles].map(([id, t]) => [id, t.title])),
     waiting: uiWaiting,
+    gateway: uiGateway,
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
   });
@@ -3112,13 +3114,15 @@ function refreshUi(): void {
   uiWatch.set(uiSnapshot());
 }
 
-/** What waits (one API call). Only while someone draws it: a session no mod watches pays nothing. */
+/** What waits, and whether the gateway routes it (two API calls). Only while someone draws it: a session no mod watches pays nothing. */
 async function refreshWaiting(): Promise<void> {
-  if (!authenticated || creds.configError()) uiWaiting = null;
-  else {
-    try {
-      uiWaiting = toWaiting(await holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES));
-    } catch {}
+  if (!authenticated || creds.configError()) {
+    uiWaiting = null;
+    uiGateway = null;
+  } else {
+    const [waiting, gateway] = await Promise.allSettled([holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES), holds.gateway()]);
+    if (waiting.status === "fulfilled") uiWaiting = toWaiting(waiting.value);
+    if (gateway.status === "fulfilled") uiGateway = gateway.value;
   }
   refreshUi();
 }

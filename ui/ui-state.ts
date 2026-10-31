@@ -28,6 +28,13 @@ export interface UiWaiting {
   top: UiWaitingItem[];
 }
 
+/** The agent's gateway (RFC-028 D2), for board Unowned's line: online, it routes unheld work; off, that work waits for a take. */
+export interface UiGateway {
+  online: boolean;
+  /** The gateway session's name; null when none is online. */
+  label: string | null;
+}
+
 export interface UiHeld {
   threadId: string;
   title: string | null;
@@ -41,6 +48,8 @@ export interface UiState {
   holds: UiHeld[];
   /** Unheld work this session could take; null until first read, or while not connected. */
   waiting: UiWaiting | null;
+  /** Null until first read, while not connected, or when the sessions list cannot be read. */
+  gateway: UiGateway | null;
   version: string;
   staleSince: string | null;
 }
@@ -64,6 +73,7 @@ export interface UiInputs {
   /** Titles read so far (holds.titlesOf); a held id missing here is drawn without one. */
   titles: ReadonlyMap<string, string | null>;
   waiting: UiWaiting | null;
+  gateway: UiGateway | null;
   version: string;
   staleSince: string | null;
 }
@@ -90,6 +100,7 @@ export function buildUiState(i: UiInputs): UiState {
     session: { agent: i.agent, label: i.label, kind: i.kind, scope: i.authenticated ? (i.scope ?? null) : null },
     holds: i.authenticated ? i.holds.map((threadId) => ({ threadId, title: i.titles.get(threadId) ?? null })) : [],
     waiting: i.authenticated ? i.waiting : null,
+    gateway: i.authenticated ? i.gateway : null,
     version: i.version,
     staleSince: i.staleSince,
   };

@@ -26,6 +26,8 @@ export interface UiSnapshot {
   session: { agent: string | null; label: string | null; kind: string | null; scope: { mode: string; channelIds: string[]; channelNames?: (string | null)[] } | null }
   holds: UiHeld[]
   waiting: { forYou: number | null; channel: number | null; more: boolean; top: UiWaitingItem[] } | null
+  /** The agent's gateway (RFC-028); absent from an older plugin server, null until read. */
+  gateway?: { online: boolean; label: string | null } | null
   version: string
   staleSince: string | null
 }

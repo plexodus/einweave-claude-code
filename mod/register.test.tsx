@@ -514,6 +514,34 @@ test('the Inbox is the default tab: For you, then Unowned, each with how long it
   await ui.unmount()
 })
 
+test('board Unowned: the gateway line says whether unheld work is routed (brand) or waits for a take (amber), then the two notes', async ($, on) => {
+  const GW_DOWN: UiSnapshot = { ...WAITING, gateway: { online: false, label: null } }
+  const { clock } = engine(on, { polled: GW_DOWN, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: '○ no gateway online · these wait until someone takes them' })).toMatchObject({ props: { color: '#e8b04a' } })
+  expect(await ui.find({ type: 'Text', text: 'Every session of @bellman sees this list. The band stays for things aimed at you.' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: 'Take brings it here. New session copies a command that starts another window and takes it there.' })).toMatchObject({ props: { dimColor: true } })
+  await ui.unmount()
+})
+
+test('board Unowned: an online gateway is named in the brand colour', async ($, on) => {
+  const GW_UP: UiSnapshot = { ...WAITING, gateway: { online: true, label: 'bridge-gw' } }
+  const { clock } = engine(on, { polled: GW_UP, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: '● gateway bridge-gw online · routing, usually picked within a minute' })).toMatchObject({ props: { color: '#4cc3ad' } })
+  await ui.unmount()
+})
+
+test('board Unowned: no gateway in the snapshot (an older plugin server), no gateway line', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /gateway/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('Take on an Inbox row takes it by id; from an online holder it asks the person first, and only a yes confirms', async ($, on) => {
   const asked = `Bellman #cd34 is online and working on this. Take it anyway?\nAsk the person; if they agree, call take again with ref "${T_NEW}" and confirm: true. Nothing was taken.`
   const { calls, toasts, clock } = engine(on, {
