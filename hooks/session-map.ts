@@ -6,16 +6,16 @@
  * it changes on every `claude --continue`, so a resumed conversation would
  * register a brand-new Bridge context and targeted messages would stop
  * following it. Hooks see the *stable* conversation id instead, so this hook
- * publishes it under the one identifier both processes share —
- * CLAUDE_CODE_SSE_PORT — and the server reads it back.
+ * publishes it under two keys and the server reads one back:
  *
- * NOT CLAUDE_PID: .mcp.json starts the server via `bun run … start`, whose
- * script is `bun install && bun server.ts`, so a wrapper process always sits
- * between Claude Code and the server. The server's process.ppid is that
- * wrapper, and its environment carries no CLAUDE_PID at all — only the SSE
- * port. CLAUDE_PID is still recorded in the file, purely as liveness metadata:
- * SSE ports are reused, so the server needs a way to tell a live mapping from
- * one a SIGKILLed session left behind.
+ * - `pid-<CLAUDE_PID>`: the Claude Code CLI. The server walks its own ancestry
+ *   (a wrapper process sits between, so not its ppid) to find it. Where `ps`
+ *   runs, this is the ONLY key the server uses.
+ * - `sse-<CLAUDE_CODE_SSE_PORT>`: only where the server cannot walk its ancestry
+ *   (no `ps`, i.e. Windows). Every window attached to one IDE shares the port,
+ *   so it names whichever ran its hook last: a second window read it before its
+ *   own hook ran and took the first window's conversation (2026-10-31). The pid
+ *   in it is liveness metadata: ports are reused.
  *
  * Invoked as `session-map.ts start|end` from hooks/hooks.json.
  *

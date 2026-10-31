@@ -297,20 +297,45 @@ function pidAlive(pid: unknown): boolean {
  * Costs one `ps` per level, bounded. Returns null where `ps` does not exist
  * (Windows) — the caller then falls back rather than pretending.
  */
-function parentPid(pid: number): number | null {
+/** One `ps` step: `ran` false when `ps` itself failed (none here, or a spawn failure); `ppid` null at the top. */
+function parentPid(pid: number): { ran: boolean; ppid: number | null } {
   try {
     const r = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)]);
-    if (!r.success) return null;
+    if (!r.success) return { ran: false, ppid: null };
     const n = Number(new TextDecoder().decode(r.stdout).trim());
-    return Number.isSafeInteger(n) && n > 1 ? n : null;
+    return { ran: true, ppid: Number.isSafeInteger(n) && n > 1 ? n : null };
   } catch {
-    return null;
+    return { ran: false, ppid: null };
   }
 }
 
 const ANCESTRY_MAX_DEPTH = 8;
+const ANCESTRY_ATTEMPTS = 3;
+/**
+ * This process and its ancestors, nearest first; null where `ps` cannot run. Walked once: an
+ * ancestor's pid does not change while it lives, so the late-pid poll reads files and spawns
+ * nothing. A walk a failed `ps` cut short is tried again -- a spawn can fail under load -- since
+ * one failure would otherwise turn the sse key back on for the window's life.
+ */
+const ANCESTORS: number[] | null = (() => {
+  for (let attempt = 0; attempt < ANCESTRY_ATTEMPTS; attempt++) {
+    const chain = [process.pid];
+    let ran = true;
+    while (chain.length < ANCESTRY_MAX_DEPTH) {
+      const step = parentPid(chain[chain.length - 1]!);
+      if (!step.ran) {
+        ran = false;
+        break;
+      }
+      if (step.ppid === null) break;
+      chain.push(step.ppid);
+    }
+    if (ran) return chain;
+  }
+  return null;
+})();
 /** `ps` answers here, so the pid key can be found: the sse key must not be used (resolveSessionKey). */
-const ANCESTRY_WORKS = parentPid(process.pid) !== null;
+const ANCESTRY_WORKS = ANCESTORS !== null;
 
 /** RFC-017 D2: this process's own identity fields, shared by the proc registry write
  * below AND the session lock record (P3) — computed once (the ancestry walk costs a
@@ -338,11 +363,9 @@ function myIdentity(): MyIdentity {
 
 /** Mapping written by the hook against any ancestor of ours, nearest first. */
 function readMappingByAncestry(): { id: string; pid: number } | null {
-  let pid: number | null = process.pid;
-  for (let depth = 0; depth < ANCESTRY_MAX_DEPTH && pid; depth++) {
+  for (const pid of ANCESTORS ?? []) {
     const id = readSessionMapping(`pid-${pid}`);
     if (id) return { id, pid };
-    pid = parentPid(pid);
   }
   return null;
 }
@@ -427,6 +450,7 @@ async function resolveSessionKey(): Promise<{ key: string; source: string }> {
   //    the pid key can work, it is the only key.
   const deadline = Date.now() + SESSION_MAP_WAIT_MS;
   const haveSseKey = /^[0-9]+$/.test(SESSION_MAP_KEY) && !ANCESTRY_WORKS;
+  if (SESSION_MAP_WAIT_MS > 0) process.stderr.write(`einweave channel: waiting up to ${SESSION_MAP_WAIT_MS} ms for the session map\n`);
   for (;;) {
     const byPid = readMappingByAncestry();
     if (byPid) {

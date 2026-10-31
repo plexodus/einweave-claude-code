@@ -350,9 +350,11 @@ describe("a sibling window in the same IDE", () => {
     }));
     const plugin = spawnPlugin({ CLAUDE_CODE_SSE_PORT: SSE_PORT, EINWEAVE_TEST_SESSION_MAP_WAIT_MS: "6000" });
     try {
-      await Bun.sleep(2500); // the plugin is up and waiting; our hook is late
+      const stderr = stderrOf(plugin);
+      // Proof, not a sleep: the plugin has made its first pass over the maps (sibling's there, ours not yet).
+      expect(await stderr("for the session map"), "the plugin never started waiting").toContain("for the session map");
       await hookStart();
-      const err = await stderrOf(plugin)("session key");
+      const err = await stderr("session key");
       expect(err, "the sibling's conversation must not be adopted").not.toContain(SIBLING_ID);
       expect(err).toContain(`${CONVERSATION_ID} (source: session map (cli pid ${process.pid}))`);
       // The pid comes from the lookup that chose the key: ctl socket and proc record carry it.
@@ -380,6 +382,19 @@ describe("a sibling window in the same IDE", () => {
       plugin.kill();
     }
   }, 40_000);
+
+  test("past the late look's cap the pid is not looked for any more: no ctl socket, no claudePid", async () => {
+    const plugin = spawnPlugin({ EINWEAVE_TEST_CLAUDE_PID_LATE_MS: "1500" });
+    try {
+      expect(await stderrOf(plugin)("session key")).toContain("aaaaaaaa-bbbb");
+      await Bun.sleep(3000); // past the cap (1.5 s) plus a poll
+      await hookStart();
+      expect(await eventually(() => existsSync(ctlSocketPath(dir, process.pid)), 3000), "a ctl socket after the cap").toBe(false);
+      expect(procClaudePid(plugin.pid), "claudePid after the cap").toBeNull();
+    } finally {
+      plugin.kill();
+    }
+  }, 30_000);
 
   test("found late with no re-key (the hook names the launch's own conversation): the record's state is left as the link set it", async () => {
     const LAUNCH_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
