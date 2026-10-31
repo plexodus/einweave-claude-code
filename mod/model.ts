@@ -343,26 +343,27 @@ export function fold<T extends { old: boolean }>(rows: T[]): { recent: T[]; olde
   return { recent: rows.filter(r => !r.old), older: rows.filter(r => r.old) }
 }
 
-/** The record a pane element belongs to: `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
+/** The record a pane element belongs to: `mark:<id>`, `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
 export function recordOf(element: string | undefined): string {
-  const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
+  const m = element && /^(mark|open|take|new|release|join):(.+)$/.exec(element)
   return m ? m[2]! : ''
 }
 
 /**
- * Where the pane's focus ring lands. Records' titles (and the "Older" folds between them) are its only
- * stops: the ring moves linearly like Tab, so a move onto a record's action goes on to the stop after
- * that record when it came from that record (moving down) and back to the record's own title otherwise
- * (moving up). After the last stop the actions are left as they are: past them the ring goes on to
- * what follows the list. `stops` are the stop keys drawn, top to bottom; `last` where the ring was.
+ * Where the pane's focus ring lands. Records' marks (and the "Older" folds between them) are its only
+ * stops: a record's title and actions are pressable by the pointer but no stop. The ring moves linearly
+ * like Tab, so a move onto a record's title or action goes on to the stop after that record when it came
+ * from that record (moving down) and back to the record's own mark otherwise (moving up). After the last
+ * stop they are left as they are: past them the ring goes on to what follows the list (the footer).
+ * `stops` are the stop keys drawn, top to bottom; `last` where the ring was.
  */
 export function focusTarget(stops: readonly string[], last: string, element: string | undefined): string | undefined {
-  const m = element && /^(take|new|release|join):(.+)$/.exec(element)
+  const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
   if (!m) return element
   const id = m[2]!
-  const at = stops.indexOf(`open:${id}`)
+  const at = stops.indexOf(`mark:${id}`)
   if (at < 0) return element
-  if (recordOf(last) !== id) return `open:${id}`
+  if (recordOf(last) !== id) return `mark:${id}`
   return stops[at + 1] ?? element
 }
 

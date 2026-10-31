@@ -8,6 +8,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { UiSnapshot } from '../types'
+import { PALETTE } from './model'
 
 const SNAP: UiSnapshot = {
   v: 1,
@@ -143,17 +144,17 @@ test('the band is always there: what waits, dim, and Show / Hide for the pane (n
   expect(await band.find({ type: 'Text', text: 'einweave' })).toMatchObject({ props: { color: '#4cc3ad', weight: 'bold' } })
   expect(await band.find({ type: 'Text', text: '2 for you' })).toMatchObject({ props: { color: '#e8b04a' } })
   expect(await band.find({ key: 'connect' })).toBeUndefined()
-  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: '[ Show pane ]', dimColor: true } })
   // A bare letter in an empty composer presses a band Button that has a hotkey.
   expect((await band.find({ key: 'pane' }))?.props.hotkey).toBeUndefined()
   await band.press({ key: 'pane' })
   await clock.settle()
   expect(pane).toMatchObject({ up: true, opens: 1 })
-  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Hide' } })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: '[ Hide pane ]', dimColor: true } })
   await band.press({ key: 'pane' })
   await clock.settle()
   expect(pane).toMatchObject({ up: false, opens: 1 })
-  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: '[ Show pane ]', dimColor: true } })
   await band.unmount()
   const hint = await $.ui.mount(HINT)
   expect(tails).toEqual([undefined])
@@ -166,15 +167,15 @@ test('/einweave toggles the pane as the band does; closed any other way (its ×)
   await $.command.run({ command: 'einweave', args: '' })
   expect(pane).toMatchObject({ up: true, opens: 1 })
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Hide' } })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: '[ Hide pane ]', dimColor: true } })
   await $.command.run({ command: 'einweave', args: '' })
   expect(pane).toMatchObject({ up: false, opens: 1 })
   await $.command.run({ command: 'einweave', args: '' })
-  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Hide' } })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: '[ Hide pane ]', dimColor: true } })
   // Closed by its × (the engine's record changes; a test cannot press the engine's mark): the band follows the record.
   pane.up = false
   await band.redraw()
-  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
+  expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: '[ Show pane ]', dimColor: true } })
   await band.unmount()
 })
 
@@ -291,9 +292,52 @@ test('a window another one took over says so at once, and its band takes it back
   expect(await band.find({ type: 'Text', text: /moved to another window/ })).toMatchObject({ props: { color: '#f07a7a' } })
   // A bare digit in an empty composer presses a band Button that has a hotkey: this one must not have one.
   expect((await band.find({ type: 'Button', key: 'take-back' }))?.props.hotkey).toBeUndefined()
+  // The name is the status light: dim while not connected.
+  expect(await band.find({ type: 'Text', text: 'einweave' })).toMatchObject({ props: { dimColor: true, weight: 'bold' } })
+  expect((await band.find({ type: 'Text', text: 'einweave' }))?.props).not.toHaveProperty('color')
+  // Plain, brackets and all in the brand: the pointer's inversion is one colour (Jörgen 2026-10-31).
+  expect(await band.find({ type: 'Button', key: 'take-back' })).toMatchObject({ props: { plain: true }, children: [{ type: 'Text', props: { color: PALETTE.brand, weight: 'bold' }, children: ['[ Take it back ]'] }] })
   await band.press({ key: 'take-back' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'connect').map(c => c.args)).toEqual([{ takeover: 'lock' }])
+})
+
+test('a band never connected (idle) offers Connect, bold brand like the header\'s', async ($, on) => {
+  const IDLE: UiSnapshot = { ...SNAP, connection: { state: 'idle', detail: null }, holds: [], waiting: null }
+  const { calls, clock } = engine(on, { polled: IDLE })
+  await start($, clock)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Button', key: 'connect' })).toMatchObject({ props: { plain: true }, children: [{ type: 'Text', props: { color: PALETTE.brand, weight: 'bold' }, children: ['[ Connect ]'] }] })
+  await band.press({ key: 'connect' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'connect').map(c => c.args)).toEqual([{}])
+  await band.unmount()
+})
+
+test('a band in standby offers Connect (it asks before taking over)', async ($, on) => {
+  const STANDBY: UiSnapshot = { ...SNAP, connection: { state: 'standby', detail: null }, holds: [], waiting: null }
+  const { clock } = engine(on, { polled: STANDBY })
+  await start($, clock)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Button', key: 'connect' })).toBeDefined()
+  await band.unmount()
+})
+
+test('a band still reconnecting offers no Connect: it is already retrying', async ($, on) => {
+  const { clock } = engine(on, { polled: DOWN })
+  await start($, clock)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Button', key: 'connect' })).toBeUndefined()
+  await band.unmount()
+})
+
+test('the pane keeps a column free each side, its rules fitting inside it', async ($, on) => {
+  const { clock } = engine(on)
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'pane' })).toMatchObject({ props: { paddingX: 1 } })
+  expect((await ui.find({ type: 'Text', text: /^─+$/ }))?.text).toBe('─'.repeat(PANE.props.bodyColumns - 2))
+  await ui.unmount()
 })
 
 test('connect into standby, declined: no takeover', async ($, on) => {
@@ -343,6 +387,8 @@ test('a window that does not hold the session shows its name, with no field to r
   await ui.press({ key: 'tab:session' })
   expect(await ui.find({ type: 'Input' })).toBeUndefined()
   expect(await ui.find({ key: 'row:label' })).toMatchObject({ text: expect.stringMatching(/^Session\s*probe$/) })
+  // Connect looks like the header's: plain, bold brand brackets.
+  expect(await ui.find({ type: 'Button', key: 'connect-s' })).toMatchObject({ props: { plain: true }, children: [{ type: 'Text', props: { color: PALETTE.brand, weight: 'bold' }, children: ['[ Connect ]'] }] })
   await ui.unmount()
 })
 
@@ -493,6 +539,46 @@ test('Take on an Inbox row takes it by id; from an online holder it asks the per
   await clock.settle()
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }, { ref: T_NEW }, { ref: T_NEW, confirm: true }])
   expect(toasts.at(-1)).toContain('now holds')
+  await ui.unmount()
+})
+
+test('not connected, the pane shows only the Session tab and says why; a thread tab opened before comes back on connecting', async ($, on) => {
+  const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [], has_older: false, older_count: 0 }
+  const STANDBY: UiSnapshot = { ...WAITING, connection: { state: 'standby', detail: null }, holds: [], waiting: null }
+  let polled: UiSnapshot = WAITING
+  let rev = 1
+  const { clock } = engine(on, { get polled() { return polled }, get polledRev() { return rev }, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+  await start($, clock)
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  shownPill(await ui.find({ key: `tab:${T_OLD}` }))
+  await ui.unmount()
+  polled = STANDBY
+  rev = 2
+  await clock.advance(61_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (const k of ['tab:inbox', 'tab:held', 'tab:channels', `tab:${T_OLD}`]) expect(await ui.find({ key: k })).toBeUndefined()
+  shownPill(await ui.find({ key: 'tab:session' }))
+  expect(await ui.find({ type: 'Text', text: 'Connect to see the Inbox, held threads and channels.' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Button', key: 'connect-s' })).toBeDefined()
+  await ui.unmount()
+  polled = WAITING
+  rev = 3
+  await clock.advance(61_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  shownPill(await ui.find({ key: `tab:${T_OLD}` }))
+  expect(await ui.find({ key: 'tab:inbox' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Connect to see/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a drop still retrying (reconnecting) keeps every tab: a blip does not blank the pane', async ($, on) => {
+  const { clock } = engine(on, { polled: DOWN })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (const k of ['tab:inbox', 'tab:held', 'tab:channels', 'tab:session']) expect(await ui.find({ key: k })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Connect to see/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -734,41 +820,60 @@ const ring = (on: Parameters<Parameters<typeof test>[1]>[1]) => {
 const focus = ($: Parameters<Parameters<typeof test>[1]>[0], element: string) =>
   $.ui.focus({ component: 'Pane', requestId: 'einweave', element, origin: { kind: 'person' } } as never)
 
-test('the keyboard stops on titles only: a move onto a record\'s Take goes on to the next title (down) or back to its own (up)', async ($, on) => {
+test('the keyboard stops on marks only: a move onto a record\'s title or Take goes on to the next mark (down) or back to its own (up)', async ($, on) => {
   const landed = ring(on)
   const { clock } = engine(on, { polled: WAITING })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await focus($, `mark:${T_OLD}`)
   await focus($, `open:${T_OLD}`)
-  await focus($, `take:${T_OLD}`)
-  expect(landed.at(-1)).toBe(`open:${T_NEW}`)
-  // Up from T_NEW's title the ring meets T_OLD's New: back to T_OLD's title.
-  await focus($, `new:${T_OLD}`)
-  expect(landed.at(-1)).toBe(`open:${T_OLD}`)
-  // Past the last record its actions stay reachable: the ring goes on beyond the list.
+  expect(landed.at(-1)).toBe(`mark:${T_NEW}`)
+  // Up from T_NEW's mark the ring meets T_OLD's title: back to T_OLD's mark.
+  await focus($, `open:${T_OLD}`)
+  expect(landed.at(-1)).toBe(`mark:${T_OLD}`)
+  // Past the last record its title stays reachable: the ring goes on beyond the list.
+  await focus($, `mark:${T_CH}`)
   await focus($, `open:${T_CH}`)
-  await focus($, `take:${T_CH}`)
-  expect(landed.at(-1)).toBe(`take:${T_CH}`)
+  expect(landed.at(-1)).toBe(`open:${T_CH}`)
   await ui.unmount()
 })
 
-test('a focused record draws its actions with hotkeys (t Take, n New), and the pane still draws', async ($, on) => {
+test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n New), none inline on hotkeys; the pane still draws', async ($, on) => {
   ring(on)
   const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'take' ? text('This session now holds Newer ask.') : undefined) })
   await start($, clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ key: `take:${T_NEW}` })).toMatchObject({ props: { label: 'Take' } })
-  expect((await ui.find({ key: `take:${T_NEW}` }))?.props).not.toHaveProperty('hotkey')
-  await focus($, `open:${T_NEW}`)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
+  expect(await ui.find({ key: 'foot:take' })).toBeUndefined()
+  await focus($, `mark:${T_NEW}`)
   await clock.settle()
-  // Drawn shown with the hover reveal still on, the kit refuses the overlay and the whole pane goes blank.
   expect(await ui.find({ key: 'tab:inbox' })).toBeDefined()
-  expect(await ui.find({ key: `take:${T_NEW}` })).toMatchObject({ props: { hotkey: 't' } })
-  expect(await ui.find({ key: `new:${T_NEW}` })).toMatchObject({ props: { hotkey: 'n' } })
-  expect((await ui.find({ key: `take:${T_OLD}` }))?.props).not.toHaveProperty('hotkey')
-  await ui.press({ key: `take:${T_NEW}` })
+  expect(await ui.find({ key: 'foot:take' })).toMatchObject({ props: { hotkey: 't', label: 'Take' } })
+  expect(await ui.find({ key: 'foot:new' })).toMatchObject({ props: { hotkey: 'n', label: 'New session' } })
+  expect((await ui.find({ key: `take:${T_NEW}` }))?.props).not.toHaveProperty('hotkey')
+  // Its meta lit as under the pointer, dim no more; another record's stays dim.
+  expect(await ui.find({ type: 'Text', text: 'addressed to you · unheld' })).toMatchObject({ props: { color: '#b8b8b8' } })
+  expect((await ui.find({ type: 'Text', text: 'addressed to you · unheld' }))?.props).not.toHaveProperty('dimColor')
+  expect(await ui.find({ type: 'Text', text: 'you took part · holder offline' })).toMatchObject({ props: { dimColor: true } })
+  // Onto the footer, the record it acts on stays the keyboard's.
+  await focus($, 'foot:take')
+  await clock.settle()
+  expect(await ui.find({ key: 'foot:take' })).toBeDefined()
+  await ui.press({ key: 'foot:take' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }])
+  await ui.unmount()
+})
+
+test('Escape hands the keyboard back with no ui.focus: no footer, a grey mark where the keyboard will land again', async ($, on) => {
+  ring(on)
+  const { clock } = engine(on, { polled: WAITING })
+  await start($, clock)
+  await focus($, `mark:${T_NEW}`)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'foot:take' })).toBeUndefined()
+  expect(await ui.find({ key: `mark:${T_NEW}` })).toMatchObject({ children: [{ type: 'Text', props: { backgroundColor: '#4a4a4a' } }] })
+  expect(await ui.find({ key: `mark:${T_OLD}` })).toMatchObject({ children: [' '] })
   await ui.unmount()
 })
 

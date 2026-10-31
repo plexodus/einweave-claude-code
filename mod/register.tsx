@@ -33,14 +33,20 @@ const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { sh
 const threads = atom({ plugin: 'einweave', key: 'threads' } as const, {} as Record<string, ThreadView>, { shape: 'threads-1' })
 const channels = atom({ plugin: 'einweave', key: 'channels' } as const, NO_CHANNELS, { shape: 'channels-1' })
 const channel = atom({ plugin: 'einweave', key: 'channel' } as const, {} as Record<string, ChannelView>, { shape: 'channel-1' })
-/** Which record the keyboard is on: drawn as hovered, its actions on hotkeys. */
+/** Which record the keyboard is on (or was, when Escape handed the keyboard back): its mark, its title lit, its actions in the footer. */
 const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shape: 'focused-1' })
 /** Set as the pane opens or closes, so the band redraws; its Show / Hide reads the engine's own record. */
 const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
-/** A record under the pointer or the keyboard: both lines tinted, its actions drawn over its last line's end. */
-const HOVER_BG = '#253036'
+/** A record's dim meta under the pointer: a shade lighter, its only background the pane's. */
+const META_LIT = '#b8b8b8'
+/** The pane's subtle rules: under the tabs, over the footer. */
+const RULE = '#3a3d40'
+/** The pane's side margin, a column each side: the band's own inside its border (Jörgen 2026-10-31). */
+const PANE_PAD = 1
+/** The mark left on the record the keyboard was on once Escape handed the keyboard back: where it lands on return. */
+const MARK_AWAY = '#4a4a4a'
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
@@ -245,7 +251,7 @@ async function runRelay($: EngineInterface): Promise<void> {
 
 type Press = Parameters<NonNullable<ButtonProps['onPress']>>[0]
 
-/** One action of a record: drawn on hover, and on its hotkey while the keyboard is on the record. */
+/** One action of a record: drawn on hover, and in the footer, on its hotkey, while the keyboard is on the record. */
 interface Act {
   key: 'take' | 'new' | 'release' | 'join'
   label: string
@@ -335,11 +341,11 @@ export const register: Register = on => {
     return r
   })
 
-  // Titles are the records' only keyboard stops; their actions are on hotkeys (focusTarget).
+  // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on.
   on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const element = focusTarget(stops, last, e.element)
     last = element ?? ''
-    await update($, focused, () => recordOf(element))
+    if (!element?.startsWith('foot:')) await update($, focused, () => recordOf(element))
     return next(element === e.element ? e : { ...e, element })
   })
 
@@ -353,6 +359,8 @@ export const register: Register = on => {
     await read($, paneUp)
     const up = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
     const warn = needsBand(i)
+    // The way back whenever this window is not connected and not already retrying (Jörgen 2026-10-31).
+    const back = warn || i.kind === 'idle' || i.kind === 'standby'
     const s = v.snap
     // Board Main / Indicator: what is aimed at the person (addressed, not only taken part in), one row each, under the state line.
     const forYou = s?.connection.state === 'connected' ? inbox(s.waiting, now).forYou.filter(r => r.aimed) : []
@@ -360,22 +368,24 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
         <Box flexDirection="row" columnGap={1}>
-          <Text color={PALETTE.brand} weight="bold">einweave</Text>
+          {/* The name is the status light: brand while connected, dim otherwise (Jörgen 2026-10-31). */}
+          <Text {...(s?.connection.state === 'connected' ? { color: PALETTE.brand } : { dimColor: true })} weight="bold">einweave</Text>
           <Box key="state" flexDirection="row">{runs('state', stateLine(v, now))}</Box>
           {warn && s?.connection.detail ? <Text dimColor wrap="truncate-end">{s.connection.detail}</Text> : null}
-          {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session. */}
-          {!warn ? null : i.kind === 'superseded' ? (
-            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
-              <Text color={PALETTE.brand}>Take it back</Text>
+          {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session.
+              Plain, its brackets drawn in the brand too: the pointer's inversion is then one colour, not two. */}
+          {!back ? null : i.kind === 'superseded' ? (
+            <Button key="take-back" plain label="Take it back" onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
+              <Text color={PALETTE.brand} weight="bold">[ Take it back ]</Text>
             </Button>
           ) : (
-            <Button key="connect" label="Connect" onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
-              <Text color={PALETTE.brand}>Connect</Text>
+            <Button key="connect" plain label="Connect" onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
+              <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
             </Button>
           )}
           <Box flexGrow={1} />
           {/* No hotkey: a bare letter in an empty composer would press it. */}
-          <Button key="pane" label={up ? 'Hide' : 'Show'} plain dimColor onPress={() => void togglePane($)} />
+          <Button key="pane" label={up ? '[ Hide pane ]' : '[ Show pane ]'} plain dimColor onPress={() => void togglePane($)} />
         </Box>
         {forYou.slice(0, BAND_ROWS).map(r => (
           <Box key={`band:${r.threadId}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
@@ -428,14 +438,20 @@ export const register: Register = on => {
     // Each Inbox heading counts what waits in it the same way, so the headings add up to the tab.
     const forYouCount = s?.waiting?.forYou ?? box.forYou.length
     const openCount = s?.waiting?.channel ?? box.open.length
-    const tab = shownTab(t)
+    // Not connected (save a drop still retrying): the pane is this window's einweave, so only the Session
+    // tab, the way back, shows; the tabs opened stay in state and return on connecting (Jörgen 2026-10-31).
+    const gated = !!s && !connected && i.kind !== 'reconnecting'
+    const tab = gated ? 'session' : shownTab(t)
     const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
     // Channels and channel tabs load each time they are shown: nothing pushes them.
     const showChannels = () => void update($, tabs, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
     const showOpen = (o: OpenTab) => () => void update($, tabs, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id)))
     const ch = await read($, channels)
 
+    // Escape hands the keyboard back without a ui.focus: the record stays, drawn as where the keyboard was.
     const f = await read($, focused)
+    const keys = e.props.isFocused
+    let footActs: Act[] = []
     const open = await read($, unfolded)
     const drawn: string[] = []
     const newSession = (id: string) => (press: Press) => {
@@ -452,41 +468,69 @@ export const register: Register = on => {
     const keyed = (hotkey: string, label: string) => (desk ? label : [<Text key="k" color="suggestion">{hotkey}</Text>, ` ${label}`])
 
     /**
-     * A record: its title (opens it) on the first line, `meta` on a second. Hover or keyboard focus
-     * tints it and draws its actions at the end of its last line; focused, with hotkeys. Drawn shown,
-     * the overlay must not also carry the hover reveal: the kit refuses that and the whole pane goes blank.
-     * `label` names it (the link, the button's address); `title` is how it is drawn, in the canvas's colours.
+     * A record: a one-cell mark, its title (opens it) on the first line, `meta` on a second. The mark is
+     * the keyboard's stop: the engine's focus inversion fills that cell, a bar, and leaves the title's
+     * colours alone (Jörgen 2026-10-31). Under the keyboard the title is drawn as under the pointer (bright,
+     * bold, `inverse: false`: not the pointer's inversion) and its dim meta a shade lighter, as under the
+     * pointer (Jörgen 2026-10-31). The pointer reveals the actions at the end of the
+     * last line; the keyboard's record has them in the footer instead, on hotkeys. Escape leaves a grey
+     * mark where the keyboard will land again. `label` names it (the link, the button's address); `title`
+     * is how it is drawn, in the canvas's colours.
      */
     const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; acts: Act[] }) => {
       if (desk) return deskRecord(r)
-      drawn.push(`open:${r.id}`)
-      const hot = f === r.id
+      drawn.push(`mark:${r.id}`)
+      const hot = keys && f === r.id
+      const away = !keys && f === r.id
+      if (hot) footActs = r.acts
       const title = r.title ?? [{ text: r.label, weight: 'semibold' as const }]
       return (
-        <Box key={`rec:${r.id}`} flexDirection="column" backgroundColor={hot ? HOVER_BG : undefined} hover={{ backgroundColor: HOVER_BG }}>
+        <Box key={`rec:${r.id}`} flexDirection="column">
           <Box flexDirection="row" height={1} overflow="hidden">
-            <Button key={`open:${r.id}`} plain label={r.label} dimColor={r.dim} onPress={r.onOpen}>
-              {runs(`t:${r.id}`, r.dim ? title.map(g => ({ text: g.text, weight: g.weight })) : title)}
+            {/* Never shrunk: a long title would take the mark's column (seen 2026-10-31). */}
+            <Box flexShrink={0} flexDirection="row">
+              <Button key={`mark:${r.id}`} plain label={r.label} onPress={r.onOpen}>
+                {away ? <Text backgroundColor={MARK_AWAY}> </Text> : ' '}
+              </Button>
+              <Text> </Text>
+            </Box>
+            <Button key={`open:${r.id}`} plain label={r.label} dimColor={r.dim} hover={{ inverse: false, bold: true, color: '#ffffff' }} onPress={r.onOpen}>
+              {hot
+                ? title.map((g, n) => (
+                    <Text key={`t:${r.id}:${n}`} bold color={g.tone && g.tone !== 'dim' ? PALETTE[g.tone] : '#ffffff'}>
+                      {g.text}
+                    </Text>
+                  ))
+                : runs(`t:${r.id}`, r.dim ? title.map(g => ({ text: g.text, weight: g.weight })) : title)}
             </Button>
           </Box>
           {r.meta ? (
             <Box flexDirection="row" height={1} overflow="hidden">
-              {runs(`m:${r.id}`, r.meta)}
+              <Text>  </Text>
+              {r.meta.map((g, n) =>
+                g.tone === 'dim' && hot ? (
+                  <Text key={`m:${r.id}:${n}`} weight={g.weight} color={META_LIT}>
+                    {g.text}
+                  </Text>
+                ) : g.tone === 'dim' ? (
+                  <Text key={`m:${r.id}:${n}`} weight={g.weight} dimColor hover={{ dimColor: false, color: META_LIT }}>
+                    {g.text}
+                  </Text>
+                ) : (
+                  <Text key={`m:${r.id}:${n}`} {...paint(g.tone)} weight={g.weight}>
+                    {g.text}
+                  </Text>
+                ),
+              )}
             </Box>
           ) : null}
           {r.acts.length ? (
-            <Box position="absolute" top={r.meta ? 1 : 0} right={0} flexDirection="row" backgroundColor={HOVER_BG} {...(hot ? {} : { display: 'none' as const, hover: { display: 'flex' as const } })}>
+            <Box position="absolute" top={r.meta ? 1 : 0} right={0} flexDirection="row" display="none" hover={{ display: 'flex' }}>
               {r.acts.map(a => (
                 <Box key={`act:${a.key}:${r.id}`} flexDirection="row">
                   {/* A space as text, not a gap: columnGap's cells let the record show through. */}
                   <Text> </Text>
-                  {hot ? (
-                    <Button key={`${a.key}:${r.id}`} hotkey={a.hotkey} onPress={a.onPress}>
-                      <Text color="suggestion">{a.hotkey}</Text> {a.label}
-                    </Button>
-                  ) : (
-                    <Button key={`${a.key}:${r.id}`} label={a.label} onPress={a.onPress} />
-                  )}
+                  <Button key={`${a.key}:${r.id}`} label={a.label} onPress={a.onPress} />
                 </Box>
               ))}
             </Box>
@@ -540,41 +584,51 @@ export const register: Register = on => {
       </Box>
     )
 
-    // Board Main: the pane's own name in the brand colour; what went wrong under it, with the way back.
+    // Board Main: the pane's own name in the brand colour, what went wrong beside it and the way back at
+    // the line's right end (wrapping when the pane is narrow); the detail under it.
     const header = (
       <Box flexDirection="column">
-        <Text color={PALETTE.brand} weight="bold">einweave</Text>
-        {s && !connected ? <Box flexDirection="row">{runs('state', stateLine(v, now))}</Box> : null}
+        <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+          {/* The name is the status light: brand while connected, dim otherwise (Jörgen 2026-10-31). */}
+          <Text key="name" {...(connected ? { color: PALETTE.brand } : { dimColor: true })} weight="bold">einweave</Text>
+          {!s || !connected ? <Box key="state" flexDirection="row">{runs('state', stateLine(v, now))}</Box> : null}
+          {/* The way back on the right edge. */}
+          <Box flexGrow={1} />
+          {s && !connected ? (
+            i.kind === 'superseded' ? (
+              <Button key="take-back" plain label="Take it back" onPress={() => void takeBack($).then(toastFirst($))}>
+                <Text color={PALETTE.brand} weight="bold">[ Take it back ]</Text>
+              </Button>
+            ) : (
+              <Button key="connect" plain label="Connect" onPress={() => void connect($).then(toastFirst($))}>
+                <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
+              </Button>
+            )
+          ) : null}
+        </Box>
         {s && !connected && s.connection.detail ? <Text dimColor>{s.connection.detail}</Text> : null}
-        {!s ? <Box flexDirection="row">{runs('state', stateLine(v, now))}</Box> : null}
         {!s && v.error ? <Text dimColor>{v.error}</Text> : null}
-        {s && !connected ? (
-          i.kind === 'superseded' ? (
-            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(toastFirst($))}>
-              <Text color={PALETTE.brand}>Take it back</Text>
-            </Button>
-          ) : (
-            <Button key="connect" label="Connect" onPress={() => void connect($).then(toastFirst($))}>
-              <Text color={PALETTE.brand}>Connect</Text>
-            </Button>
-          )
-        ) : null}
       </Box>
     )
-    if (!s) return header
+    if (!s) return <Box key="pane" flexDirection="column" paddingX={PANE_PAD}>{header}</Box>
 
     // Tabs (board Main): the shown one a filled pill, bold; the rest dim. A desktop draws its own
     // buttons and no fill, so there dimness alone says which is shown (decision E3).
     const tabButton = (key: string, label: string, id: string, onPress: () => void) =>
       tab === id ? (
-        <Button key={key} label={label} plain onPress={onPress}>
+        // No pointer inversion: it would turn the filled pill dark, a change on the tab already shown (Jörgen 2026-10-31).
+        <Button key={key} label={label} plain hover={{ inverse: false }} onPress={onPress}>
           <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{` ${label} `}</Text>
         </Button>
       ) : (
         <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
       )
 
-    const tabRow = (
+    const tabRow = gated ? (
+      <Box flexDirection="row" columnGap={1} marginTop={1}>
+        {tabButton('tab:session', 'Session', 'session', show('session'))}
+      </Box>
+    ) : (
       <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
         {tabButton('tab:inbox', `Inbox ${connected ? total : 0}`, 'inbox', show('inbox'))}
         {tabButton('tab:held', `Held ${s.holds.length}`, 'held', show('held'))}
@@ -670,6 +724,7 @@ export const register: Register = on => {
       )
       body = (
         <Box flexDirection="column" rowGap={1}>
+          {gated ? <Text key="gate" dimColor>Connect to see the Inbox, held threads and channels.</Text> : null}
           <Box flexDirection="column">
             {row('state', 'State', connected ? <Text color={PALETTE.brand}>● connected</Text> : runs('state', stateLine(v, now)))}
             {row('agent', 'Agent', <Text>{sess.agent ? `@${sess.agent}` : '-'}</Text>)}
@@ -707,7 +762,10 @@ export const register: Register = on => {
             {connected ? (
               <Button key="disconnect" label="Disconnect" onPress={act('disconnect', {})} />
             ) : (
-              <Button key="connect-s" label="Connect" onPress={() => void connect($).then(toastFirst($))} />
+              // The header's way back, drawn the same: plain, bold brand brackets (Jörgen 2026-10-31).
+              <Button key="connect-s" plain label="Connect" onPress={() => void connect($).then(toastFirst($))}>
+                <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
+              </Button>
             )}
             <Button key="logout" label="Sign out" dimColor onPress={act('logout', {})} />
           </Box>
@@ -807,13 +865,31 @@ export const register: Register = on => {
     }
 
     stops = drawn
+    const rule = (key: string) => <Text key={key} color={RULE}>{'─'.repeat(Math.max(1, e.props.bodyColumns - 2 * PANE_PAD))}</Text>
+    // The keyboard's record's actions, on their hotkeys: one place to look, as a TUI's key bar.
+    const footer = footActs.length ? (
+      <Box key="footer" flexDirection="row">
+        {footActs.map((a, n) => (
+          <Box key={`footact:${a.key}`} flexDirection="row">
+            {n ? <Text dimColor> · </Text> : null}
+            <Button key={`foot:${a.key}`} plain hotkey={a.hotkey} label={a.label} onPress={a.onPress} />
+          </Box>
+        ))}
+        <Text dimColor> · enter open · esc back</Text>
+      </Box>
+    ) : null
     return (
-      <Box flexDirection="column">
+      // Docked, at least the pane's height, the body growing into it: the footer sits on the pane's last
+      // row. Inline the frame fits the tree, so there it would only take rows from the transcript.
+      <Box key="pane" flexDirection="column" paddingX={PANE_PAD} minHeight={e.props.placement === 'dock' ? e.props.scroll.bodyRows : undefined}>
         {header}
         {tabRow}
-        <Box flexDirection="column" marginTop={1}>
+        {rule('rule:tabs')}
+        <Box flexDirection="column" marginTop={1} flexGrow={1}>
           {body}
         </Box>
+        {footer ? rule('rule:footer') : null}
+        {footer}
       </Box>
     )
   })

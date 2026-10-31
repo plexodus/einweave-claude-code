@@ -229,20 +229,22 @@ describe("the Inbox and thread tabs", () => {
   });
 
   test("recordOf: the record an element belongs to; tabs, folds and the rest belong to none", () => {
-    expect([recordOf("open:t1"), recordOf("take:t1"), recordOf("new:ch:c1"), recordOf("release:t1"), recordOf("join:ch:c1")]).toEqual(["t1", "t1", "ch:c1", "t1", "ch:c1"]);
-    expect([recordOf("tab:inbox"), recordOf("fold:forYou"), recordOf(undefined), recordOf("")]).toEqual(["", "", "", ""]);
+    expect([recordOf("mark:t1"), recordOf("open:t1"), recordOf("take:t1"), recordOf("new:ch:c1"), recordOf("release:t1"), recordOf("join:ch:c1")]).toEqual(["t1", "t1", "t1", "ch:c1", "t1", "ch:c1"]);
+    expect([recordOf("tab:inbox"), recordOf("fold:forYou"), recordOf("foot:take"), recordOf(undefined), recordOf("")]).toEqual(["", "", "", "", ""]);
   });
 
-  test("focusTarget: an action is no stop -- down goes on to the next stop, up back to its own title; past the last stop it stays", () => {
-    const stops = ["open:a", "open:b", "fold:forYou", "open:c"];
-    expect(focusTarget(stops, "open:a", "take:a")).toBe("open:b");
-    expect(focusTarget(stops, "open:b", "take:b")).toBe("fold:forYou");
-    expect(focusTarget(stops, "open:b", "new:a")).toBe("open:a");
-    expect(focusTarget(stops, "fold:forYou", "release:b")).toBe("open:b");
+  test("focusTarget: a record's mark is its only stop -- its title and actions are none: down goes on to the next stop, up back to its own mark; past the last stop it stays", () => {
+    const stops = ["mark:a", "mark:b", "fold:forYou", "mark:c"];
+    expect(focusTarget(stops, "mark:a", "open:a")).toBe("mark:b");
+    expect(focusTarget(stops, "mark:a", "take:a")).toBe("mark:b");
+    expect(focusTarget(stops, "mark:b", "open:b")).toBe("fold:forYou");
+    expect(focusTarget(stops, "mark:b", "open:a")).toBe("mark:a");
+    expect(focusTarget(stops, "fold:forYou", "release:b")).toBe("mark:b");
+    expect(focusTarget(stops, "", "open:b")).toBe("mark:b");
+    expect(focusTarget(stops, "mark:c", "open:c")).toBe("open:c");
     expect(focusTarget(stops, "open:c", "take:c")).toBe("take:c");
-    expect(focusTarget(stops, "take:c", "new:c")).toBe("new:c");
-    // Titles, tabs, the engine's own stops, and actions of records not drawn pass as they came.
-    expect([focusTarget(stops, "", "open:b"), focusTarget(stops, "", "tab:held"), focusTarget(stops, "", undefined), focusTarget(stops, "", "take:zz")]).toEqual(["open:b", "tab:held", undefined, "take:zz"]);
+    // Marks, tabs, the footer, the engine's own stops, and records not drawn pass as they came.
+    expect([focusTarget(stops, "", "mark:b"), focusTarget(stops, "", "tab:held"), focusTarget(stops, "mark:c", "foot:take"), focusTarget(stops, "", undefined), focusTarget(stops, "", "take:zz")]).toEqual(["mark:b", "tab:held", "foot:take", undefined, "take:zz"]);
   });
 
   test("ago: one unit, spaced as the canvas writes it", () => {
