@@ -299,6 +299,8 @@ export const register: Register = on => {
   let stops: string[] = []
   let last = ''
   let win: ThreadWindow | null = null
+  // A nudge of the engine's window to its one-row-in rest is out; cleared when it lands.
+  let nudging = false
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The command first: a reload runs this again while the plugin's server may be slow to answer,
@@ -382,6 +384,11 @@ export const register: Register = on => {
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const w = win
     if (!w) return next(e)
+    // Our own nudge (render's): the posts stay, only the engine comes one row in.
+    if (e.origin.kind === 'plugin') {
+      nudging = false
+      return next({ ...e, offset: 1 })
+    }
     const sc = (await read($, scrolls))[w.id]
     const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
     await update($, scrolls, m => ({ ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }))
@@ -1033,6 +1040,19 @@ export const register: Register = on => {
         <Text dimColor>{`${footActs.length ? ' · ' : ''}enter open · esc back`}</Text>
       </Box>
     ) : null
+    // The engine opens the window at row 0, which shows the top spacer and cuts the footer's last row
+    // (live 2026-10-31): bring it one row in before the person has to scroll.
+    if (own && e.props.scroll.offset !== 1 && !nudging) {
+      nudging = true
+      void $.ui.scroll({ to: 'end', in: PANE }).then(
+        r => {
+          if (r.deny) nudging = false
+        },
+        () => {
+          nudging = false
+        },
+      )
+    }
     if (own)
       return (
         // Exactly the window and a spacer row each end: the engine, held one row in, shows all but the
