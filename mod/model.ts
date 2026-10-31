@@ -5,6 +5,22 @@
  */
 import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
 
+/**
+ * The design canvas's colours (https://claude.ai/artifact/4JomhfdVJR8goTtoaaqHNR, every board).
+ * Accents only: body text and dim text follow the person's theme, so a light terminal stays legible.
+ */
+export const PALETTE = { brand: '#4cc3ad', amber: '#e8b04a', blue: '#7ab4ff', red: '#f07a7a', pillBg: '#e4e4e4', pillFg: '#121212' } as const
+
+/** A run's colour by meaning: an accent, or `dim` (the theme's dim text). */
+export type Tone = 'brand' | 'amber' | 'blue' | 'red' | 'dim'
+
+/** One run of a line, in its tone and weight (the canvas: 700 labels and headings, 600 thread titles). */
+export interface Seg {
+  text: string
+  tone?: Tone
+  weight?: 'semibold' | 'bold'
+}
+
 /** A drop shorter than this shows as "reconnecting", not in the band (plan decision 5). */
 export const BAND_GRACE_MS = 10_000
 
@@ -97,6 +113,39 @@ export function indicator(v: View, now: number): Indicator {
 /** The band shows only while something needs the person: a lasting disconnect, or a takeover by another window. */
 export function needsBand(i: Indicator): boolean {
   return i.kind === 'disconnected' || i.kind === 'superseded'
+}
+
+/**
+ * The band's and the pane header's state after the `einweave` label (boards Main, Indicator,
+ * ConnectFlow): what waits when connected, amber for what is aimed at the person, red when
+ * messages are not arriving.
+ */
+export function stateLine(v: View, now: number): Seg[] {
+  const i = indicator(v, now)
+  switch (i.kind) {
+    case 'connected': {
+      const s = v.snap!
+      const out: Seg[] = [{ text: `holds ${s.holds.length}` }]
+      const w = s.waiting
+      if (w?.forYou) out.push({ text: ' · ', tone: 'dim' }, { text: `${w.forYou} for you`, tone: 'amber' })
+      if (w?.channel) out.push({ text: ' · ', tone: 'dim' }, { text: `${w.channel} unowned` })
+      return out
+    }
+    case 'reconnecting':
+      return [{ text: '↻ reconnecting', tone: 'amber' }]
+    case 'disconnected':
+      return [{ text: '○ disconnected · messages are not arriving', tone: 'red' }]
+    case 'superseded':
+      return [{ text: '○ moved to another window · messages arrive there', tone: 'red' }]
+    case 'standby':
+      return [{ text: 'standby · another window has this session', tone: 'amber' }]
+    case 'idle':
+      return [{ text: '○ not connected', tone: 'dim' }]
+    case 'no-answer':
+      return [{ text: 'not answering', tone: 'red' }]
+    case 'starting':
+      return [{ text: 'starting', tone: 'dim' }]
+  }
 }
 
 export type Action =
@@ -241,33 +290,42 @@ export const EMPTY_TABS: PaneTabs = { tab: 'inbox', open: [] }
 /** How long ago, in one short unit: `40s`, `12m`, `3h`, `2d`. */
 export function ago(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86_400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86_400)}d`
+  // The canvas's units: `20 s`, `25 min`, `2 h`.
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.floor(s / 60)} min`
+  if (s < 86_400) return `${Math.floor(s / 3600)} h`
+  return `${Math.floor(s / 86_400)} d`
 }
 
 export interface InboxRow {
   threadId: string
+  /** Addressed to the person: the band lists only these (board Indicator: "only while something needs you"). */
+  aimed: boolean
   title: string
   channel: string
-  /** `unheld · addressed to you`, `parked · you took part` ... */
+  /** `addressed to you · unheld`, `you took part · holder offline` ... */
   meta: string
   /** `3h`: since the thread's last post; null when the server sent no time. */
   age: string | null
   /** Quiet longer than OLD_MS: drawn under the "Older" fold. */
   old: boolean
+  /** Quiet STALE_MS or longer: its age is drawn amber. */
+  stale: boolean
 }
 
-const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts in your channel' }
+const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts' }
+const HOLD: Record<UiWaitingItem['hold'], string> = { unheld: 'unheld', parked: 'holder offline', held: 'held' }
+
+/** Quiet this long, a waiting thread's age is drawn amber (board Unowned: `1 h 10 min` amber, `25 min` not). */
+export const STALE_MS = 3_600_000
 
 /** A thread quiet this long folds under "Older (n)". */
 export const OLD_MS = 7 * 86_400_000
 
 /** How long since `iso`, and whether that is past OLD_MS; an absent or unreadable time is neither. */
-export function quietFor(iso: string | null | undefined, now: number): { age: string | null; old: boolean } {
+export function quietFor(iso: string | null | undefined, now: number): { age: string | null; old: boolean; stale: boolean } {
   const t = iso ? Date.parse(iso) : NaN
-  return Number.isFinite(t) ? { age: ago(now - t), old: now - t > OLD_MS } : { age: null, old: false }
+  return Number.isFinite(t) ? { age: ago(now - t), old: now - t > OLD_MS, stale: now - t >= STALE_MS } : { age: null, old: false, stale: false }
 }
 
 /**
@@ -276,7 +334,7 @@ export function quietFor(iso: string | null | undefined, now: number): { age: st
  */
 export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: InboxRow[]; open: InboxRow[] } {
   const rows = waiting?.top ?? []
-  const row = (w: UiWaitingItem): InboxRow => ({ threadId: w.threadId, title: w.title, channel: w.channel, meta: `${w.hold} · ${WHY[w.why]}`, ...quietFor(w.quietSince, now) })
+  const row = (w: UiWaitingItem): InboxRow => ({ threadId: w.threadId, aimed: w.why === 'addressed', title: w.title, channel: w.channel, meta: `${WHY[w.why]} · ${HOLD[w.hold]}`, ...quietFor(w.quietSince, now) })
   return { forYou: rows.filter(w => w.why !== 'channel').map(row), open: rows.filter(w => w.why === 'channel').map(row) }
 }
 
@@ -381,22 +439,24 @@ export function waitingIn(c: ChannelCounts | undefined): number {
 /** A channel row's meta: `2 waiting · oldest 3h · 4 open`; "counts unknown" when the server did not say (never 0). */
 export function channelMeta(c: ChannelCounts | undefined, now: number): string {
   if (!c) return 'counts unknown'
-  const parts: string[] = []
+  // Board ChannelsTab: `12 open · 2 unowned · oldest waiting 2 h`.
+  const parts = [`${c.open} open`]
   const w = waitingIn(c)
-  if (w) parts.push(`${w} waiting`)
-  if (w && c.oldestWaitingAt && Number.isFinite(Date.parse(c.oldestWaitingAt))) parts.push(`oldest ${ago(now - Date.parse(c.oldestWaitingAt))}`)
-  parts.push(`${c.open} open`)
+  if (w) parts.push(`${w} unowned`)
+  if (w && c.oldestWaitingAt && Number.isFinite(Date.parse(c.oldestWaitingAt))) parts.push(`oldest waiting ${ago(now - Date.parse(c.oldestWaitingAt))}`)
   return parts.join(' · ')
 }
 
 /** Who holds a thread, for its row: here, another session (online or not), or nobody. Absent hold (older server): null. */
-export function holdBadge(hold: ChannelThread['hold'], heldHere: boolean): { text: string; color: 'cyan' | 'yellow' | undefined } | null {
-  if (heldHere) return { text: 'held here', color: 'cyan' }
+export function holdBadge(hold: ChannelThread['hold'], heldHere: boolean): { text: string; tone: Tone | undefined; asks: boolean } | null {
+  // Board ChannelsTab: brand for yours, amber for nobody's, dim for another session's.
+  if (heldHere) return { text: 'held by you', tone: 'brand', asks: false }
   if (!hold) return null
   const who = hold.holder?.label ?? 'another session'
-  if (hold.state === 'unheld') return { text: 'unheld', color: 'yellow' }
-  if (hold.state === 'parked') return { text: `parked, ${who} offline`, color: 'yellow' }
-  return { text: `held by ${who} ${hold.holder?.online ? 'online' : 'offline'}`, color: undefined }
+  if (hold.state === 'unheld') return { text: 'unheld', tone: 'amber', asks: false }
+  if (hold.state === 'parked' || !hold.holder?.online) return { text: `held by ${who} · offline`, tone: 'dim', asks: false }
+  // From an online holder, Take asks the person first: the button says so.
+  return { text: `held by ${who} · online`, tone: 'dim', asks: true }
 }
 
 /** A channel tab shows at most this many threads; the web app has the rest. */

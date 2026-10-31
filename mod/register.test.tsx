@@ -43,12 +43,12 @@ type Call = { tool: string; args: Record<string, unknown> }
  */
 function engine(
   on: Parameters<Parameters<typeof test>[1]>[1],
-  o: { polled?: UiSnapshot | null; polledRev?: number; connectAfterMs?: number; pushed?: string[]; pushes?: string[][]; stayOpen?: boolean; hang?: boolean; answer?: (c: Call) => unknown } = {},
+  o: { now?: number; polled?: UiSnapshot | null; polledRev?: number; connectAfterMs?: number; pushed?: string[]; pushes?: string[][]; stayOpen?: boolean; hang?: boolean; answer?: (c: Call) => unknown } = {},
 ) {
   const calls: Call[] = []
   const spawns: { env?: Record<string, string> }[] = []
   const toasts: string[] = []
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, o.now === undefined ? undefined : { now: o.now })
   // The server connects on its own, connectAfterMs after the session starts; until then a call fails as Claude Code's does.
   let connected = !o.connectAfterMs
   on('session.start', () => {
@@ -108,9 +108,18 @@ function engine(
   return { calls, spawns, toasts, tails, clock, registered, pane }
 }
 
-/** What the band says of einweave: its first line, the counts or what went wrong. */
-const said = async (band: { find(q: object): Promise<{ children?: unknown[] } | undefined> }) =>
-  (await band.find({ type: 'Text', text: /^einweave/ }))?.children?.[0]
+/** What the band says of einweave: its label, then its state line (the counts or what went wrong), as read. */
+const said = async (band: { find(q: object): Promise<{ text?: string } | undefined> }) => {
+  const state = await band.find({ key: 'state' })
+  return state ? `einweave · ${state.text}` : undefined
+}
+
+/** The shown tab (board Main): a filled pill, bold. A desktop draws its own button, so it is also not dim. */
+const PILL = { backgroundColor: '#e4e4e4', color: '#121212', weight: 'bold' }
+const shownPill = (b: { props: object; children?: unknown[] } | undefined) => {
+  expect(b?.props).not.toHaveProperty('dimColor')
+  expect((b?.children?.[0] as { props?: object } | undefined)?.props).toMatchObject(PILL)
+}
 
 const start = async ($: Parameters<Parameters<typeof test>[1]>[0], clock: { settle(): Promise<void> }) => {
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
@@ -130,7 +139,9 @@ test('the band is always there: what waits, dim, and Show / Hide for the pane (n
   await start($, clock)
   const band = await $.ui.mount(BAND)
   expect(await said(band)).toBe('einweave · holds 1 · 2 for you')
-  expect(await band.find({ type: 'Text', text: /^einweave/ })).toMatchObject({ props: { dimColor: true } })
+  // The canvas (boards Main, Indicator): the label bold in the brand colour, what is aimed at you amber.
+  expect(await band.find({ type: 'Text', text: 'einweave' })).toMatchObject({ props: { color: '#4cc3ad', weight: 'bold' } })
+  expect(await band.find({ type: 'Text', text: '2 for you' })).toMatchObject({ props: { color: '#e8b04a' } })
   expect(await band.find({ key: 'connect' })).toBeUndefined()
   expect(await band.find({ key: 'pane' })).toMatchObject({ props: { label: 'Show' } })
   // A bare letter in an empty composer presses a band Button that has a hotkey.
@@ -185,12 +196,13 @@ test('a drop shows in the band only after 10 s, with Connect; the hint says reco
   expect(await band.find({ type: 'Text', text: /disconnected/ })).toBeUndefined()
   await band.unmount()
   const hint = await $.ui.mount(BAND)
-  expect(await said(hint)).toBe('einweave · reconnecting')
+  expect(await said(hint)).toBe('einweave · ↻ reconnecting')
   await hint.unmount()
   // Drawn once and left on screen: the band appears when the grace period ends, with no other change.
   band = await $.ui.mount(BAND)
   await clock.advance(10_100)
-  expect((await band.find({ type: 'Text', text: /einweave/ }))?.children).toEqual(['einweave · disconnected'])
+  expect(await said(band)).toBe('einweave · ○ disconnected · messages are not arriving')
+  expect(await band.find({ type: 'Text', text: /disconnected/ })).toMatchObject({ props: { color: '#f07a7a' } })
   await band.press({ key: 'connect' })
   expect(calls.some(c => c.tool === 'connect')).toBe(true)
   await band.unmount()
@@ -273,10 +285,10 @@ test('a window another one took over says so at once, and its band takes it back
   const { calls, clock } = engine(on, { polled: GONE })
   await start($, clock)
   const hint = await $.ui.mount(BAND)
-  expect(await said(hint)).toBe('einweave · moved to another window')
+  expect(await said(hint)).toBe('einweave · ○ moved to another window · messages arrive there')
   await hint.unmount()
   const band = await $.ui.mount(BAND)
-  expect((await band.find({ type: 'Text', text: /einweave/ }))?.children).toEqual(['einweave · moved to another window'])
+  expect(await band.find({ type: 'Text', text: /moved to another window/ })).toMatchObject({ props: { color: '#f07a7a' } })
   // A bare digit in an empty composer presses a band Button that has a hotkey: this one must not have one.
   expect((await band.find({ type: 'Button', key: 'take-back' }))?.props.hotkey).toBeUndefined()
   await band.press({ key: 'take-back' })
@@ -318,8 +330,8 @@ test('on mobile, which has no fields, the pane shows the name and scope as text'
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
   await ui.press({ key: 'tab:session' })
-  expect(await ui.find({ type: 'Text', text: 'name probe' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'scope none' })).toBeDefined()
+  expect(await ui.find({ key: 'row:label' })).toMatchObject({ text: expect.stringMatching(/^Session\s*probe$/) })
+  expect(await ui.find({ key: 'row:scope' })).toMatchObject({ text: expect.stringMatching(/^Scope\s*none · only threads this session holds$/) })
   await ui.unmount()
 })
 
@@ -330,7 +342,7 @@ test('a window that does not hold the session shows its name, with no field to r
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab:session' })
   expect(await ui.find({ type: 'Input' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: 'name probe' })).toBeDefined()
+  expect(await ui.find({ key: 'row:label' })).toMatchObject({ text: expect.stringMatching(/^Session\s*probe$/) })
   await ui.unmount()
 })
 
@@ -426,20 +438,33 @@ const WAITING: UiSnapshot = {
   },
 }
 
-test('the Inbox is the default tab: For you, then Open, each with how long it has been quiet; the tab and each heading count all that waits, not the rows drawn', async ($, on) => {
-  const { clock } = engine(on, { polled: WAITING })
+test('the Inbox is the default tab: For you, then Unowned, each with how long it has been quiet; the tab and each heading count all that waits, not the rows drawn', async ($, on) => {
+  // 10:00: Older ask quiet 2 h (stale), Newer ask 10 min.
+  const { clock } = engine(on, { polled: WAITING, now: Date.parse('2026-10-30T10:00:00.000Z') })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ key: 'tab:inbox' })).toMatchObject({ props: { label: 'Inbox 29', variant: 'primary' } })
-  // A desktop draws no variant: the tabs not shown are dim, so the shown one stands out everywhere.
-  expect(await ui.find({ key: 'tab:inbox' })).not.toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ key: 'tab:inbox' })).toMatchObject({ props: { label: 'Inbox 29' } })
+  shownPill(await ui.find({ key: 'tab:inbox' }))
   for (const k of ['tab:held', 'tab:channels', 'tab:session']) expect(await ui.find({ key: k })).toMatchObject({ props: { dimColor: true } })
+  // The pane's own name, as the canvas draws it.
+  expect(await ui.find({ type: 'Text', text: 'einweave' })).toMatchObject({ props: { color: '#4cc3ad', weight: 'bold' } })
   const keys = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('open:'))
   expect(keys).toEqual([`open:${T_OLD}`, `open:${T_NEW}`, `open:${T_CH}`])
   // Each heading says how many wait in it (the server's counts), so they add up to the tab: 25 + 4 = 29.
-  expect(await ui.find({ type: 'Text', text: 'For you 25' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'Open 4' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^#ops · parked · you took part · \d+[smhd]$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'For you 25' })).toMatchObject({ props: { weight: 'bold' } })
+  expect(await ui.find({ type: 'Text', text: 'questions and messages aimed at you' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: 'Unowned 4' })).toMatchObject({ props: { weight: 'bold' } })
+  expect(await ui.find({ type: 'Text', text: 'nobody holds these · oldest first' })).toBeDefined()
+  // Board Unowned: `#channel` in the brand colour, the title semibold, then why and the hold dim; a stale age amber.
+  const row = await ui.find({ key: `open:${T_OLD}` })
+  expect(row?.children).toMatchObject([
+    { props: { color: '#4cc3ad' }, children: ['#ops'] },
+    { children: [' '] },
+    { props: { weight: 'semibold' }, children: ['Older ask'] },
+  ])
+  expect(await ui.find({ type: 'Text', text: 'you took part · holder offline' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: '2 h' })).toMatchObject({ props: { color: '#e8b04a', weight: 'semibold' } })
+  expect(await ui.find({ type: 'Text', text: '10 min' })).toMatchObject({ props: { dimColor: true } })
   await ui.unmount()
 })
 
@@ -480,14 +505,21 @@ test('View opens a thread tab read through ui_thread (never read_thread, which w
   await clock.settle()
   expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_OLD }])
   expect(calls.some(c => c.tool === 'read_thread')).toBe(false)
-  expect(await ui.find({ key: `tab:${T_OLD}` })).toMatchObject({ props: { variant: 'primary' } })
+  shownPill(await ui.find({ key: `tab:${T_OLD}` }))
+  // Unheld: amber, Claude has not seen it; Refresh, since nothing pushes it here.
+  expect(await ui.find({ type: 'Text', text: 'not held here · Claude has not seen it · Take brings it here' })).toMatchObject({ props: { color: '#e8b04a' } })
+  expect(await ui.find({ key: `refresh:${T_OLD}` })).toMatchObject({ props: { label: '↻ Refresh' } })
+  expect(await ui.find({ type: 'Text', text: /^Unheld: not pushed here\. Updated \d\d:\d\d · ↻ to refresh\.$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'question' })).toMatchObject({ props: { color: '#e8b04a' } })
+  expect(await ui.find({ type: 'Text', text: 'Kevin' })).toMatchObject({ props: { weight: 'bold' } })
+  expect((await ui.findAll({ type: 'Text', text: 'Older ask' })).some(t => (t.props as { weight?: string }).weight === 'bold')).toBe(true)
   // Messages are Markdown, as Claude's own replies draw (plan decision 1); a title stays plain Text.
   expect(await ui.find({ key: `md:${T_OLD}:0` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at 14:00?' } })
   expect(await ui.find({ type: 'Text', text: '12 older replies not shown: the web app has them.' })).toBeDefined()
   expect(await ui.find({ key: `take:${T_OLD}` })).toBeDefined()
   await ui.press({ key: `close:${T_OLD}` })
   expect(await ui.find({ key: `tab:${T_OLD}` })).toBeUndefined()
-  expect(await ui.find({ key: 'tab:inbox' })).toMatchObject({ props: { variant: 'primary' } })
+  shownPill(await ui.find({ key: 'tab:inbox' }))
   await ui.unmount()
 })
 
@@ -574,16 +606,17 @@ for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     await ui.press({ key: 'tab:channels' })
     await clock.settle()
     expect(calls.filter(c => c.tool === 'ui_channels').map(c => c.args)).toEqual([{}])
-    expect(await ui.find({ key: 'tab:channels' })).toMatchObject({ props: { label: 'Channels 2', variant: 'primary' } })
-    expect(await ui.find({ type: 'Text', text: /^2 waiting · oldest \d+[smhd] · 4 open$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '2 waiting · 2 open · not a member' })).toBeDefined()
-    // Only the channel it follows without membership offers Join on its row; a desktop draws no row actions (no hover).
-    expect((await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('join:'))).toEqual(surface === 'terminal' ? [`join:ch:${CH_FOLLOW}`] : [])
+    // Board ChannelsTab: the tab has no count; an intro line; `#name` brand, its counts under it.
+    expect(await ui.find({ key: 'tab:channels' })).toMatchObject({ props: { label: 'Channels' } })
+    shownPill(await ui.find({ key: 'tab:channels' }))
+    expect(await ui.find({ type: 'Text', text: '@bellman is in 3 channels. Every session of the agent shares them.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^4 open · 2 unowned · oldest waiting \d+ (s|min|h|d)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '2 open · 2 unowned · following, not a member' })).toBeDefined()
+    // Joining is the web app's (decision Q4, 2026-10-31): no Join anywhere here.
+    expect((await ui.findAll({ type: 'Button' })).some(b => String(b.key).startsWith('join'))).toBe(false)
+    expect(await ui.find({ type: 'Text', text: 'Join, leave and private channels: in the web app.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'counts unknown' })).toBeDefined()
-    // A terminal row is one line: a dot parts the name from its meta (`#ops · 2 waiting …`); a desktop's meta has its own line.
-    const texts = (n: unknown): string[] =>
-      typeof n === 'string' ? [n] : Array.isArray(n) ? n.flatMap(texts) : n && typeof n === 'object' ? texts((n as { children?: unknown }).children ?? []) : []
-    for (const id of [CH_OPS, CH_FOLLOW, CH_BARE]) expect(texts(await ui.find({ key: `rec:ch:${id}` })).includes('·')).toBe(surface === 'terminal')
+    if (surface === 'terminal') expect(await ui.find({ type: 'Text', text: '#ops' })).toMatchObject({ props: { color: '#4cc3ad', weight: 'semibold' } })
     expect(calls.every(c => PERSON_ONLY.includes(c.tool))).toBe(true)
     await ui.unmount()
   })
@@ -599,7 +632,9 @@ test('a failed ui_channels shows its error, never "isn\'t in any channels"; an e
   expect(await ui.find({ type: 'Text', text: 'This einweave server is too old for the Channels tab' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /isn't in any channels/ })).toBeUndefined()
   answer = text(JSON.stringify({ agent: 'bellman', channels: [] }))
-  await ui.press({ key: 'refresh:channels' })
+  // Shown again, it reads again: nothing pushes the list, and the canvas has no Refresh.
+  await ui.press({ key: 'tab:inbox' })
+  await ui.press({ key: 'tab:channels' })
   await clock.settle()
   expect(await ui.find({ type: 'Text', text: "@bellman isn't in any channels · set up in the web app" })).toBeDefined()
   await ui.unmount()
@@ -617,19 +652,25 @@ test('View on a channel opens its tab via ui_channel: open threads first, resolv
   await ui.press({ key: `open:ch:${CH_OPS}` })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'ui_channel').map(c => c.args)).toEqual([{ channel_id: CH_OPS }])
-  expect(await ui.find({ key: `tab:${CH_OPS}` })).toMatchObject({ props: { label: '#ops', variant: 'primary' } })
+  expect(await ui.find({ key: `tab:${CH_OPS}` })).toMatchObject({ props: { label: '#ops' } })
+  shownPill(await ui.find({ key: `tab:${CH_OPS}` }))
+  expect(await ui.find({ type: 'Text', text: 'Open threads, latest activity first.' })).toBeDefined()
   const views = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('open:'))
   expect(views).toEqual(['open:t1', 'open:u1', 'open:p1', 'open:h1', 'open:r1'])
   // SNAP holds t1 in this session.
-  expect(await ui.find({ type: 'Text', text: 'held here' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'held by you' })).toMatchObject({ props: { color: '#4cc3ad' } })
+  expect(await ui.find({ type: 'Text', text: 'unheld' })).toMatchObject({ props: { color: '#e8b04a' } })
   expect(await ui.find({ key: 'take:t1' })).toBeUndefined()
   expect(await ui.find({ key: 'take:r1' })).toBeUndefined()
   expect(await ui.find({ key: 'open:r1' })).toMatchObject({ props: { label: 'Shipped', dimColor: true } })
   // `open` is every live thread's status: never said on its row (was `open · task`).
-  expect(await ui.find({ type: 'Text', text: '· task' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^· open/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: 'parked, Kevin #ab12 offline' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'held by Kevin #ab12 online' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'task' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^open( ·|$)/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'held by Kevin #ab12 · offline' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: 'held by Kevin #ab12 · online' })).toBeDefined()
+  // From an online holder Take asks first, and says so; from an offline one it takes.
+  expect(await ui.find({ key: 'take:h1' })).toMatchObject({ props: { label: 'Ask to take' } })
+  expect(await ui.find({ key: 'take:p1' })).toMatchObject({ props: { label: 'Take' } })
   await ui.press({ key: 'take:u1' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: 'u1' }])
@@ -749,20 +790,6 @@ test('threads quiet over a week fold under "Older (n)", which opens in place', a
   await ui.unmount()
 })
 
-test('Join on a channel it only follows joins it and reads the Channels tab again', async ($, on) => {
-  const { calls, toasts, clock } = engine(on, { answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool === 'join_channel' ? text('Joined #news.') : undefined) })
-  await start($, clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab:channels' })
-  await clock.settle()
-  await ui.press({ key: `join:ch:${CH_FOLLOW}` })
-  await clock.settle()
-  expect(calls.filter(c => c.tool === 'join_channel').map(c => c.args)).toEqual([{ channel_id: CH_FOLLOW }])
-  expect(calls.filter(c => c.tool === 'ui_channels').length).toBe(2)
-  expect(toasts.at(-1)).toBe('Joined #news.')
-  await ui.unmount()
-})
-
 test('a thread tab takes on t and copies the new-session command on n', async ($, on) => {
   const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [], has_older: false, older_count: 0 }
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
@@ -794,7 +821,7 @@ for (const surface of ['desktop', 'vscode'] as const) {
   })
 }
 
-test('a held thread\'s tab has Release (the desktop\'s only way to it); a followed channel\'s tab has Join', async ($, on) => {
+test('a held thread\'s tab has Release (the desktop\'s only way to it); a followed channel\'s tab sends joining to the web app', async ($, on) => {
   const thread = { thread: { id: 't1', title: 'Fix the build' }, messages: [], has_older: false, older_count: 0 }
   const { calls, clock } = engine(on, {
     answer: c =>
@@ -813,16 +840,9 @@ test('a held thread\'s tab has Release (the desktop\'s only way to it); a follow
   await clock.settle()
   await ui.press({ key: `open:ch:${CH_FOLLOW}`, link: { href: `https://einweave.invalid/ch%3A${CH_FOLLOW}` } } as never)
   await clock.settle()
-  await ui.press({ key: `joinch:${CH_FOLLOW}` })
-  await clock.settle()
-  expect(calls.filter(c => c.tool === 'join_channel').map(c => c.args)).toEqual([{ channel_id: CH_FOLLOW }])
-  expect(calls.filter(c => c.tool === 'ui_channel').length).toBe(2)
-  // A channel it is a member of offers no Join.
-  await ui.press({ key: 'tab:channels' })
-  await clock.settle()
-  await ui.press({ key: `open:ch:${CH_OPS}`, link: { href: `https://einweave.invalid/ch%3A${CH_OPS}` } } as never)
-  await clock.settle()
-  expect(await ui.find({ key: `joinch:${CH_OPS}` })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Following, not a member: join in the web app to take.' })).toBeDefined()
+  expect((await ui.findAll({ type: 'Button' })).some(b => String(b.key).startsWith('join'))).toBe(false)
+  expect(calls.some(c => c.tool === 'join_channel')).toBe(false)
   await ui.unmount()
 })
 
@@ -847,5 +867,68 @@ test('the button standard: full strength only for the shown tab and the one thin
   await ui.press({ key: `open:${T_NEW}`, link: { href: `https://einweave.invalid/${T_NEW}` } } as never)
   await clock.settle()
   expect(await full()).toEqual([`tab:${T_NEW}`])
+  await ui.unmount()
+})
+
+test('the band lists what is aimed at you (board Main): #channel brand, the title, why amber; View opens the pane on its tab, Take takes it', async ($, on) => {
+  const thread = { thread: { id: T_NEW, title: 'Newer ask' }, messages: [], has_older: false, older_count: 0 }
+  const { calls, pane, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : c.tool === 'take' ? text('This session now holds Older ask.') : undefined) })
+  await start($, clock)
+  const band = await $.ui.mount(BAND)
+  // Addressed only: taken part in, and the channel tier, wait in the pane.
+  const rows = (await band.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('band-view:'))
+  expect(rows).toEqual([`band-view:${T_NEW}`])
+  expect(await band.find({ key: `band:${T_NEW}` })).toMatchObject({ text: expect.stringMatching(/^#ops\s*↳\s*Newer ask\s*addressed to you · unheld/) })
+  expect(await band.find({ type: 'Text', text: 'addressed to you · unheld' })).toMatchObject({ props: { color: '#e8b04a' } })
+  await band.press({ key: `band-view:${T_NEW}` })
+  await clock.settle()
+  expect(pane).toMatchObject({ up: true, opens: 1 })
+  expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_NEW }])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  shownPill(await ui.find({ key: `tab:${T_NEW}` }))
+  await ui.unmount()
+  await band.press({ key: `band-take:${T_NEW}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }])
+  await band.unmount()
+})
+
+test('a held thread\'s tab is live (board ThreadTab): read again every 15 s while shown, and says so; no Refresh', async ($, on) => {
+  const thread = { thread: { id: 't1', title: 'Fix the build' }, messages: [], has_older: false, older_count: 0 }
+  const { calls, clock } = engine(on, { answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: 'open:t1' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'held by you · replies come here' })).toMatchObject({ props: { color: '#4cc3ad' } })
+  expect(await ui.find({ type: 'Text', text: 'Held: live. New replies appear here as they arrive.' })).toBeDefined()
+  expect(await ui.find({ key: 'refresh:t1' })).toBeUndefined()
+  const reads = () => calls.filter(c => c.tool === 'ui_thread').length
+  expect(reads()).toBe(1)
+  await clock.advance(15_100)
+  expect(reads()).toBe(2)
+  // Not shown: not read.
+  await ui.press({ key: 'tab:inbox' })
+  await clock.advance(30_100)
+  expect(reads()).toBe(2)
+  await ui.unmount()
+})
+
+test('the Session tab is the canvas\'s label / value grid, with Disconnect and Sign out', async ($, on) => {
+  const { calls, clock } = engine(on)
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:session' })
+  expect(await ui.find({ key: 'row:state' })).toMatchObject({ text: expect.stringMatching(/^State\s*● connected$/) })
+  expect(await ui.find({ type: 'Text', text: '● connected' })).toMatchObject({ props: { color: '#4cc3ad' } })
+  expect(await ui.find({ key: 'row:agent' })).toMatchObject({ text: expect.stringMatching(/^Agent\s*@bellman$/) })
+  expect(await ui.find({ key: 'row:plugin' })).toMatchObject({ text: expect.stringMatching(/^Plugin\s*0\.38\.0$/) })
+  expect(await ui.find({ type: 'Text', text: 'State' })).toMatchObject({ props: { dimColor: true } })
+  await ui.press({ key: 'disconnect' })
+  await ui.press({ key: 'logout' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'disconnect' || c.tool === 'logout').map(c => c.tool)).toEqual(['disconnect', 'logout'])
+  expect(await ui.find({ key: 'logout' })).toMatchObject({ props: { label: 'Sign out', dimColor: true } })
   await ui.unmount()
 })

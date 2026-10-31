@@ -13,8 +13,8 @@ import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 import type { ChannelView, OpenTab, ThreadView, UiSnapshot } from '../types'
 import {
   applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
-  indicator, needsBand, newSessionCommand, NO_CHANNELS, openTab, parseCommand, parseLine, quietFor, recordOf, scopeText, shownTab, statusSummary, takeOutcome, textOf,
-  threadView, waitingIn, BAND_GRACE_MS, type InboxRow,
+  indicator, needsBand, newSessionCommand, NO_CHANNELS, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, scopeText, shownTab, stateLine, statusSummary, takeOutcome,
+  textOf, threadView, BAND_GRACE_MS, type InboxRow, type Seg, type Tone,
 } from './model'
 
 const SERVER = 'plugin:einweave:einweave'
@@ -23,6 +23,10 @@ const RELAY_BACKOFF_MS = [2_000, 10_000, 30_000, 60_000]
 const POLL_MS = 60_000
 const SETTLE_MS = 10_000
 const SETTLE_STEP_MS = 500
+/** A held thread's open tab reads again this often: replies to it come to this session, so the tab is live. */
+const HELD_TAB_MS = 15_000
+/** The band lists at most this many threads aimed at the person; the pane has the rest. */
+const BAND_ROWS = 3
 
 const view = atom({ plugin: 'einweave', key: 'view' } as const, EMPTY_VIEW, { shape: 'view-1' })
 const tabs = atom({ plugin: 'einweave', key: 'tabs' } as const, EMPTY_TABS, { shape: 'tabs-2' })
@@ -39,6 +43,9 @@ const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Re
 const HOVER_BG = '#253036'
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
+
+/** A run's Text props for its tone: an accent from the canvas, or the theme's dim. */
+const paint = (tone: Tone | undefined) => (tone === 'dim' ? { dimColor: true } : tone ? { color: PALETTE[tone] } : {})
 
 /** Take a snapshot into the view; a drop that starts now redraws once its grace period has passed. */
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
@@ -146,12 +153,22 @@ async function loadThread($: EngineInterface, id: string): Promise<void> {
   }
   // Closed (×) while it loaded: the tab is gone, so its content must not come back.
   if (!(await read($, tabs)).open.some(x => x.id === id)) return
-  await update($, threads, m => ({ ...m, [id]: got }))
+  const at = await $.clock.now()
+  await update($, threads, m => ({ ...m, [id]: { ...got, at } }))
 }
 
 async function viewThread($: EngineInterface, id: string, title: string): Promise<void> {
   await update($, tabs, t => openTab(t, 'thread', id, title))
   await loadThread($, id)
+}
+
+/** The band's View: the pane up (opened if it was not), on the thread's tab. */
+async function showThread($: EngineInterface, id: string, title: string): Promise<void> {
+  if (!(await $.ui.panes()).some(p => p.id === PANE && p.isShown)) {
+    await $.ui.open({ id: PANE, title: 'einweave' })
+    await update($, paneUp, () => true)
+  }
+  await viewThread($, id, title)
 }
 
 /** Read the Channels tab with `ui_channels`: GET only, nothing marked. */
@@ -260,6 +277,14 @@ export const register: Register = on => {
     $.clock.every(POLL_MS, () => {
       void read($, view).then(v => (v.live ? undefined : poll($))).catch(() => {})
     })
+    // Board ThreadTab: a held thread's tab is live. Read it again while it is the one shown.
+    $.clock.every(HELD_TAB_MS, () => {
+      void (async () => {
+        const [t, v] = [await read($, tabs), await read($, view)]
+        const shown = shownTab(t)
+        if (t.open.some(o => o.id === shown && o.kind === 'thread') && v.snap?.holds.some(h => h.threadId === shown)) await loadThread($, shown)
+      })().catch(() => {})
+    })
     return started
   })
 
@@ -320,26 +345,51 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
-    const i = indicator(v, await $.clock.now())
+    const now = await $.clock.now()
+    const i = indicator(v, now)
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     // Read for the redraw it brings; the engine's record says what is up, a pane kept over a reload too.
     await read($, paneUp)
     const up = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
     const warn = needsBand(i)
-    // One row, always: what waits (or what went wrong) and the pane's Show / Hide. The hint line no longer says it twice.
+    const s = v.snap
+    // Board Main / Indicator: what is aimed at the person (addressed, not only taken part in), one row each, under the state line.
+    const forYou = s?.connection.state === 'connected' ? inbox(s.waiting, now).forYou.filter(r => r.aimed) : []
+    const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     return (
-      <Box flexDirection="row" columnGap={2}>
-        <Text color={warn ? 'red' : undefined} dimColor={!warn}>{i.text}</Text>
-        {warn && v.snap?.connection.detail ? <Text dimColor wrap="truncate-end">{v.snap.connection.detail}</Text> : null}
-        {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session. */}
-        {!warn ? null : i.kind === 'superseded' ? (
-          <Button key="take-back" label="Take it back" plain onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
-        ) : (
-          <Button key="connect" label="Connect" hotkey="1" plain onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))} />
-        )}
-        {/* No hotkey: a bare letter in an empty composer would press it. */}
-        <Button key="pane" label={up ? 'Hide' : 'Show'} plain dimColor onPress={() => void togglePane($)} />
+      <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+        <Box flexDirection="row" columnGap={1}>
+          <Text color={PALETTE.brand} weight="bold">einweave</Text>
+          <Box key="state" flexDirection="row">{runs('state', stateLine(v, now))}</Box>
+          {warn && s?.connection.detail ? <Text dimColor wrap="truncate-end">{s.connection.detail}</Text> : null}
+          {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session. */}
+          {!warn ? null : i.kind === 'superseded' ? (
+            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
+              <Text color={PALETTE.brand}>Take it back</Text>
+            </Button>
+          ) : (
+            <Button key="connect" label="Connect" onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
+              <Text color={PALETTE.brand}>Connect</Text>
+            </Button>
+          )}
+          <Box flexGrow={1} />
+          {/* No hotkey: a bare letter in an empty composer would press it. */}
+          <Button key="pane" label={up ? 'Hide' : 'Show'} plain dimColor onPress={() => void togglePane($)} />
+        </Box>
+        {forYou.slice(0, BAND_ROWS).map(r => (
+          <Box key={`band:${r.threadId}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+            <Text color={PALETTE.brand}>{`#${r.channel}`}</Text>
+            <Text dimColor>↳</Text>
+            <Box flexShrink={1} flexGrow={1} overflow="hidden">
+              <Text weight="semibold" wrap="truncate-end">{r.title}</Text>
+            </Box>
+            <Text color={PALETTE.amber}>{r.meta}</Text>
+            <Button key={`band-view:${r.threadId}`} label="View" onPress={() => void showThread($, r.threadId, r.title)} />
+            <Button key={`band-take:${r.threadId}`} label="Take" onPress={() => void takeThread($, r.threadId).then(toastFirst($))} />
+          </Box>
+        ))}
+        {forYou.length > BAND_ROWS ? <Text dimColor>{`${forYou.length - BAND_ROWS} more aimed at you in the pane`}</Text> : null}
       </Box>
     )
   })
@@ -357,7 +407,7 @@ export const register: Register = on => {
     const i = indicator(v, now)
     const s = v.snap
     const t = await read($, tabs)
-    const color = i.kind === 'connected' ? undefined : i.kind === 'disconnected' || i.kind === 'superseded' || i.kind === 'no-answer' ? 'red' : 'yellow'
+    const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     const act = (tool: string, args: Record<string, unknown>) => () =>
       void $.mcp.call(SERVER, tool, args).then(
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
@@ -370,15 +420,6 @@ export const register: Register = on => {
           await after?.()
         })
         .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
-    const join = (channelId: string, after?: () => Promise<void>) => () =>
-      void $.mcp.call(SERVER, 'join_channel', { channel_id: channelId }).then(
-        async r => {
-          $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? 'join_channel failed' : 'Joined.'))
-          await loadChannels($)
-          await after?.()
-        },
-        err => $.ui.toast(`join_channel failed: ${String(err).slice(0, 120)}`),
-      )
     const connected = s?.connection.state === 'connected'
     const box = connected ? inbox(s.waiting, now) : { forYou: [], open: [] }
     const waiting = box.forYou.length + box.open.length
@@ -391,10 +432,8 @@ export const register: Register = on => {
     const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
     // Channels and channel tabs load each time they are shown: nothing pushes them.
     const showChannels = () => void update($, tabs, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
-    const showOpen = (o: OpenTab) => () => void update($, tabs, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : undefined))
+    const showOpen = (o: OpenTab) => () => void update($, tabs, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id)))
     const ch = await read($, channels)
-    // Channels with something waiting; unknown counts count as none.
-    const waitingChannels = ch.channels.filter(c => waitingIn(c.threads) > 0).length
 
     const f = await read($, focused)
     const open = await read($, unfolded)
@@ -403,8 +442,8 @@ export const register: Register = on => {
       const cmd = newSessionCommand(id)
       void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
     }
-    const takeAct = (id: string, after?: () => Promise<void>): Act => ({ key: 'take', label: 'Take', hotkey: 't', onPress: take(id, after) })
-    const newAct = (id: string): Act => ({ key: 'new', label: 'New', hotkey: 'n', onPress: newSession(id) })
+    const takeAct = (id: string, after?: () => Promise<void>, asks = false): Act => ({ key: 'take', label: asks ? 'Ask to take' : 'Take', hotkey: 't', onPress: take(id, after) })
+    const newAct = (id: string): Act => ({ key: 'new', label: 'New session', hotkey: 'n', onPress: newSession(id) })
 
     // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
     // VS Code): there a title is a link and a record's actions live in the tab it opens.
@@ -413,31 +452,30 @@ export const register: Register = on => {
     const keyed = (hotkey: string, label: string) => (desk ? label : [<Text key="k" color="suggestion">{hotkey}</Text>, ` ${label}`])
 
     /**
-     * A record: its title (opens it) on the first line, `meta` on a second unless `inline`. Hover or
-     * keyboard focus tints it and draws its actions at the end of its last line; focused, with hotkeys.
-     * Drawn shown, the overlay must not also carry the hover reveal: the kit refuses that and the whole pane goes blank.
+     * A record: its title (opens it) on the first line, `meta` on a second. Hover or keyboard focus
+     * tints it and draws its actions at the end of its last line; focused, with hotkeys. Drawn shown,
+     * the overlay must not also carry the hover reveal: the kit refuses that and the whole pane goes blank.
+     * `label` names it (the link, the button's address); `title` is how it is drawn, in the canvas's colours.
      */
-    const record = (r: { id: string; title: string; dim?: boolean; onOpen: () => void; meta?: { text: string; badge?: { text: string; color?: 'cyan' | 'yellow' } }; inline?: boolean; acts: Act[] }) => {
+    const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; acts: Act[] }) => {
       if (desk) return deskRecord(r)
       drawn.push(`open:${r.id}`)
       const hot = f === r.id
-      const meta = r.meta ? (
-        <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
-          {/* Inline, a dot parts the title from its meta: run together they read as one name. */}
-          {r.inline ? <Text dimColor>·</Text> : null}
-          {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
-          <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
-        </Box>
-      ) : null
+      const title = r.title ?? [{ text: r.label, weight: 'semibold' as const }]
       return (
         <Box key={`rec:${r.id}`} flexDirection="column" backgroundColor={hot ? HOVER_BG : undefined} hover={{ backgroundColor: HOVER_BG }}>
-          <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
-            <Button key={`open:${r.id}`} plain label={r.title} dimColor={r.dim} onPress={r.onOpen} />
-            {r.inline ? meta : null}
+          <Box flexDirection="row" height={1} overflow="hidden">
+            <Button key={`open:${r.id}`} plain label={r.label} dimColor={r.dim} onPress={r.onOpen}>
+              {runs(`t:${r.id}`, r.dim ? title.map(g => ({ text: g.text, weight: g.weight })) : title)}
+            </Button>
           </Box>
-          {r.inline ? null : meta}
+          {r.meta ? (
+            <Box flexDirection="row" height={1} overflow="hidden">
+              {runs(`m:${r.id}`, r.meta)}
+            </Box>
+          ) : null}
           {r.acts.length ? (
-            <Box position="absolute" top={r.meta && !r.inline ? 1 : 0} right={0} flexDirection="row" backgroundColor={HOVER_BG} {...(hot ? {} : { display: 'none' as const, hover: { display: 'flex' as const } })}>
+            <Box position="absolute" top={r.meta ? 1 : 0} right={0} flexDirection="row" backgroundColor={HOVER_BG} {...(hot ? {} : { display: 'none' as const, hover: { display: 'flex' as const } })}>
               {r.acts.map(a => (
                 <Box key={`act:${a.key}:${r.id}`} flexDirection="row">
                   {/* A space as text, not a gap: columnGap's cells let the record show through. */}
@@ -462,13 +500,8 @@ export const register: Register = on => {
       const href = recordHref(r.id)
       return (
         <Box key={`rec:${r.id}`} flexDirection="column">
-          <Markdown key={`open:${r.id}`} text={`[${mdText(r.title)}](${href})`} dimColor={r.dim} pressableLinks={[href]} onLinkPress={() => r.onOpen()} />
-          {r.meta ? (
-            <Box flexDirection="row" columnGap={1}>
-              {r.meta.badge ? <Text color={r.dim ? undefined : r.meta.badge.color} dimColor={r.dim}>{r.meta.badge.text}</Text> : null}
-              <Text dimColor wrap="truncate-end">{r.meta.badge && r.meta.text ? `· ${r.meta.text}` : r.meta.text}</Text>
-            </Box>
-          ) : null}
+          <Markdown key={`open:${r.id}`} text={`[${mdText(r.label)}](${href})`} dimColor={r.dim} pressableLinks={[href]} onLinkPress={() => r.onOpen()} />
+          {r.meta ? <Box flexDirection="row">{runs(`m:${r.id}`, r.meta)}</Box> : null}
         </Box>
       )
     }
@@ -488,58 +521,84 @@ export const register: Register = on => {
       ]
     }
 
+    /** Board Unowned: `#channel` and the title, then why and the hold, the age amber once it is stale. */
     const inboxRecord = (r: InboxRow) =>
       record({
         id: r.threadId,
-        title: r.title,
+        label: r.title,
+        title: [{ text: `#${r.channel}`, tone: 'brand' }, { text: ' ' }, { text: r.title, weight: 'semibold' }],
         onOpen: () => void viewThread($, r.threadId, r.title),
-        meta: { text: [`#${r.channel}`, r.meta, r.age].filter(Boolean).join(' · ') },
+        meta: [{ text: r.meta, tone: 'dim' }, ...(r.age ? [{ text: ' · ', tone: 'dim' as const }, r.stale ? { text: r.age, tone: 'amber' as const, weight: 'semibold' as const } : { text: r.age, tone: 'dim' as const }] : [])],
         acts: [takeAct(r.threadId), newAct(r.threadId)],
       })
 
+    /** A section's heading: bold, its count, and a dim note (boards FindTake, Unowned). */
+    const heading = (key: string, title: string, note: string) => (
+      <Box key={key} flexDirection="row" columnGap={1}>
+        <Text weight="bold">{title}</Text>
+        <Text dimColor wrap="truncate-end">{note}</Text>
+      </Box>
+    )
+
+    // Board Main: the pane's own name in the brand colour; what went wrong under it, with the way back.
     const header = (
       <Box flexDirection="column">
-        <Text color={color} weight="semibold">{i.text}</Text>
+        <Text color={PALETTE.brand} weight="bold">einweave</Text>
+        {s && !connected ? <Box flexDirection="row">{runs('state', stateLine(v, now))}</Box> : null}
         {s && !connected && s.connection.detail ? <Text dimColor>{s.connection.detail}</Text> : null}
+        {!s ? <Box flexDirection="row">{runs('state', stateLine(v, now))}</Box> : null}
         {!s && v.error ? <Text dimColor>{v.error}</Text> : null}
         {s && !connected ? (
           i.kind === 'superseded' ? (
-            <Button key="take-back" label="Take it back" variant="primary" onPress={() => void takeBack($).then(toastFirst($))} />
+            <Button key="take-back" label="Take it back" onPress={() => void takeBack($).then(toastFirst($))}>
+              <Text color={PALETTE.brand}>Take it back</Text>
+            </Button>
           ) : (
-            <Button key="connect" label="Connect" variant="primary" onPress={() => void connect($).then(toastFirst($))} />
+            <Button key="connect" label="Connect" onPress={() => void connect($).then(toastFirst($))}>
+              <Text color={PALETTE.brand}>Connect</Text>
+            </Button>
           )
         ) : null}
       </Box>
     )
     if (!s) return header
 
-    // The pane's button standard (Jörgen, 2026-10-30). A desktop draws no variant (VS Code keeps only label
-    // and dimness), so dimness carries it: full strength is where you are (the shown tab) or the one thing
-    // to do (Take, Connect), primary for the terminal's accent; every other button is dim; titles are links.
-    const shownIf = (id: string) => (tab === id ? { variant: 'primary' as const } : { dimColor: true })
+    // Tabs (board Main): the shown one a filled pill, bold; the rest dim. A desktop draws its own
+    // buttons and no fill, so there dimness alone says which is shown (decision E3).
+    const tabButton = (key: string, label: string, id: string, onPress: () => void) =>
+      tab === id ? (
+        <Button key={key} label={label} plain onPress={onPress}>
+          <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{` ${label} `}</Text>
+        </Button>
+      ) : (
+        <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
+      )
 
     const tabRow = (
       <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
-        <Button key="tab:inbox" label={`Inbox ${connected ? total : 0}`} {...shownIf('inbox')} onPress={show('inbox')} />
-        <Button key="tab:held" label={`Held ${s.holds.length}`} {...shownIf('held')} onPress={show('held')} />
-        <Button key="tab:channels" label={`Channels ${waitingChannels}`} {...shownIf('channels')} onPress={showChannels} />
-        <Button key="tab:session" label="Session" {...shownIf('session')} onPress={show('session')} />
-        {t.open.map(o => (
-          <Box key={`tabbox:${o.id}`} flexDirection="row">
-            <Button key={`tab:${o.id}`} label={o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title} {...shownIf(o.id)} onPress={showOpen(o)} />
-            <Button
-              key={`close:${o.id}`}
-              label="×"
-              plain
-              dimColor
-              onPress={() => {
-                void update($, tabs, x => closeTab(x, o.id))
-                if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
-                else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
-              }}
-            />
-          </Box>
-        ))}
+        {tabButton('tab:inbox', `Inbox ${connected ? total : 0}`, 'inbox', show('inbox'))}
+        {tabButton('tab:held', `Held ${s.holds.length}`, 'held', show('held'))}
+        {tabButton('tab:channels', 'Channels', 'channels', showChannels)}
+        {tabButton('tab:session', 'Session', 'session', show('session'))}
+        {t.open.map(o => {
+          const label = o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title
+          return (
+            <Box key={`tabbox:${o.id}`} flexDirection="row">
+              {tabButton(`tab:${o.id}`, label, o.id, showOpen(o))}
+              <Button
+                key={`close:${o.id}`}
+                label="×"
+                plain
+                dimColor
+                onPress={() => {
+                  void update($, tabs, x => closeTab(x, o.id))
+                  if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
+                  else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
+                }}
+              />
+            </Box>
+          )
+        })}
       </Box>
     )
 
@@ -551,9 +610,9 @@ export const register: Register = on => {
         <Text dimColor>Nothing waits for this session.</Text>
       ) : (
         <Box flexDirection="column" rowGap={1}>
-          {box.forYou.length ? <Text weight="semibold">{`For you ${forYouCount}`}</Text> : null}
+          {box.forYou.length ? heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you') : null}
           {folded('forYou', box.forYou, inboxRecord)}
-          {box.open.length ? <Text weight="semibold">{`Open ${openCount}`}</Text> : null}
+          {box.open.length ? heading('h:open', `Unowned ${openCount}`, 'nobody holds these · oldest first') : null}
           {folded('open', box.open, inboxRecord)}
           {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
         </Box>
@@ -567,7 +626,7 @@ export const register: Register = on => {
           {s.holds.map(held =>
             record({
               id: held.threadId,
-              title: held.title ?? held.threadId,
+              label: held.title ?? held.threadId,
               onOpen: () => void viewThread($, held.threadId, held.title ?? held.threadId),
               acts: [{ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: held.threadId }) }],
             }),
@@ -578,52 +637,80 @@ export const register: Register = on => {
     } else if (tab === 'channels') {
       const who = ch.agent ? `@${ch.agent}` : 'This agent'
       body = (
-        <Box flexDirection="column">
-          {ch.error ? <Text color="red">{ch.error}</Text> : null}
+        <Box flexDirection="column" rowGap={1}>
+          {ch.error ? <Text color={PALETTE.red}>{ch.error}</Text> : null}
           {ch.loading && !ch.channels.length ? <Text dimColor>Loading…</Text> : null}
           {!ch.loading && !ch.error && !ch.channels.length ? <Text dimColor>{`${who} isn't in any channels · set up in the web app`}</Text> : null}
+          {ch.channels.length ? <Text dimColor>{`${who} is in ${ch.channels.length} ${ch.channels.length === 1 ? 'channel' : 'channels'}. Every session of the agent shares them.`}</Text> : null}
           {ch.channels.map(c =>
             record({
               id: `ch:${c.id}`,
-              title: `#${c.name}`,
-              inline: true,
+              label: `#${c.name}`,
+              title: [{ text: `#${c.name}`, tone: 'brand', weight: 'semibold' }],
               onOpen: () => void viewChannel($, c.id, c.name),
-              meta: { text: [channelMeta(c.threads, now), c.role ? null : 'not a member'].filter(Boolean).join(' · ') },
-              // Following without membership: it can read but not post or take until it joins.
-              acts: c.role ? [] : [{ key: 'join', label: 'Join', hotkey: 'j', onPress: join(c.id) }],
+              meta: [{ text: [channelMeta(c.threads, now), c.role ? null : 'following, not a member'].filter(Boolean).join(' · '), tone: 'dim' }],
+              acts: [],
             }),
           )}
-          <Box flexDirection="row" columnGap={1} marginTop={1}>
-            <Button key="refresh:channels" label="Refresh" dimColor onPress={() => void loadChannels($)} />
-          </Box>
+          <Text dimColor>Join, leave and private channels: in the web app.</Text>
         </Box>
       )
     } else if (tab === 'session') {
+      const sess = s.session
+      // Board Main: a label / value grid, the labels dim.
+      const row = (key: string, label: string, value: ReturnType<typeof Text> | ReturnType<typeof Text>[] | null) => (
+        <Box key={`row:${key}`} flexDirection="row">
+          <Box width={10} flexShrink={0}>
+            <Text dimColor>{label}</Text>
+          </Box>
+          <Box flexDirection="row" columnGap={1} flexGrow={1} flexShrink={1}>
+            {value}
+          </Box>
+        </Box>
+      )
       body = (
-        <Box flexDirection="column">
-          <Text>{`agent ${s.session.agent ?? '-'} · ${s.session.kind ?? 'session'} · plugin ${s.version}`}</Text>
-          {s.staleSince ? <Text color="yellow">Plugin updated on disk: restart Claude Code to use it.</Text> : null}
-          {Input && connected ? (
-            <Input key="label" label="Name" value={s.session.label ?? ''} placeholder="this session's name" submitLabel="rename" onSubmit={(label: string) => act('set_session_label', { label })()} />
-          ) : (
-            <Text>{`name ${s.session.label ?? '-'}`}</Text>
-          )}
-          {s.session.scope && !Select ? <Text>{`scope ${scopeText(s.session.scope)}`}</Text> : null}
-          {s.session.scope && Select ? (
-            <Select
-              key="scope"
-              label="Scope"
-              value={s.session.scope.mode}
-              options={[
-                { value: 'none', label: scopeText({ mode: 'none', channelIds: [] }) },
-                { value: 'all', label: scopeText({ mode: 'all', channelIds: [] }) },
-                ...(s.session.scope.mode === 'channels' ? [{ value: 'channels', label: scopeText(s.session.scope) }] : []),
-              ]}
-              onSelect={(mode: string) => {
-                if (mode !== 'channels') act('scope', { channels: mode })()
-              }}
-            />
-          ) : null}
+        <Box flexDirection="column" rowGap={1}>
+          <Box flexDirection="column">
+            {row('state', 'State', connected ? <Text color={PALETTE.brand}>● connected</Text> : runs('state', stateLine(v, now)))}
+            {row('agent', 'Agent', <Text>{sess.agent ? `@${sess.agent}` : '-'}</Text>)}
+            {Input && connected
+              ? row('label', 'Session', <Input key="label" value={sess.label ?? ''} placeholder="this session's name" submitLabel="Rename" onSubmit={(label: string) => act('set_session_label', { label })()} />)
+              : row('label', 'Session', <Text>{sess.label ?? '-'}</Text>)}
+            {row('kind', 'Kind', <Text>{sess.kind ?? 'session'}</Text>)}
+            {sess.scope && Select
+              ? row(
+                  'scope',
+                  'Scope',
+                  <Select
+                    key="scope"
+                    value={sess.scope.mode}
+                    options={[
+                      { value: 'none', label: scopeText({ mode: 'none', channelIds: [] }) },
+                      { value: 'all', label: scopeText({ mode: 'all', channelIds: [] }) },
+                      ...(sess.scope.mode === 'channels' ? [{ value: 'channels', label: scopeText(sess.scope) }] : []),
+                    ]}
+                    onSelect={(mode: string) => {
+                      if (mode !== 'channels') act('scope', { channels: mode })()
+                    }}
+                  />,
+                )
+              : sess.scope
+                ? row('scope', 'Scope', <Text>{scopeText(sess.scope)}</Text>)
+                : null}
+            {row(
+              'plugin',
+              'Plugin',
+              s.staleSince ? [<Text key="v">{s.version}</Text>, <Text key="st" color={PALETTE.amber}>· updated on disk: restart Claude Code to use it</Text>] : <Text>{s.version}</Text>,
+            )}
+          </Box>
+          <Box flexDirection="row" columnGap={1}>
+            {connected ? (
+              <Button key="disconnect" label="Disconnect" onPress={act('disconnect', {})} />
+            ) : (
+              <Button key="connect-s" label="Connect" onPress={() => void connect($).then(toastFirst($))} />
+            )}
+            <Button key="logout" label="Sign out" dimColor onPress={act('logout', {})} />
+          </Box>
         </Box>
       )
     } else if (t.open.find(x => x.id === tab)?.kind === 'channel') {
@@ -635,13 +722,12 @@ export const register: Register = on => {
       const { rows, more } = channelRows(cv.threads)
       body = (
         <Box flexDirection="column">
-          <Text weight="semibold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
-          {row ? <Text dimColor wrap="truncate-end">{[channelMeta(row.threads, now), member ? null : 'not a member · join to take'].filter(Boolean).join(' · ')}</Text> : null}
           <Box flexDirection="row" columnGap={1}>
-            {member ? null : <Button key={`joinch:${id}`} label="Join" dimColor onPress={join(id, () => loadChannel($, id))} />}
-            <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadChannel($, id)} />
+            <Text color={PALETTE.brand} weight="bold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
+            {row?.threads ? <Text dimColor>{`${row.threads.open} open`}</Text> : null}
           </Box>
-          {cv.error ? <Text color="red">{cv.error}</Text> : null}
+          <Text dimColor>{member ? 'Open threads, latest activity first.' : 'Following, not a member: join in the web app to take.'}</Text>
+          {cv.error ? <Text color={PALETTE.red}>{cv.error}</Text> : null}
           {cv.loading && !cv.threads.length ? <Text dimColor>Loading…</Text> : null}
           {!cv.loading && !cv.error && !cv.threads.length ? <Text dimColor>No threads yet.</Text> : null}
           <Box flexDirection="column" rowGap={1} marginTop={1}>
@@ -653,19 +739,26 @@ export const register: Register = on => {
                 const badge = holdBadge(th.hold, here)
                 // `open` is every live thread's status: only the others are said.
                 const status = th.resolved ? 'resolved' : th.status === 'open' ? null : th.status
+                const rest = [status, th.kind, th.age].filter(Boolean).join(' · ')
                 return record({
                   id: th.id,
-                  title: th.title || th.id,
+                  label: th.title || th.id,
                   dim: th.resolved,
                   onOpen: () => void viewThread($, th.id, th.title || th.id),
-                  meta: { badge: badge ?? undefined, text: [status, th.kind, th.age].filter(Boolean).join(' · ') },
-                  acts: here || !member || th.resolved ? [newAct(th.id)] : [takeAct(th.id, () => loadChannel($, id)), newAct(th.id)],
+                  meta: [
+                    ...(badge ? [{ text: badge.text, tone: th.resolved ? ('dim' as const) : badge.tone }] : []),
+                    ...(badge && rest ? [{ text: ' · ', tone: 'dim' as const }] : []),
+                    ...(rest ? [{ text: rest, tone: 'dim' as const }] : []),
+                  ],
+                  acts: here || !member || th.resolved ? [newAct(th.id)] : [takeAct(th.id, () => loadChannel($, id), badge?.asks), newAct(th.id)],
                 })
               },
             )}
           </Box>
           {more ? <Text dimColor>{`${more} more in the web app.`}</Text> : null}
-          <Text dimColor>Read-only · no tokens · viewing marks nothing read.</Text>
+          <Box marginTop={1}>
+            <Text dimColor>View opens the Thread tab. Take from an online holder asks first.</Text>
+          </Box>
         </Box>
       )
     } else {
@@ -675,31 +768,40 @@ export const register: Register = on => {
       const held = s.holds.some(h => h.threadId === id)
       body = (
         <Box flexDirection="column">
-          <Text weight="semibold" wrap="truncate-end">{title}</Text>
-          <Text color={held ? 'cyan' : 'yellow'}>{held ? 'held by this session · replies come here' : 'not held here: Claude has not seen it · Take brings it here'}</Text>
-          <Box flexDirection="row" columnGap={1}>
+          <Text weight="bold" wrap="truncate-end">{title}</Text>
+          {held ? (
+            <Text color={PALETTE.brand}>held by you · replies come here</Text>
+          ) : (
+            <Text color={PALETTE.amber}>not held here · Claude has not seen it · Take brings it here</Text>
+          )}
+          <Box flexDirection="row" columnGap={1} marginTop={1}>
             {held ? (
               <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>{keyed('r', 'Release')}</Button>
             ) : (
-              <Button key={`take:${id}`} hotkey="t" variant="primary" onPress={take(id)}>{keyed('t', 'Take')}</Button>
+              <Button key={`take:${id}`} hotkey="t" onPress={take(id)}>{keyed('t', 'Take')}</Button>
             )}
             <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>{keyed('n', 'New session')}</Button>
-            <Button key={`refresh:${id}`} label="Refresh" dimColor onPress={() => void loadThread($, id)} />
+            {held ? null : <Button key={`refresh:${id}`} label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
           </Box>
-          {th.error ? <Text color="red">{th.error}</Text> : null}
+          {th.error ? <Text color={PALETTE.red}>{th.error}</Text> : null}
           {th.loading && !th.messages.length ? <Text dimColor>Loading…</Text> : null}
           {th.messages.map((m, n) => (
             <Box key={`msg:${id}:${n}`} flexDirection="column" marginTop={1}>
               <Box flexDirection="row" columnGap={1}>
-                <Text weight="semibold">{m.sender ?? '?'}</Text>
+                <Text weight="bold">{m.sender ?? '?'}</Text>
                 {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
-                {m.type !== 'text' ? <Text color="yellow">{m.type}</Text> : null}
+                {m.type !== 'text' ? <Text color={PALETTE.amber}>{m.type}</Text> : null}
               </Box>
               <Markdown key={`md:${id}:${n}`} text={m.content} />
             </Box>
           ))}
           {th.older !== 0 ? <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'} not shown: the web app has them.`}</Text> : null}
-          <Text dimColor>Read-only · no tokens · viewing does not mark it read.</Text>
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>
+              {held ? 'Held: live. New replies appear here as they arrive.' : `Unheld: not pushed here.${th.at !== undefined ? ` Updated ${clockOf(th.at)}` : ''} · ↻ to refresh.`}
+            </Text>
+            <Text dimColor>Read-only · no tokens · viewing marks nothing read.</Text>
+          </Box>
         </Box>
       )
     }
@@ -728,6 +830,12 @@ function recordHref(id: string): string {
 /** A title as Markdown link text: what Markdown would read as markup, escaped. */
 function mdText(title: string): string {
   return title.replace(/[\\`*_{}[\]()#+\-.!|<>~]/g, c => `\\${c}`)
+}
+
+/** A local clock time, `HH:MM`. */
+function clockOf(ms: number): string {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 /** A message's local time, `HH:MM`, or its date when not today. */

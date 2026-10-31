@@ -73,6 +73,8 @@ export interface ThreadView {
   older: number | null
   error: string | null
   loading: boolean
+  /** Local time of the last answer, for the tab's `Updated HH:MM`; absent until one came. */
+  at?: number
 }
 
 /** Open threads in a channel and how many wait for this agent (`waiting` = unheld + parked). */

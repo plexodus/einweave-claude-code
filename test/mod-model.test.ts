@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
-  inbox, OLD_MS, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, statusSummary, takeOutcome, threadView, waitingIn,
+  inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
 } from "../mod/model";
 import type { ChannelThread } from "../types";
 import type { UiSnapshot, View } from "../types";
@@ -205,16 +205,22 @@ describe("the Inbox and thread tabs", () => {
   test("For you holds addressed + participant, Open the channel tier, in the snapshot's order; quiet counts from the last post", () => {
     const box = inbox({ forYou: 3, channel: 1, more: false, top: [item("old", "participant", "2026-10-30T07:00:00.000Z"), item("new", "addressed", "2026-10-30T09:59:00.000Z"), item("bad", "addressed", "not a time"), item("none", "addressed", null), item("ch", "channel", "2026-10-29T10:00:00.000Z")] }, now);
     expect(box.forYou.map((r) => r.threadId)).toEqual(["old", "new", "bad", "none"]);
-    expect(box.forYou.map((r) => r.age)).toEqual(["3h", "1m", null, null]);
-    expect(box.open.map((r) => [r.threadId, r.age, r.meta])).toEqual([["ch", "1d", "unheld · new posts in your channel"]]);
+    expect(box.forYou.map((r) => r.age)).toEqual(["3 h", "1 min", null, null]);
+    // Quiet an hour or more: drawn amber (board Unowned).
+    expect(box.forYou.map((r) => r.stale)).toEqual([true, false, false, false]);
+    expect(box.forYou.map((r) => r.aimed)).toEqual([false, true, true, true]);
+    expect(box.forYou[0]!.meta).toBe("you took part · unheld");
+    expect(box.open.map((r) => [r.threadId, r.age, r.meta])).toEqual([["ch", "1 d", "new posts · unheld"]]);
     expect(inbox(null, now)).toEqual({ forYou: [], open: [] });
   });
 
   test("quietFor: a week to the millisecond is not old, past it is; no time is neither", () => {
-    expect(quietFor(new Date(now - OLD_MS).toISOString(), now)).toEqual({ age: "7d", old: false });
-    expect(quietFor(new Date(now - OLD_MS - 1).toISOString(), now)).toEqual({ age: "7d", old: true });
-    expect(quietFor(null, now)).toEqual({ age: null, old: false });
-    expect(quietFor("not a time", now)).toEqual({ age: null, old: false });
+    expect(quietFor(new Date(now - OLD_MS).toISOString(), now)).toEqual({ age: "7 d", old: false, stale: true });
+    expect(quietFor(new Date(now - OLD_MS - 1).toISOString(), now)).toEqual({ age: "7 d", old: true, stale: true });
+    expect(quietFor(new Date(now - STALE_MS + 1).toISOString(), now)).toEqual({ age: "59 min", old: false, stale: false });
+    expect(quietFor(new Date(now - STALE_MS).toISOString(), now)).toEqual({ age: "1 h", old: false, stale: true });
+    expect(quietFor(null, now)).toEqual({ age: null, old: false, stale: false });
+    expect(quietFor("not a time", now)).toEqual({ age: null, old: false, stale: false });
   });
 
   test("fold: recent rows in order, then the old ones in order", () => {
@@ -239,8 +245,8 @@ describe("the Inbox and thread tabs", () => {
     expect([focusTarget(stops, "", "open:b"), focusTarget(stops, "", "tab:held"), focusTarget(stops, "", undefined), focusTarget(stops, "", "take:zz")]).toEqual(["open:b", "tab:held", undefined, "take:zz"]);
   });
 
-  test("ago: one short unit", () => {
-    expect([ago(5_000), ago(125_000), ago(3 * 3_600_000), ago(50 * 3_600_000), ago(-1)]).toEqual(["5s", "2m", "3h", "2d", "0s"]);
+  test("ago: one unit, spaced as the canvas writes it", () => {
+    expect([ago(5_000), ago(125_000), ago(3 * 3_600_000), ago(50 * 3_600_000), ago(-1)]).toEqual(["5 s", "2 min", "3 h", "2 d", "0 s"]);
   });
 
   test("takeOutcome: anything but the two known answers is shown as it came", () => {
@@ -272,24 +278,36 @@ describe("the Inbox and thread tabs", () => {
     expect(closeTab(ab, "b")).toEqual({ tab: "a", open: [{ kind: "thread", id: "a", title: "A" }] });
   });
 
-  test("channel meta: waiting (unheld + parked), oldest, open; counts the server did not send are unknown, never 0", () => {
+  test("channel meta (board ChannelsTab): open, unowned (unheld + parked), oldest waiting; counts the server did not send are unknown, never 0", () => {
     const now = Date.parse("2026-10-30T12:00:00.000Z");
-    expect(channelMeta({ open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" }, now)).toBe("2 waiting · oldest 3h · 4 open");
+    expect(channelMeta({ open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" }, now)).toBe("4 open · 2 unowned · oldest waiting 3 h");
     expect(channelMeta({ open: 3, unheld: 0, parked: 0, oldestWaitingAt: null }, now)).toBe("3 open");
     expect(channelMeta(undefined, now)).toBe("counts unknown");
     expect(waitingIn({ open: 9, unheld: 2, parked: 3, oldestWaitingAt: null })).toBe(5);
     expect(waitingIn(undefined)).toBe(0);
   });
 
-  test("hold badge: held here wins; else held by X online/offline, parked, unheld; no hold from an older server: none", () => {
+  test("hold badge (board ChannelsTab): yours brand, nobody's amber, another session's dim; Take from an online holder asks", () => {
     const holder = { id: "s", label: "Bellman #cd34", online: true, parked: false };
-    expect(holdBadge({ state: "held", holder }, true)?.text).toBe("held here");
-    expect(holdBadge(undefined, true)?.text).toBe("held here");
-    expect(holdBadge({ state: "held", holder }, false)?.text).toBe("held by Bellman #cd34 online");
-    expect(holdBadge({ state: "held", holder: { ...holder, online: false } }, false)?.text).toBe("held by Bellman #cd34 offline");
-    expect(holdBadge({ state: "parked", holder: { ...holder, online: false, parked: true } }, false)?.text).toBe("parked, Bellman #cd34 offline");
-    expect(holdBadge({ state: "unheld", holder: null }, false)?.text).toBe("unheld");
+    expect(holdBadge({ state: "held", holder }, true)).toEqual({ text: "held by you", tone: "brand", asks: false });
+    expect(holdBadge(undefined, true)?.text).toBe("held by you");
+    expect(holdBadge({ state: "held", holder }, false)).toEqual({ text: "held by Bellman #cd34 · online", tone: "dim", asks: true });
+    expect(holdBadge({ state: "held", holder: { ...holder, online: false } }, false)).toEqual({ text: "held by Bellman #cd34 · offline", tone: "dim", asks: false });
+    expect(holdBadge({ state: "parked", holder: { ...holder, online: false, parked: true } }, false)?.text).toBe("held by Bellman #cd34 · offline");
+    expect(holdBadge({ state: "unheld", holder: null }, false)).toEqual({ text: "unheld", tone: "amber", asks: false });
     expect(holdBadge(undefined, false)).toBeNull();
+  });
+
+  test("stateLine: the counts with what is aimed at you amber; red when messages are not arriving", () => {
+    const snap = (state: string, waiting: unknown = null) => ({ v: 1, connection: { state, detail: null }, session: { agent: null, label: null, kind: null, scope: null }, holds: [{ threadId: "t", title: null }], waiting, version: "x", staleSince: null }) as never;
+    const at = (s: unknown, downSince: number | null = null) => stateLine({ ...EMPTY_VIEW, snap: s as never, downSince }, 100_000);
+    expect(at(snap("connected", { forYou: 2, channel: 3, more: false, top: [] }))).toEqual([
+      { text: "holds 1" }, { text: " · ", tone: "dim" }, { text: "2 for you", tone: "amber" }, { text: " · ", tone: "dim" }, { text: "3 unowned" },
+    ]);
+    expect(at(snap("connected"))).toEqual([{ text: "holds 1" }]);
+    expect(at(snap("disconnected"), 0)).toEqual([{ text: "○ disconnected · messages are not arriving", tone: "red" }]);
+    expect(at(snap("disconnected"), 99_000)).toEqual([{ text: "↻ reconnecting", tone: "amber" }]);
+    expect(PALETTE).toEqual({ brand: "#4cc3ad", amber: "#e8b04a", blue: "#7ab4ff", red: "#f07a7a", pillBg: "#e4e4e4", pillFg: "#121212" });
   });
 
   test("channel rows: open first, then resolved, each in server order; cut at the cap with the rest counted", () => {
