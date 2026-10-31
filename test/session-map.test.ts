@@ -25,6 +25,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { ctlSocketPath } from "../delivery/ctl-path.ts";
 
 const HOOK = join(import.meta.dir, "..", "hooks", "session-map.ts");
 const SSE_PORT = "40249";
@@ -279,4 +280,123 @@ describe("pid correlation", () => {
     expect(err).toContain("71d38a17-ea93-421f-8ed3-ed598c15b66b");
     expect(err, "the per-launch id must not win").not.toContain("aaaaaaaa-bbbb");
   }, 30_000);
+});
+
+/**
+ * Two windows in ONE IDE share CLAUDE_CODE_SSE_PORT, so the sse file names whichever ran its
+ * hook last. Measured 2026-10-31: a second window's plugin came up 21 ms before its own hook
+ * wrote the pid file, read the sse file, served the FIRST window's conversation, and — its
+ * Claude pid cached as null — never opened the ctl socket (take-back seen only by a 60 s poll).
+ */
+describe("a sibling window in the same IDE", () => {
+  let dir = "";
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "ew-sib-")); });
+  afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+
+  const SIBLING_ID = "51b11119-5151-4515-8515-515151515151";
+  const hookStart = async (sessionId = CONVERSATION_ID) => {
+    const proc = Bun.spawn(["bun", HOOK, "start"], {
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dir, CLAUDE_PID: String(process.pid), CLAUDE_CODE_SESSION_ID: sessionId } as Record<string, string>,
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    await proc.exited;
+  };
+  const spawnPlugin = (env: Record<string, string>) => Bun.spawn(["bun", join(import.meta.dir, "..", "server.ts")], {
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: dir,
+      EINWEAVE_STATE_DIR: dir,
+      EINWEAVE_API_URL: "http://127.0.0.1:1",
+      EINWEAVE_AUTOCONNECT: "1",
+      CLAUDE_CODE_SESSION_ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      CLAUDE_CODE_SSE_PORT: "",
+      ...env,
+    } as Record<string, string>,
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+  });
+  /** The plugin's stderr so far, read until `until` appears (or 20 s). One reader per plugin, kept across calls. */
+  function stderrOf(plugin: ReturnType<typeof spawnPlugin>): (until: string) => Promise<string> {
+    const reader = (plugin.stderr as ReadableStream<Uint8Array>).getReader();
+    const dec = new TextDecoder();
+    let err = "";
+    let pending: ReturnType<typeof reader.read> | null = null;
+    return async (until) => {
+      const deadline = Date.now() + 20_000;
+      // Raced against the deadline: a plugin that stays up silent must fail on what is missing, not the test timeout.
+      while (Date.now() < deadline && !err.includes(until)) {
+        pending ??= reader.read();
+        const next = await Promise.race([pending, Bun.sleep(deadline - Date.now()).then(() => null)]);
+        if (!next) break;
+        pending = null;
+        if (next.done) break;
+        err += dec.decode(next.value, { stream: true });
+      }
+      return err;
+    };
+  }
+  async function eventually(check: () => boolean, ms = 10_000): Promise<boolean> {
+    for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(100)) if (check()) return true;
+    return check();
+  }
+  const procClaudePid = (pid: number): unknown => {
+    try { return JSON.parse(readFileSync(join(dir, "procs", `${pid}.json`), "utf8")).claudePid; } catch { return undefined; }
+  };
+
+  test("a live sibling's sse map never wins over our own pid map, even one written later", async () => {
+    const sibling = Bun.spawn(["sleep", "60"]); // the other window's Claude: alive, not our ancestor
+    mkdirSync(join(dir, "sessions"), { recursive: true });
+    writeFileSync(join(dir, "sessions", `sse-${SSE_PORT}.json`), JSON.stringify({
+      sessionId: SIBLING_ID, claudePid: sibling.pid, ssePort: Number(SSE_PORT), updatedAt: new Date().toISOString(),
+    }));
+    const plugin = spawnPlugin({ CLAUDE_CODE_SSE_PORT: SSE_PORT, EINWEAVE_TEST_SESSION_MAP_WAIT_MS: "6000" });
+    try {
+      await Bun.sleep(2500); // the plugin is up and waiting; our hook is late
+      await hookStart();
+      const err = await stderrOf(plugin)("session key");
+      expect(err, "the sibling's conversation must not be adopted").not.toContain(SIBLING_ID);
+      expect(err).toContain(`${CONVERSATION_ID} (source: session map (cli pid ${process.pid}))`);
+      // The pid comes from the lookup that chose the key: ctl socket and proc record carry it.
+      expect(await eventually(() => existsSync(ctlSocketPath(dir, process.pid))), "no ctl socket").toBe(true);
+      expect(await eventually(() => procClaudePid(plugin.pid) === process.pid), "proc record claudePid").toBe(true);
+    } finally {
+      plugin.kill();
+      sibling.kill();
+    }
+  }, 30_000);
+
+  test("a pid map later than the startup wait is still found: ctl socket opens, key moves to the conversation", async () => {
+    const plugin = spawnPlugin({ EINWEAVE_TEST_CLAUDE_PID_LATE_MS: "15000" }); // startup wait stays 0 (preload)
+    try {
+      const stderr = stderrOf(plugin);
+      const boot = await stderr("session key");
+      expect(boot, "no map yet: per-launch id").toContain("aaaaaaaa-bbbb");
+      await hookStart();
+      const late = await stderr(`→ ${CONVERSATION_ID}`);
+      expect(late, `found late + re-keyed. stderr:\n${late}`).toContain(`Claude pid ${process.pid} found late`);
+      expect(late).toContain(`→ ${CONVERSATION_ID}`);
+      expect(await eventually(() => existsSync(ctlSocketPath(dir, process.pid))), "no ctl socket").toBe(true);
+      expect(await eventually(() => procClaudePid(plugin.pid) === process.pid), "proc record claudePid").toBe(true);
+    } finally {
+      plugin.kill();
+    }
+  }, 40_000);
+
+  test("found late with no re-key (the hook names the launch's own conversation): the record's state is left as the link set it", async () => {
+    const LAUNCH_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const plugin = spawnPlugin({ EINWEAVE_TEST_CLAUDE_PID_LATE_MS: "15000" });
+    try {
+      const stderr = stderrOf(plugin);
+      expect(await stderr("session key")).toContain(LAUNCH_ID);
+      // A state only the file holds, as every transition writes it (updateProcState): the late pid must not undo it.
+      const procFile = join(dir, "procs", `${plugin.pid}.json`);
+      expect(await eventually(() => existsSync(procFile)), "no proc record").toBe(true);
+      writeFileSync(procFile, JSON.stringify({ ...JSON.parse(readFileSync(procFile, "utf8")), state: "standby" }));
+      await hookStart(LAUNCH_ID);
+      expect(await stderr(`Claude pid ${process.pid} found late`)).toContain("found late");
+      expect(await eventually(() => procClaudePid(plugin.pid) === process.pid), "proc record claudePid").toBe(true);
+      expect(JSON.parse(readFileSync(procFile, "utf8")).state, "the late pid rewrote the state").toBe("standby");
+    } finally {
+      plugin.kill();
+    }
+  }, 40_000);
 });

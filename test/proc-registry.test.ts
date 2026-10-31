@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   writeProc,
   updateProcState,
+  patchProc,
   removeProc,
   listProcs,
   procsDir,
@@ -88,6 +89,20 @@ describe("writeProc / removeProc", () => {
     removeProc(dir, 222);
     expect(existsSync(file)).toBe(false);
     expect(() => removeProc(dir, 222)).not.toThrow();
+  });
+});
+
+describe("patchProc", () => {
+  test("a late Claude pid patches claudePid + tty and leaves the current state alone", () => {
+    // The server's in-memory record says "disconnected" for life; a whole rewrite from it showed a
+    // connected window as disconnected in `status` (review of the session-key race fix, 2026-10-31).
+    const dir = tmp();
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    writeProc(dir, info({ pid: 555, state: "disconnected", claudePid: null, tty: "" }));
+    updateProcState(dir, 555, "connected");
+    patchProc(dir, 555, { claudePid: 4242, tty: "ttys009" });
+    const rec = JSON.parse(readFileSync(join(procsDir(dir), "555.json"), "utf8"));
+    expect(rec).toMatchObject({ state: "connected", claudePid: 4242, tty: "ttys009", sessionKey: "sess-a" });
   });
 });
 
