@@ -238,8 +238,8 @@ export function createHolds(deps: HoldsDeps) {
     listTakeable: showTakeable,
     /** The few threads `status` / the connect result name: unheld and parked ones, best first. */
     async needSomeone(limit = 5, page = 10, pages = 1): Promise<{ lines: string[]; text: string; count: number; more: boolean; counts: TakeableCounts | null; rows: TakeableRow[] }> {
-      // The server orders newest activity first, so a caller after the LONGEST waits (the mod's Inbox) reads
-      // several pages and sorts them itself: one page is only the newest.
+      // The server orders newest activity first, so a caller that wants the oldest too (the mod's Inbox: Open
+      // longest waiting first) reads several pages and sorts them itself: one page is only the newest.
       let { rows, next, counts } = await fetchTakeable({ limit: page });
       for (let n = 1; n < pages && next; n++) {
         const more = await fetchTakeable({ limit: page, cursor: next });
@@ -424,9 +424,12 @@ export function createHolds(deps: HoldsDeps) {
       return describeScope(scope, true);
     },
 
-    /** The agent's gateway for the mod's Unowned line: online only while a live gateway session is connected. */
+    /**
+     * The agent's gateway for the mod's Unowned line: online while its session is LIVE -- a socket, or one
+     * that dropped inside the grace -- since that is when the server's lease still routes to it.
+     */
     async gateway(): Promise<{ online: boolean; label: string | null }> {
-      const gw = (await fetchSessions(deps.myAgentId())).find((s) => s.kind === "gateway" && s.state === "live" && s.online);
+      const gw = (await fetchSessions(deps.myAgentId())).find((s) => s.kind === "gateway" && s.state === "live");
       return gw ? { online: true, label: nameOf(gw.label, gw.id) } : { online: false, label: null };
     },
 

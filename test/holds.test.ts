@@ -375,12 +375,13 @@ describe("gateway (the mod's Unowned line)", () => {
   const row = (over: Record<string, unknown>) => ({ id: S2, label: "bridge-gw", kind: "gateway", scope: { mode: "none", channelIds: [] }, state: "live", online: true, holds: [], ...over });
   const withSessions = (sessions: unknown[]) => fake((c) => (c.path === `/api/agents/${AGENT}/sessions` ? { status: 200, body: { sessions } } : undefined));
 
-  test("online only while a live gateway session is connected, named by its label", async () => {
+  test("online while its session is live, named by its label -- also a socket that dropped inside the grace, which the lease still routes to", async () => {
     expect(await withSessions([row({})]).holds.gateway()).toEqual({ online: true, label: "bridge-gw" });
+    expect(await withSessions([row({ online: false })]).holds.gateway()).toEqual({ online: true, label: "bridge-gw" });
   });
 
-  test("a parked or disconnected gateway, or only work sessions, is no gateway online", async () => {
-    for (const sessions of [[row({ state: "parked", online: false })], [row({ online: false })], [row({ kind: "session" })], []]) {
+  test("a parked gateway, or only work sessions, is no gateway online", async () => {
+    for (const sessions of [[row({ state: "parked", online: false })], [row({ kind: "session" })], []]) {
       expect(await withSessions(sessions).holds.gateway()).toEqual({ online: false, label: null });
     }
   });

@@ -66,7 +66,7 @@ import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
-import { buildUiState, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiGateway, type UiWaiting } from "./ui/ui-state";
+import { buildUiState, mergeRefresh, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiGateway, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath } from "./delivery/ctl-path";
@@ -1362,7 +1362,7 @@ function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<Pend
       subscribe: (fn) => {
         const off = uiWatch.subscribe(fn);
         // The first watcher: read what waits now rather than at the next minute.
-        if (uiWaiting === null) void refreshWaiting();
+        if (uiWaiting === null || uiGateway === null) void refreshWaiting();
         return off;
       },
     },
@@ -3120,9 +3120,8 @@ async function refreshWaiting(): Promise<void> {
     uiWaiting = null;
     uiGateway = null;
   } else {
-    const [waiting, gateway] = await Promise.allSettled([holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES), holds.gateway()]);
-    if (waiting.status === "fulfilled") uiWaiting = toWaiting(waiting.value);
-    if (gateway.status === "fulfilled") uiGateway = gateway.value;
+    const [waiting, gateway] = await Promise.allSettled([holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES).then((r) => toWaiting(r)), holds.gateway()]);
+    ({ waiting: uiWaiting, gateway: uiGateway } = mergeRefresh({ waiting: uiWaiting, gateway: uiGateway }, waiting, gateway));
   }
   refreshUi();
 }
@@ -4264,7 +4263,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
       case "ui_state": {
         // Not gated, like status: the mod draws "disconnected" from it too.
-        if (authenticated && uiWaiting === null) await refreshWaiting();
+        if (authenticated && (uiWaiting === null || uiGateway === null)) await refreshWaiting();
         refreshUi();
         const cur = uiWatch.current()!;
         const structured = { rev: cur.rev, ...cur.state };

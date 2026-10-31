@@ -144,6 +144,21 @@ export class UiWatch {
   }
 }
 
+/**
+ * One refresh's two reads, merged: each side keeps its last good value when only its read failed,
+ * so a failing sessions list never blanks what waits, nor the reverse.
+ */
+export function mergeRefresh(
+  prev: { waiting: UiWaiting | null; gateway: UiGateway | null },
+  waiting: PromiseSettledResult<UiWaiting>,
+  gateway: PromiseSettledResult<UiGateway>
+): { waiting: UiWaiting | null; gateway: UiGateway | null } {
+  return {
+    waiting: waiting.status === "fulfilled" ? waiting.value : prev.waiting,
+    gateway: gateway.status === "fulfilled" ? gateway.value : prev.gateway,
+  };
+}
+
 /** The mod's Inbox lists this many, picked from up to UI_WAITING_PAGES pages of UI_WAITING_PAGE (the server's max). */
 export const UI_WAITING_LIMIT = 20;
 export const UI_WAITING_PAGE = 50;

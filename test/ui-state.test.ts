@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { buildUiState, toWaiting, UiWatch, type UiInputs } from "../ui/ui-state";
+import { buildUiState, mergeRefresh, toWaiting, UiWatch, type UiInputs } from "../ui/ui-state";
 import { ctlSocketPath } from "../delivery/ctl-path";
 import { openCtlServer, MAX_WATCHERS, type CtlServer, type WatchPort } from "../delivery/ctl-server";
 import { MissedTracker } from "../delivery/missed";
@@ -379,3 +379,18 @@ test("server: ui_state answers with structuredContent even unconfigured (idle)",
     await client.close().catch(() => {});
   }
 }, 30_000);
+
+describe("mergeRefresh", () => {
+  const W = { forYou: 1, channel: 0, more: false, top: [] };
+  const W2 = { forYou: 2, channel: 0, more: false, top: [] };
+  const G = { online: true, label: "bridge-gw" };
+  const G2 = { online: false, label: null };
+  const ok = <T,>(value: T): PromiseSettledResult<T> => ({ status: "fulfilled", value });
+  const no: PromiseSettledResult<never> = { status: "rejected", reason: new Error("403") };
+
+  test("each side keeps its last good value when only its own read failed", () => {
+    expect(mergeRefresh({ waiting: W, gateway: G }, ok(W2), no)).toEqual({ waiting: W2, gateway: G });
+    expect(mergeRefresh({ waiting: W, gateway: G }, no, ok(G2))).toEqual({ waiting: W, gateway: G2 });
+    expect(mergeRefresh({ waiting: null, gateway: null }, no, no)).toEqual({ waiting: null, gateway: null });
+  });
+});
