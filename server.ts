@@ -51,7 +51,7 @@ import { dirname, join } from "path";
 import { labelFileFor, readLabelFile, writeLabelFile, clearLabelFile, sweepLabelFiles } from "./label-store";
 import { readConnectState, writeConnectState, connectStateFileFor, sweepConnectStateFiles, readConnectKind, writeConnectKind, connectKindFileFor, readScopeSet, writeScopeSet, connectScopeFileFor, touchSessionFiles, type ConnectKind } from "./connect-store";
 import { describeClose, type CloseClass, type HolderIdentity } from "./reconnect-policy";
-import { writeProc, removeProc, updateProcState, listProcs, type ProcInfo } from "./proc-registry";
+import { writeProc, removeProc, updateProcState, patchProc, listProcs, type ProcInfo } from "./proc-registry";
 import { readOrphanedAt, decideStaleNotice, staleNoticeText, findInstalledVersion, INITIAL_STALE_WATCH_STATE, type StaleWatchState } from "./stale-watcher";
 import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
@@ -247,6 +247,10 @@ const SESSION_MAP_DIRS = [
 // suite); test/preload.ts sets 0, and tests of the wait itself set it back.
 const SESSION_MAP_WAIT_MS = testKnob("EINWEAVE_TEST_SESSION_MAP_WAIT_MS", (n) => Number.isInteger(n) && n >= 0) ?? 3000;
 const SESSION_MAP_POLL_MS = 100;
+// A hook later than SESSION_MAP_WAIT_MS (a loaded machine) still names this process's Claude pid:
+// keep looking this long (watchForClaudePid). 0 = not at all; test/preload.ts sets it, like the wait.
+const CLAUDE_PID_LATE_MS = testKnob("EINWEAVE_TEST_CLAUDE_PID_LATE_MS", (n) => Number.isInteger(n) && n >= 0) ?? 60_000;
+const CLAUDE_PID_LATE_POLL_MS = 1000;
 
 
 /** The controlling terminal of a live pid (D2: `ps -o tty= -p <claudePid>`). "" if unknown. */
@@ -288,18 +292,45 @@ function pidAlive(pid: unknown): boolean {
  * Costs one `ps` per level, bounded. Returns null where `ps` does not exist
  * (Windows) — the caller then falls back rather than pretending.
  */
-function parentPid(pid: number): number | null {
+/** One `ps` step: `ran` false when `ps` itself failed (none here, or a spawn failure); `ppid` null at the top. */
+function parentPid(pid: number): { ran: boolean; ppid: number | null } {
   try {
     const r = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)]);
-    if (!r.success) return null;
+    if (!r.success) return { ran: false, ppid: null };
     const n = Number(new TextDecoder().decode(r.stdout).trim());
-    return Number.isSafeInteger(n) && n > 1 ? n : null;
+    return { ran: true, ppid: Number.isSafeInteger(n) && n > 1 ? n : null };
   } catch {
-    return null;
+    return { ran: false, ppid: null };
   }
 }
 
 const ANCESTRY_MAX_DEPTH = 8;
+const ANCESTRY_ATTEMPTS = 3;
+/**
+ * This process and its ancestors, nearest first; null where `ps` cannot run. Walked once: an
+ * ancestor's pid does not change while it lives, so the late-pid poll reads files and spawns
+ * nothing. A walk a failed `ps` cut short is tried again -- a spawn can fail under load -- since
+ * one failure would otherwise turn the sse key back on for the window's life.
+ */
+const ANCESTORS: number[] | null = (() => {
+  for (let attempt = 0; attempt < ANCESTRY_ATTEMPTS; attempt++) {
+    const chain = [process.pid];
+    let ran = true;
+    while (chain.length < ANCESTRY_MAX_DEPTH) {
+      const step = parentPid(chain[chain.length - 1]!);
+      if (!step.ran) {
+        ran = false;
+        break;
+      }
+      if (step.ppid === null) break;
+      chain.push(step.ppid);
+    }
+    if (ran) return chain;
+  }
+  return null;
+})();
+/** `ps` answers here, so the pid key can be found: the sse key must not be used (resolveSessionKey). */
+const ANCESTRY_WORKS = ANCESTORS !== null;
 
 /** RFC-017 D2: this process's own identity fields, shared by the proc registry write
  * below AND the session lock record (P3) — computed once (the ancestry walk costs a
@@ -310,28 +341,26 @@ interface MyIdentity {
   termProgram: string;
   cwd: string;
 }
+// A null pid cached here once stuck for the window's life (no ctl socket, 2026-10-31): watchForClaudePid
+// replaces it when the hook's pid map turns up late.
 let myIdentityCache: MyIdentity | null = null;
+function identityOf(claudePid: number | null): MyIdentity {
+  return {
+    claudePid,
+    tty: claudePid !== null ? ttyOf(claudePid) : "",
+    termProgram: process.env.TERM_PROGRAM ?? "",
+    cwd: PROJECT_DIR,
+  };
+}
 function myIdentity(): MyIdentity {
-  if (!myIdentityCache) {
-    const mapped = readMappingByAncestry();
-    const claudePid = mapped?.pid ?? null;
-    myIdentityCache = {
-      claudePid,
-      tty: claudePid !== null ? ttyOf(claudePid) : "",
-      termProgram: process.env.TERM_PROGRAM ?? "",
-      cwd: PROJECT_DIR,
-    };
-  }
-  return myIdentityCache;
+  return (myIdentityCache ??= identityOf(readMappingByAncestry()?.pid ?? null));
 }
 
 /** Mapping written by the hook against any ancestor of ours, nearest first. */
 function readMappingByAncestry(): { id: string; pid: number } | null {
-  let pid: number | null = process.pid;
-  for (let depth = 0; depth < ANCESTRY_MAX_DEPTH && pid; depth++) {
+  for (const pid of ANCESTORS ?? []) {
     const id = readSessionMapping(`pid-${pid}`);
     if (id) return { id, pid };
-    pid = parentPid(pid);
   }
   return null;
 }
@@ -408,13 +437,15 @@ async function resolveSessionKey(): Promise<{ key: string; source: string }> {
   //    or tmux session has none). Headless is also where the bug is worst: on a
   //    `--continue` the MCP env carries a per-launch id that names NO
   //    conversation at all, while the hook still sees the real one.
-  // 2. sse port — kept for IDE sessions and as the fallback wherever the
-  //    ancestry walk cannot run (no `ps`, i.e. Windows).
-  //
-  // The hook writes both files when it can, so this order is a preference, not
-  // a dependency.
+  // 2. sse port — ONLY where the ancestry walk cannot run (no `ps`, i.e. Windows).
+  //    Every window attached to one IDE shares the port, so the sse file names
+  //    whichever of them ran its hook last. Read while our own hook had not yet
+  //    written the pid file, it handed a second window the FIRST window's
+  //    conversation (measured 2026-10-31: plugin up 21 ms before its hook). Where
+  //    the pid key can work, it is the only key.
   const deadline = Date.now() + SESSION_MAP_WAIT_MS;
-  const haveSseKey = /^[0-9]+$/.test(SESSION_MAP_KEY);
+  const haveSseKey = /^[0-9]+$/.test(SESSION_MAP_KEY) && !ANCESTRY_WORKS;
+  if (SESSION_MAP_WAIT_MS > 0) process.stderr.write(`einweave channel: waiting up to ${SESSION_MAP_WAIT_MS} ms for the session map\n`);
   for (;;) {
     const byPid = readMappingByAncestry();
     if (byPid) {
@@ -4265,24 +4296,51 @@ if (shuttingDown) void feedTap.stop();
 try {
   mkdirSync(join(STATE_DIR, "seq"), { recursive: true, mode: 0o700 });
 } catch {}
+async function startCtl(claudePid: number): Promise<void> {
+  // Dead processes' sockets and half-bound temps, in <state>/ctl AND the per-user tmp fallback;
+  // and the 0.30.0 fallback directory, once nothing live is in it.
+  sweepCtlDirs([join(STATE_DIR, "ctl"), dirname(ctlSocketPath(STATE_DIR, claudePid))], pidAlive);
+  removeLegacyCtlDir(tmpdir(), pidAlive);
+  const mgr = new CtlManager<PendingEntry>({ options: (takeover) => ctlOptions(claudePid, takeover), retryDelaysMs: CTL_RETRY_DELAYS_MS, holdsLock: holdsLiveLock, ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}) });
+  ctlMgr = mgr;
+  await mgr.ensure();
+  if (shuttingDown) mgr.close();
+  // Another copy serves the path — most often the OLD process of a /reload-plugins that
+  // has not exited yet. A bounded wait lets the handover complete; the session-lock
+  // holder takes the socket over regardless (openSession, and every authenticated).
+  else mgr.retry();
+}
+/**
+ * The hook lost the startup race by more than SESSION_MAP_WAIT_MS. A null pid must not stick for
+ * the window's life — no ctl socket is no hook confirmations and no SessionStart re-key, silently —
+ * so keep walking the ancestry, bounded; on a hit, become what a timely hook would have made us.
+ */
+function watchForClaudePid(): void {
+  const deadline = Date.now() + CLAUDE_PID_LATE_MS;
+  const timer = setInterval(() => {
+    if (shuttingDown || Date.now() >= deadline) return clearInterval(timer);
+    const mapped = readMappingByAncestry();
+    if (!mapped) return;
+    clearInterval(timer);
+    myIdentityCache = identityOf(mapped.pid);
+    if (myProc) {
+      // A patch: the file's `state` is current (connected, standby…), myProc's is not.
+      myProc = { ...myProc, claudePid: mapped.pid, tty: myIdentityCache.tty };
+      patchProc(STATE_DIR, process.pid, { claudePid: mapped.pid, tty: myIdentityCache.tty });
+    }
+    process.stderr.write(`einweave channel: Claude pid ${mapped.pid} found late (session map)\n`);
+    void startCtl(mapped.pid);
+    const moved = conversationMovedTo();
+    if (moved) rekeyTo(moved.id, moved.source);
+  }, CLAUDE_PID_LATE_POLL_MS);
+  timer.unref();
+}
 {
   // Leftover temp files of a move that died hold credential bytes: remove those of dead processes.
   sweepMigrationTemps(STATE_DIR, pidAlive);
   const claudePid = myIdentity().claudePid;
-  if (claudePid !== null) {
-    // Dead processes' sockets and half-bound temps, in <state>/ctl AND the per-user tmp fallback;
-    // and the 0.30.0 fallback directory, once nothing live is in it.
-    sweepCtlDirs([join(STATE_DIR, "ctl"), dirname(ctlSocketPath(STATE_DIR, claudePid))], pidAlive);
-    removeLegacyCtlDir(tmpdir(), pidAlive);
-    const mgr = new CtlManager<PendingEntry>({ options: (takeover) => ctlOptions(claudePid, takeover), retryDelaysMs: CTL_RETRY_DELAYS_MS, holdsLock: holdsLiveLock, ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}) });
-    ctlMgr = mgr;
-    await mgr.ensure();
-    if (shuttingDown) mgr.close();
-    // Another copy serves the path — most often the OLD process of a /reload-plugins that
-    // has not exited yet. A bounded wait lets the handover complete; the session-lock
-    // holder takes the socket over regardless (openSession, and every authenticated).
-    else mgr.retry();
-  }
+  if (claudePid !== null) await startCtl(claudePid);
+  else if (ANCESTRY_WORKS && CLAUDE_PID_LATE_MS > 0) watchForClaudePid();
 }
 // Only a CURRENT copy writes the launcher. An old window restarting from an orphaned
 // plugin root (a newer version is installed; this directory is on its deletion clock)
