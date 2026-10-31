@@ -29,3 +29,11 @@ test("the version is a plain semver triple", () => {
   // marketplace's ordering.
   expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
 });
+
+test("plugin.json names only keys an older Claude Code loads", () => {
+  // Claude Code 2.0.77 (before mods) refuses a manifest key it does not know and drops the WHOLE
+  // plugin: no tools, no hooks, nothing said. `"types"` (a mod's published contract; this plugin
+  // publishes none) did that, measured 2026-10-30. A new key is checked on an older build first:
+  //   bunx @anthropic-ai/claude-code@2.0.77 plugin validate .
+  expect(Object.keys(manifest).sort()).toEqual(["description", "keywords", "name", "version"]);
+});
