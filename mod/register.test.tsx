@@ -611,7 +611,16 @@ test('a drop still retrying (reconnecting) keeps every tab: a blip does not blan
 })
 
 test('View opens a thread tab read through ui_thread (never read_thread, which would ack it as the model\'s); × closes it', async ($, on) => {
-  const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [{ sender: 'Kevin', content: 'Can I take the NAS at 14:00?', type: 'question', ts: '2026-10-30T08:00:00.000Z' }], has_older: true, older_count: 12 }
+  const thread = {
+    thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' },
+    channel_id: 'c',
+    messages: [
+      { sender: 'Kevin', content: 'Can I take the NAS at 14:00?', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, root: true },
+      { sender: 'Brian', content: 'yes', type: 'text', ts: '2026-10-30T08:01:00.000Z', seq: 20 },
+    ],
+    has_older: true,
+    older_count: 12,
+  }
   const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -631,9 +640,9 @@ test('View opens a thread tab read through ui_thread (never read_thread, which w
   expect(await ui.find({ type: 'Text', text: 'question' })).toMatchObject({ props: { color: '#e8b04a' } })
   expect(await ui.find({ type: 'Text', text: 'Kevin' })).toMatchObject({ props: { weight: 'bold' } })
   expect((await ui.findAll({ type: 'Text', text: 'Older ask' })).some(t => (t.props as { weight?: string }).weight === 'bold')).toBe(true)
-  // Messages are Markdown, as Claude's own replies draw (plan decision 1); a title stays plain Text.
-  expect(await ui.find({ key: `md:${T_OLD}:0` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at 14:00?' } })
-  expect(await ui.find({ type: 'Text', text: '12 older replies not shown: the web app has them.' })).toBeDefined()
+  // Post text is the mod's own lines (decision 2026-10-31, option c): the pane knows each post's rows.
+  expect(await ui.find({ key: `ln:${T_OLD}:root:0` })).toMatchObject({ text: 'Can I take the NAS at 14:00?' })
+  expect(await ui.find({ type: 'Text', text: '12 older replies' })).toBeDefined()
   expect(await ui.find({ key: `take:${T_OLD}` })).toBeDefined()
   await ui.press({ key: `close:${T_OLD}` })
   expect(await ui.find({ key: `tab:${T_OLD}` })).toBeUndefined()
@@ -1108,4 +1117,106 @@ test('the Session tab is the canvas\'s label / value grid, with Disconnect and S
   expect(calls.filter(c => c.tool === 'disconnect' || c.tool === 'logout').map(c => c.tool)).toEqual(['disconnect', 'logout'])
   expect(await ui.find({ key: 'logout' })).toMatchObject({ props: { label: 'Sign out', dimColor: true } })
   await ui.unmount()
+})
+
+/** Board ThreadTab, layout A: a root, a long post, a reply this agent sent, and two new ones. */
+const LONG = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n')
+const THREAD_A = {
+  thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' },
+  channel_id: 'c',
+  messages: [
+    { sender: 'Kevin', content: 'Can I take the NAS at **14:00**?', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
+    { sender: 'Brian', content: LONG, type: 'text', ts: '2026-10-30T08:05:00.000Z', seq: 30, own: false, new: false },
+    { sender: 'Bellman', content: 'On it: see https://example.com/x', type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
+    { sender: 'Kevin', content: 'thanks', type: 'text', ts: '2026-10-30T08:07:00.000Z', seq: 32, own: false, new: true },
+    { sender: 'Kevin', content: 'one more', type: 'text', ts: '2026-10-30T08:08:00.000Z', seq: 33, own: false, new: true },
+  ],
+  has_older: true,
+  older_count: 25,
+}
+/** The posts window's inner Box: its negative bottom margin is how far up the window is. */
+const offOf = async (ui: { find(q: object): Promise<{ children: unknown[] } | undefined> }) =>
+  -Number(((await ui.find({ key: `posts:${T_OLD}` }))?.children[0] as { props: { marginBottom: number } }).props.marginBottom)
+// `offset` where the engine would put its window (moved by `by`): the mod holds it one row in instead.
+const scrollEv = (by: number) => ({ component: 'Pane', requestId: 'einweave', offset: Math.max(0, 1 + by), by, bodyRows: 30, contentRows: 32, origin: { kind: 'person' } }) as never
+
+test('layout A, docked: posts in chat order under a pinned header and footer, the tree the window plus a spacer row each end', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  expect(await ui.find({ key: 'pane' })).toMatchObject({ props: { height: PANE.props.scroll.bodyRows + 2 } })
+  const posts = (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
+  expect(posts).toEqual(['root', 's30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
+  // Own posts blue with (you); new ones say so in the brand, bold.
+  expect(await ui.find({ type: 'Text', text: 'Bellman (you)' })).toMatchObject({ props: { color: PALETTE.blue, weight: 'bold' } })
+  expect(await ui.findAll({ type: 'Text', text: /^new$/ })).toHaveLength(2)
+  expect(await ui.find({ type: 'Text', text: /^new$/ })).toMatchObject({ props: { color: PALETTE.brand, weight: 'bold' } })
+  // Post text is our own lines: bold run, link run, each line one row.
+  expect(await ui.find({ type: 'Text', text: '14:00' })).toMatchObject({ props: { weight: 'bold' } })
+  expect(await ui.find({ type: 'Text', text: 'https://example.com/x' })).toMatchObject({ props: { color: PALETTE.blue, underline: true } })
+  // The long post capped at 6 lines, a "more" row after them.
+  expect((await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith(`ln:${T_OLD}:s30:`))).toHaveLength(6)
+  expect(await ui.find({ key: `more:${T_OLD}:s30` })).toMatchObject({ props: { label: '▸ 4 more lines', dimColor: true } })
+  // Under the root: how many older replies, and Load older.
+  expect(await ui.find({ type: 'Text', text: '25 older replies' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ key: `older:${T_OLD}` })).toMatchObject({ props: { label: 'Load 20 older ↑' } })
+  expect(await ui.find({ type: 'Text', text: 'Read-only · no tokens · new stays new until it reaches Claude.' })).toMatchObject({ props: { dimColor: true } })
+  await ui.unmount()
+})
+
+test('layout A: opens at the first new post (else the newest); the wheel moves its own window and keeps the engine one row in; the top edge loads older', async ($, on) => {
+  // The engine beneath: where the plugin left the engine's own window.
+  const offsets: number[] = []
+  on('ui.scroll', ($, e) => {
+    offsets.push(e.offset)
+    return {}
+  })
+  const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(c.args.before_seq ? { ...THREAD_A, messages: [THREAD_A.messages[0], { sender: 'Kevin', content: 'older one', type: 'text', ts: null, seq: 10 }], has_older: true, older_count: 5 } : THREAD_A)) : undefined) })
+  await start($, clock)
+  // Pinned: header 1, tabs 1+1, rule 1, margin 1, thread header 4, footer 3 = 12; a 16-row body leaves 4.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 16 } } })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  // Rows: root 2, gap 2, s30 9, s31 3, s32 3, s33 3 = 22; s32's sender row is row 17: 22 - 4 - 17 up from the end.
+  expect(await offOf(ui)).toBe(1)
+  expect(await $.ui.scroll(scrollEv(-2))).toEqual({})
+  expect(await offOf(ui)).toBe(3)
+  await $.ui.scroll(scrollEv(100))
+  expect(await offOf(ui)).toBe(0)
+  expect(calls.filter(c => c.tool === 'ui_thread' && c.args.before_seq)).toEqual([])
+  await $.ui.scroll(scrollEv(-100))
+  await clock.settle()
+  expect(await offOf(ui)).toBe(22 - 4)
+  expect(offsets).toEqual([1, 1, 1])
+  expect(calls.filter(c => c.tool === 'ui_thread' && c.args.before_seq).map(c => c.args)).toEqual([{ thread_id: T_OLD, before_seq: 30, limit: 20 }])
+  expect(await ui.find({ key: `post:${T_OLD}:s10` })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '5 older replies' })).toBeDefined()
+  // A fresh read (↻, or a held thread's live one) brings the newest page again: the older page stays.
+  await ui.press({ key: `refresh:${T_OLD}` })
+  await clock.settle()
+  expect(await ui.find({ key: `post:${T_OLD}:s10` })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '5 older replies' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('layout A: "more" opens a capped post in place; inline (or on a desktop) the posts flow and the surface scrolls them', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  await ui.press({ key: `more:${T_OLD}:s30` })
+  expect((await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith(`ln:${T_OLD}:s30:`))).toHaveLength(10)
+  expect(await ui.find({ key: `more:${T_OLD}:s30` })).toBeUndefined()
+  await ui.unmount()
+  const inline = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, placement: 'inline' } })
+  expect((await inline.find({ key: 'pane' }))?.props).not.toHaveProperty('height')
+  expect((await inline.find({ key: `posts:${T_OLD}` }))?.props).not.toHaveProperty('height')
+  expect(await inline.find({ key: `ln:${T_OLD}:root:0` })).toBeDefined()
+  await inline.unmount()
+  const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  expect(await desk.find({ key: `md:${T_OLD}:root` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at **14:00**?' } })
+  await desk.unmount()
 })

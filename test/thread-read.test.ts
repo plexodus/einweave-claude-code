@@ -479,6 +479,25 @@ describe("read_thread / list_threads", () => {
     expect(stub.readBodies).toEqual([]);
   });
 
+  test("ui_thread marks each message: its seq, the root, own (this agent sent it), new (above the read position); before_seq pages back for Load older", async () => {
+    stub.set({ replies: [msg(20, "r1"), { ...msg(21, "mine"), agentId: "bellman" }, msg(22, "r3")] });
+    // The model reads up to 20 (bellman is the agent under test).
+    await ok("read_thread", { thread_id: THREAD, limit: 1, mark_read: true });
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    expect(view.messages.map((m: any) => [m.content, m.seq, m.own, m.new, m.root ?? false])).toEqual([
+      ["Bug: Threaded replies do not work", 12, false, false, true],
+      ["r1", 20, false, false, false],
+      // Its own post is with Claude already: never new.
+      ["mine", 21, true, false, false],
+      ["r3", 22, false, true, false],
+    ]);
+    const older = await ok("ui_thread", { thread_id: THREAD, before_seq: 22, limit: 1 });
+    expect(older.messages.map((m: any) => m.content)).toEqual(["Bug: Threaded replies do not work", "mine"]);
+    expect(older).toMatchObject({ has_older: true, older_count: 1 });
+    const q = new URLSearchParams(stub.calls.filter((c) => c.includes("/messages")).at(-1)!.split("?")[1]);
+    expect([q.get("beforeSeq"), q.get("limit")]).toEqual(["22", "1"]);
+  });
+
   test("ui_thread strips control characters from what the pane draws: one would refuse the whole pane and style the terminal", async () => {
     stub.set({ root: { ...msg(12, "\x1b[31mred\x1b[0m alert\x07"), senderName: "Ke\x1b]0;x\x07vin" }, replies: [] });
     const view = await ok("ui_thread", { thread_id: THREAD });

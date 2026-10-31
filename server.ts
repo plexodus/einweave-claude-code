@@ -2954,7 +2954,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         "For the einweave terminal mod, not for conversation: a thread as the PERSON views it in the mod's pane. It neither marks the thread read nor counts as delivered to you. To read a thread yourself use read_thread.",
       inputSchema: {
         type: "object",
-        properties: { thread_id: { type: "string", description: "The thread's id." } },
+        properties: {
+          thread_id: { type: "string", description: "The thread's id." },
+          before_seq: { type: "integer", minimum: 0, description: "Only replies older than this seq (the pane's Load older)." },
+          limit: { type: "integer", minimum: 1, maximum: UI_THREAD_LIMIT, description: `Replies to show, newest first; default ${UI_THREAD_LIMIT}.` },
+        },
         required: ["thread_id"],
       },
     },
@@ -4277,14 +4281,28 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         // A person looking is not the model reading: markRead false, and NO confirmReturned -- an ack here
         // would tell the server the model has these entries and end their missed-tracking (silent loss).
         // The newest page (backward from the top), not the first: the open question is at the end of a long thread.
-        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq: Number.MAX_SAFE_INTEGER, limit: UI_THREAD_LIMIT, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
+        // `before_seq` pages back from there: the pane's Load older.
+        const beforeSeq = Number.isSafeInteger(args.before_seq) && (args.before_seq as number) >= 0 ? (args.before_seq as number) : Number.MAX_SAFE_INTEGER;
+        const limit = Number.isSafeInteger(args.limit) ? Math.min(Math.max(args.limit as number, 1), UI_THREAD_LIMIT) : UI_THREAD_LIMIT;
+        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq, limit, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
         if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
+        // New = above this agent's read position: it stays new until it reaches Claude. Own = this agent sent it.
+        const readSeq = typeof data.thread?.readSeq === "number" ? data.thread.readSeq : null;
         // The pane draws all of this: a control character in any of it refuses the whole pane (and styles the terminal).
-        const shape = (m: any) => ({ sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId), content: stripControlChars(String(m.content ?? "")), type: m.type ?? "text", ts: m.createdAt });
+        const shape = (m: any, root: boolean) => ({
+          sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId),
+          content: stripControlChars(String(m.content ?? "")),
+          type: m.type ?? "text",
+          ts: m.createdAt,
+          seq: m.seq == null ? null : Number(m.seq),
+          own: !!agentId && m.agentId === agentId,
+          new: !(agentId && m.agentId === agentId) && readSeq !== null && m.seq != null && Number(m.seq) > readSeq,
+          ...(root ? { root: true } : {}),
+        });
         const view = {
           thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
           channel_id: data.thread?.channelId ?? data.parent?.channelId ?? null,
-          messages: [...(data.parent ? [shape(data.parent)] : []), ...(data.replies ?? []).map(shape)],
+          messages: [...(data.parent ? [shape(data.parent, true)] : []), ...(data.replies ?? []).map((m: any) => shape(m, false))],
           // Replies older than those shown, and how many (null from a server that does not count them).
           has_older: data.hasOlder === true,
           older_count: typeof data.olderCount === "number" ? data.olderCount : null,

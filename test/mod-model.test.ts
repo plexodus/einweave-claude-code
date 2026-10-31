@@ -6,7 +6,9 @@ import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
+  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, tabRows, tabWidth, threadLayout, threadOff, withOlder,
 } from "../mod/model";
+import type { ThreadMessage, ThreadView } from "../types";
 import type { ChannelThread } from "../types";
 import type { UiSnapshot, View } from "../types";
 
@@ -342,5 +344,78 @@ describe("the Inbox and thread tabs", () => {
     expect(parseCommand("take 2")).toEqual({ kind: "take", ref: "2" });
     expect(parseCommand("find release notes")).toEqual({ kind: "find", words: "release notes" });
     expect(parseCommand("find").kind).toBe("usage");
+  });
+});
+
+describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
+  const post = (seq: number, content: string, o: Partial<ThreadMessage> = {}): ThreadMessage => ({ sender: "K", content, type: "text", ts: null, seq, ...o });
+  const root = post(1, "root", { root: true });
+
+  test("rows: a blank between posts, the sender row, the lines; the gap row under the root while older replies exist", () => {
+    const l = threadLayout([root, post(5, "a"), post(6, "b\nc")], 40, {}, 3);
+    expect(l.blocks.map(b => [b.key, b.top, b.rows])).toEqual([["root", 0, 2], ["s5", 4, 3], ["s6", 7, 4]]);
+    expect(l.gap).toEqual({ top: 2, rows: 2 });
+    expect(l.total).toBe(11);
+    expect(threadLayout([root, post(5, "a")], 40, {}, 0).gap).toBeNull();
+  });
+
+  test(`a post over ${POST_CAP + 1} lines shows ${POST_CAP} and a "more" row until opened; ${POST_CAP + 1} show whole`, () => {
+    const long = Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n");
+    const seven = Array.from({ length: POST_CAP + 1 }, (_, i) => `l${i}`).join("\n");
+    const [b] = threadLayout([post(5, long)], 40, {}, 0).blocks;
+    expect([b!.lines.length, b!.more, b!.rows]).toEqual([POST_CAP, 10 - POST_CAP, 1 + POST_CAP + 1]);
+    expect(threadLayout([post(5, long)], 40, { s5: true }, 0).blocks[0]!.lines).toHaveLength(10);
+    expect(threadLayout([post(5, seven)], 40, {}, 0).blocks[0]!.more).toBe(0);
+  });
+
+  test("lands with the first new post at the window's top, else the newest; never past the top", () => {
+    const ms = [root, post(5, "a"), post(6, "b", { new: true }), post(7, "c", { new: true })];
+    const l = threadLayout(ms, 40, {}, 0); // tops 0, 2, 5, 8; total 11
+    // s6's sender row is row 6 (its blank row 5 above it): the window's top is there.
+    expect(landOff(l, ms, 4)).toBe(11 - 4 - 6);
+    expect(landOff(l, ms.map(m => ({ ...m, new: false })), 4)).toBe(0);
+    expect(landOff(l, ms, 20)).toBe(0);
+    expect(postKey(ms[2]!, 2)).toBe("s6");
+  });
+
+  test("the person's place holds while a live thread grows below it, follows the newest at 0, and clamps", () => {
+    const ms = [post(5, "a"), post(6, "b")];
+    const l = threadLayout(ms, 40, {}, 0); // total 5
+    const grown = threadLayout([...ms, post(7, "c")], 40, {}, 0); // total 8
+    expect(threadOff({ off: 1, newest: "s6", open: {} }, grown, ms, 2)).toBe(1 + 3);
+    expect(threadOff({ off: 0, newest: "s6", open: {} }, grown, ms, 2)).toBe(0);
+    expect(threadOff({ off: 99, newest: "s6", open: {} }, l, ms, 2)).toBe(3);
+  });
+
+  test("scrollBy: negative goes up; atTop once the top shows", () => {
+    const l = threadLayout([post(5, "a"), post(6, "b")], 40, {}, 0); // total 5
+    expect(scrollBy(0, -1, l, 2)).toEqual({ off: 1, atTop: false });
+    expect(scrollBy(1, -10, l, 2)).toEqual({ off: 3, atTop: true });
+    expect(scrollBy(3, 10, l, 2)).toEqual({ off: 0, atTop: false });
+  });
+
+  test("tabRows wraps as flex-wrap does; tabWidth pads a cell each side and counts the ×", () => {
+    expect(tabWidth("Inbox 3", false)).toBe(9);
+    expect(tabWidth("x", "shown")).toBe(5);
+    expect(tabWidth("x", "rest")).toBe(4);
+    expect(tabRows([9, 9, 9], 29)).toBe(1);
+    expect(tabRows([9, 9, 9], 28)).toBe(2);
+    expect(tabRows([9, 9, 9], 9)).toBe(3);
+  });
+
+  test("withOlder puts an older page between the root and the replies, once each; the cursor is the oldest reply", () => {
+    const t: ThreadView = { title: "t", status: null, messages: [root, post(30, "c")], older: 2, error: null, loading: false };
+    const page: ThreadView = { ...t, messages: [root, post(10, "a"), post(20, "b"), post(30, "c")], older: 0 };
+    expect(olderCursor(t)).toBe(30);
+    const merged = withOlder(t, page);
+    expect(merged.messages.map(m => m.content)).toEqual(["root", "a", "b", "c"]);
+    expect(merged.older).toBe(0);
+    expect(olderCursor(merged)).toBe(10);
+    // A live read after it brings the newest page again: the older ones loaded stay under it.
+    const fresh: ThreadView = { ...t, messages: [root, post(30, "c"), post(40, "d")], older: 2 };
+    const kept = refreshed(merged, fresh);
+    expect(kept.messages.map(m => m.content)).toEqual(["root", "a", "b", "c", "d"]);
+    expect(kept.older).toBe(0);
+    expect(refreshed(undefined, fresh)).toBe(fresh);
   });
 });

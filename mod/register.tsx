@@ -10,12 +10,14 @@
 import { atom, read, update } from 'claude-code'
 import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 
-import type { ChannelView, OpenTab, ThreadView, UiSnapshot } from '../types'
+import type { ChannelView, OpenTab, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
 import {
   applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
-  indicator, needsBand, newSessionCommand, NO_CHANNELS, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, scopeText, shownTab, stateLine, statusSummary, takeOutcome,
-  textOf, threadView, BAND_GRACE_MS, type InboxRow, type Seg, type Tone,
+  indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText,
+  scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
+  type InboxRow, type Seg, type ThreadLayout, type Tone,
 } from './model'
+import type { Line } from './text'
 
 const SERVER = 'plugin:einweave:einweave'
 const PANE = 'einweave'
@@ -39,6 +41,8 @@ const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shap
 const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
+/** Each thread tab's own window over its posts, once the person moved it, and the posts opened past the cap. */
+const scrolls = atom({ plugin: 'einweave', key: 'scrolls' } as const, {} as Record<string, ThreadScroll>, { shape: 'scrolls-1' })
 /** A record's dim meta under the pointer: a shade lighter, its only background the pane's. */
 const META_LIT = '#b8b8b8'
 /** The pane's subtle rules: under the tabs, over the footer. */
@@ -160,7 +164,29 @@ async function loadThread($: EngineInterface, id: string): Promise<void> {
   // Closed (×) while it loaded: the tab is gone, so its content must not come back.
   if (!(await read($, tabs)).open.some(x => x.id === id)) return
   const at = await $.clock.now()
-  await update($, threads, m => ({ ...m, [id]: { ...got, at } }))
+  // The newest page again; older pages loaded meanwhile stay under it.
+  await update($, threads, m => ({ ...m, [id]: { ...refreshed(m[id], got), at } }))
+}
+
+/** Load older (its row, or the top edge): the page of replies before the oldest shown, put under the root. */
+async function loadOlder($: EngineInterface, id: string): Promise<void> {
+  const th = (await read($, threads))[id]
+  const before = th ? olderCursor(th) : null
+  if (!th || th.loadingOlder || th.older === 0 || before === null) return
+  await update($, threads, m => ({ ...m, [id]: { ...m[id]!, loadingOlder: true } }))
+  let page: ThreadView
+  try {
+    const r = await $.mcp.call(SERVER, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
+    page = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
+  } catch (err) {
+    page = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
+  }
+  if (!(await read($, tabs)).open.some(x => x.id === id)) return
+  if (page.error) {
+    $.ui.toast(`Older replies did not load: ${page.error.split('\n')[0]}`)
+    return void (await update($, threads, m => (m[id] ? { ...m, [id]: { ...m[id]!, loadingOlder: false } } : m)))
+  }
+  await update($, threads, m => (m[id] ? { ...m, [id]: withOlder(m[id]!, page) } : m))
 }
 
 async function viewThread($: EngineInterface, id: string, title: string): Promise<void> {
@@ -259,10 +285,20 @@ interface Act {
   onPress: (press: Press) => void
 }
 
+/** The thread tab drawn last with its own window: what ui.scroll moves, at the room and width it was drawn at. */
+interface ThreadWindow {
+  id: string
+  layout: ThreadLayout
+  messages: readonly ThreadMessage[]
+  room: number
+  older: boolean
+}
+
 export const register: Register = on => {
   // The stops the pane's records drew last, top to bottom, and where the ring was: ui.focus reads both.
   let stops: string[] = []
   let last = ''
+  let win: ThreadWindow | null = null
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The command first: a reload runs this again while the plugin's server may be slow to answer,
@@ -339,6 +375,18 @@ export const register: Register = on => {
     const r = await next(e)
     if (e.id === PANE) await update($, paneUp, () => false)
     return r
+  })
+
+  // A thread tab scrolls its posts itself, under a pinned header (layout A): the wheel and keys move its
+  // window; the engine's stays one row in (spacer rows top and bottom), so arrows keep firing both ways.
+  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+    const w = win
+    if (!w) return next(e)
+    const sc = (await read($, scrolls))[w.id]
+    const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
+    await update($, scrolls, m => ({ ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }))
+    if (moved.atTop && e.by < 0 && w.older) void loadOlder($, w.id)
+    return next({ ...e, offset: 1 })
   })
 
   // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on.
@@ -644,7 +692,7 @@ export const register: Register = on => {
         {tabButton('tab:channels', 'Channels', 'channels', showChannels)}
         {tabButton('tab:session', 'Session', 'session', show('session'))}
         {t.open.map(o => {
-          const label = o.title.length > 18 ? `${o.title.slice(0, 17)}…` : o.title
+          const label = tabLabel(o.title)
           return (
             <Box key={`tabbox:${o.id}`} flexDirection="row">
               {tabButton(`tab:${o.id}`, label, o.id, showOpen(o))}
@@ -670,6 +718,9 @@ export const register: Register = on => {
     )
 
     let body
+    // The thread tab scrolls its own posts (set there); every other tab leaves the window to the engine.
+    let own = false
+    win = null
     if (tab === 'inbox') {
       body = !connected ? (
         <Text dimColor>Not connected: what waits shows once this session is.</Text>
@@ -851,15 +902,91 @@ export const register: Register = on => {
       const th = (await read($, threads))[id] ?? NO_THREAD
       const title = th.title ?? t.open.find(x => x.id === id)?.title ?? id
       const held = s.holds.some(h => h.threadId === id)
+      // Board ThreadTab, layout A: header and footer pinned, the posts in chat order scrolled between them
+      // by the mod itself (docked in a terminal, where the window is known to the row). Elsewhere the
+      // frame fits the tree, so the posts flow and the surface scrolls.
+      own = e.surface === 'terminal' && e.props.placement === 'dock'
+      const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
+      const sc = (await read($, scrolls))[id]
+      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older)
+      // Rows the pinned parts take: the pane's header (+ the detail under it while down), the tabs, the rule, the
+      // thread's own header (title, hold line, actions), its footer, and the margins between.
+      const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
+      const openW = t.open.map(o => tabWidth(tabLabel(o.title), o.id === tab ? 'shown' : 'rest'))
+      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 1 + 4 + 3
+      const room = Math.max(3, e.props.scroll.bodyRows - pinned)
+      const off = own ? threadOff(sc, layout, th.messages, room) : 0
+      win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder } : null
+      const expand = (key: string, more: number) => () =>
+        void update($, scrolls, m => {
+          const was = m[id]
+          // Opened in place: the rows it gains push what is under it down, so its first line stays where it was.
+          const from = was ? threadOff(was, layout, th.messages, room) : off
+          return { ...m, [id]: { off: from + (from > 0 ? more - 1 : 0), newest: newestKey(layout), open: { ...(was?.open ?? {}), [key]: true as const } } }
+        })
+      const line = (key: string, l: Line) => (
+        <Box key={key} flexDirection="row" height={1} overflow="hidden">
+          {l.length
+            ? l.map((r, n) => (
+                <Text
+                  key={`${key}:${n}`}
+                  wrap="truncate-end"
+                  {...(r.href ? { color: PALETTE.blue, underline: true } : r.dim ? { dimColor: true } : {})}
+                  {...(r.code ? { backgroundColor: RULE } : {})}
+                  {...(r.bold ? { weight: 'bold' as const } : {})}
+                  {...(r.italic ? { italic: true } : {})}
+                >
+                  {r.text}
+                </Text>
+              ))
+            : <Text> </Text>}
+        </Box>
+      )
+      const posts = layout.blocks.map(b => {
+        const m = th.messages[b.n]!
+        return (
+          <Box key={`post:${id}:${b.key}`} flexDirection="column" flexShrink={0} marginTop={b.top ? 1 : 0}>
+            <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+              <Text weight="bold" {...(m.own ? { color: PALETTE.blue } : {})}>{`${m.sender ?? '?'}${m.own ? ' (you)' : ''}`}</Text>
+              {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
+              {m.type !== 'text' ? <Text color={PALETTE.amber}>{m.type}</Text> : null}
+              <Box flexGrow={1} />
+              {m.new ? <Text color={PALETTE.brand} weight="bold">new</Text> : null}
+            </Box>
+            {desk && !own ? <Markdown key={`md:${id}:${b.key}`} text={m.content} /> : b.lines.map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
+            {b.more && !(desk && !own) ? (
+              <Button key={`more:${id}:${b.key}`} plain dimColor label={`▸ ${b.more} more ${b.more === 1 ? 'line' : 'lines'}`} onPress={expand(b.key, b.more)} />
+            ) : null}
+          </Box>
+        )
+      })
+      // Under the root: how many older replies the tab has not read, and the way to them.
+      const gap = layout.gap ? (
+        <Box key={`gap:${id}`} flexDirection="row" columnGap={1} marginTop={1} height={1} overflow="hidden" flexShrink={0}>
+          <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'}`}</Text>
+          {th.loadingOlder ? (
+            <Text dimColor>Loading…</Text>
+          ) : (
+            <Button key={`older:${id}`} plain dimColor label={`Load ${OLDER_PAGE} older ↑`} onPress={() => void loadOlder($, id)} />
+          )}
+        </Box>
+      ) : null
+      const flow = [...posts.slice(0, 1), ...(gap ? [gap] : []), ...posts.slice(1)]
+      const notes = [
+        th.error ? <Text key="err" color={PALETTE.red} wrap="truncate-end">{th.error}</Text> : null,
+        th.loading && !th.messages.length ? <Text key="loading" dimColor>Loading…</Text> : null,
+      ]
       body = (
         <Box flexDirection="column">
-          <Text weight="bold" wrap="truncate-end">{title}</Text>
+          <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+            <Text weight="bold" wrap="truncate-end">{title}</Text>
+          </Box>
           {held ? (
-            <Text color={PALETTE.brand}>held by you · replies come here</Text>
+            <Text color={PALETTE.brand} wrap="truncate-end">held by you · replies come here</Text>
           ) : (
-            <Text color={PALETTE.amber}>not held here · Claude has not seen it · Take brings it here</Text>
+            <Text color={PALETTE.amber} wrap="truncate-end">not held here · Claude has not seen it · Take brings it here</Text>
           )}
-          <Box flexDirection="row" columnGap={1} marginTop={1}>
+          <Box flexDirection="row" columnGap={1} marginTop={1} height={1} overflow="hidden">
             {held ? (
               <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>{keyed('r', 'Release')}</Button>
             ) : (
@@ -868,24 +995,25 @@ export const register: Register = on => {
             <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>{keyed('n', 'New session')}</Button>
             {held ? null : <Button key={`refresh:${id}`} label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
           </Box>
-          {th.error ? <Text color={PALETTE.red}>{th.error}</Text> : null}
-          {th.loading && !th.messages.length ? <Text dimColor>Loading…</Text> : null}
-          {th.messages.map((m, n) => (
-            <Box key={`msg:${id}:${n}`} flexDirection="column" marginTop={1}>
-              <Box flexDirection="row" columnGap={1}>
-                <Text weight="bold">{m.sender ?? '?'}</Text>
-                {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
-                {m.type !== 'text' ? <Text color={PALETTE.amber}>{m.type}</Text> : null}
+          {own ? (
+            // Bottom-anchored: the newest at the window's foot; `off` rows up from it.
+            <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent="flex-end" flexShrink={0}>
+              <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
+                {notes}
+                {flow}
               </Box>
-              <Markdown key={`md:${id}:${n}`} text={m.content} />
             </Box>
-          ))}
-          {th.older !== 0 ? <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'} not shown: the web app has them.`}</Text> : null}
+          ) : (
+            <Box key={`posts:${id}`} flexDirection="column">
+              {notes}
+              {flow}
+            </Box>
+          )}
           <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>
+            <Text dimColor wrap="truncate-end">
               {held ? 'Held: live. New replies appear here as they arrive.' : `Unheld: not pushed here.${th.at !== undefined ? ` Updated ${clockOf(th.at)}` : ''} · ↻ to refresh.`}
             </Text>
-            <Text dimColor>Read-only · no tokens · viewing marks nothing read.</Text>
+            <Text dimColor wrap="truncate-end">Read-only · no tokens · new stays new until it reaches Claude.</Text>
           </Box>
         </Box>
       )
@@ -905,6 +1033,21 @@ export const register: Register = on => {
         <Text dimColor>{`${footActs.length ? ' · ' : ''}enter open · esc back`}</Text>
       </Box>
     ) : null
+    if (own)
+      return (
+        // Exactly the window and a spacer row each end: the engine, held one row in, shows all but the
+        // spacers and still has a row to scroll each way, so its arrows fire (probe 2026-10-31).
+        <Box key="pane" flexDirection="column" paddingX={PANE_PAD} height={e.props.scroll.bodyRows + 2}>
+          <Text key="spacer:top"> </Text>
+          {header}
+          {tabRow}
+          {rule('rule:tabs')}
+          <Box flexDirection="column" marginTop={1} flexShrink={0}>
+            {body}
+          </Box>
+          <Text key="spacer:end"> </Text>
+        </Box>
+      )
     return (
       // Docked, at least the pane's height, the body growing into it: the footer sits on the pane's last
       // row. Inline the frame fits the tree, so there it would only take rows from the transcript.

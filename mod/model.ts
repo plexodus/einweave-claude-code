@@ -3,7 +3,8 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
+import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
+import { cellWidth, renderPost, type Line } from './text'
 
 /**
  * The design canvas's colours (https://claude.ai/artifact/4JomhfdVJR8goTtoaaqHNR, every board).
@@ -398,6 +399,143 @@ export function threadView(text: string): ThreadView {
     return { title: null, status: null, messages: [], older: 0, error: text || 'ui_thread answered nothing', loading: false }
   }
 }
+
+/** A post shows this many lines until it is opened (Thread tab, layout A, decision 2026-10-31). */
+export const POST_CAP = 6
+/** Replies one Load older brings. */
+export const OLDER_PAGE = 20
+
+/** A post's stable name across reads: its seq, or the root. */
+export function postKey(m: ThreadMessage, n: number): string {
+  return m.root ? 'root' : m.seq != null ? `s${m.seq}` : `i${n}`
+}
+
+/** One post as drawn: its lines (cut at the cap unless opened), how many the cap hid, and its rows from the top. */
+export interface PostBlock {
+  key: string
+  n: number
+  lines: Line[]
+  more: number
+  top: number
+  rows: number
+}
+
+/** A thread's posts laid out at a width, row by row, so the pane can scroll them itself. */
+export interface ThreadLayout {
+  blocks: PostBlock[]
+  /** The "older replies" row under the root, where Load older brings them; null with none. */
+  gap: { top: number; rows: number } | null
+  total: number
+}
+
+/**
+ * Posts in chat order (oldest first): a blank row between posts, the sender row, the lines (POST_CAP
+ * of them unless `open`), and a "N more lines" row where the cap cut. With replies older than those
+ * read, the gap row sits under the root, a blank row above it.
+ */
+export function threadLayout(messages: readonly ThreadMessage[], width: number, open: Record<string, true>, older: number | null): ThreadLayout {
+  const blocks: PostBlock[] = []
+  let gap: ThreadLayout['gap'] = null
+  let row = 0
+  messages.forEach((m, n) => {
+    const key = postKey(m, n)
+    const all = renderPost(m.content, width)
+    const cut = !open[key] && all.length > POST_CAP + 1
+    const lines = cut ? all.slice(0, POST_CAP) : all
+    const more = cut ? all.length - POST_CAP : 0
+    const rows = (blocks.length ? 1 : 0) + 1 + lines.length + (more ? 1 : 0)
+    blocks.push({ key, n, lines, more, top: row, rows })
+    row += rows
+    if (m.root && older !== 0 && n < messages.length - 1) {
+      gap = { top: row, rows: 2 }
+      row += 2
+    }
+  })
+  return { blocks, gap, total: row }
+}
+
+/** The window's lowest offset: rows up from the end at which the top shows. */
+const maxOff = (l: ThreadLayout, room: number) => Math.max(0, l.total - room)
+
+/** Where a tab first opens: its first new post at the top of the window, else the newest. */
+export function landOff(l: ThreadLayout, messages: readonly ThreadMessage[], room: number): number {
+  const first = l.blocks.find(b => messages[b.n]?.new)
+  if (!first) return 0
+  // Its blank row above it stays out of view.
+  const top = first.top + (first.top ? 1 : 0)
+  return Math.min(maxOff(l, room), Math.max(0, l.total - room - top))
+}
+
+/**
+ * The window now: landed while the person has not moved it; else their place, kept when posts came
+ * after the one that was newest (a held thread is live), clamped to what fits.
+ */
+export function threadOff(sc: ThreadScroll | undefined, l: ThreadLayout, messages: readonly ThreadMessage[], room: number): number {
+  if (!sc) return landOff(l, messages, room)
+  let off = sc.off
+  if (off > 0) {
+    const at = l.blocks.findIndex(b => b.key === sc.newest)
+    if (at >= 0) off += l.blocks.slice(at + 1).reduce((a, b) => a + b.rows, 0)
+  }
+  return Math.min(maxOff(l, room), Math.max(0, off))
+}
+
+/** The window moved `by` rows (negative toward the top), and whether it now shows the top. */
+export function scrollBy(off: number, by: number, l: ThreadLayout, room: number): { off: number; atTop: boolean } {
+  const max = maxOff(l, room)
+  const next = Math.min(max, Math.max(0, off - by))
+  return { off: next, atTop: next >= max }
+}
+
+/** The newest post's key, what ThreadScroll.newest records. */
+export const newestKey = (l: ThreadLayout) => l.blocks.at(-1)?.key ?? ''
+
+/**
+ * Rows a wrapping row of tabs takes at `width`: each tab `widths[n]` cells, a cell between, greedy as
+ * flex-wrap lays them out.
+ */
+export function tabRows(widths: readonly number[], width: number): number {
+  let rows = 1
+  let x = 0
+  for (const w of widths) {
+    if (x > 0 && x + 1 + w > width) {
+      rows++
+      x = w
+    } else x += (x > 0 ? 1 : 0) + w
+  }
+  return rows
+}
+
+/** A tab's label cut as the tab row draws it. */
+export const tabLabel = (title: string) => (title.length > 18 ? `${title.slice(0, 17)}…` : title)
+
+/** Cells a tab takes in the row: its label padded a cell each side, an opened tab's × after it. */
+export const tabWidth = (label: string, closable: false | 'shown' | 'rest') => cellWidth(label) + 2 + (closable === 'shown' ? 2 : closable ? 1 : 0)
+
+/** Prepend an older page's replies (the root dropped: the tab has it) to what the tab shows. */
+export function withOlder(t: ThreadView, page: ThreadView): ThreadView {
+  const have = new Set(t.messages.map(m => m.seq).filter(s => s != null))
+  const older = page.messages.filter(m => !m.root && !(m.seq != null && have.has(m.seq)))
+  const root = t.messages[0]?.root ? [t.messages[0]] : []
+  const rest = root.length ? t.messages.slice(1) : t.messages
+  return { ...t, messages: [...root, ...older, ...rest], older: page.older, loadingOlder: false }
+}
+
+/**
+ * A fresh read (the newest page) over what the tab shows: the older pages loaded before are kept
+ * under it, so a held thread's live read does not undo Load older.
+ */
+export function refreshed(t: ThreadView | undefined, page: ThreadView): ThreadView {
+  const first = olderCursor(page)
+  if (!t || page.error || first === null) return page
+  const kept = t.messages.filter(m => !m.root && m.seq != null && m.seq < first)
+  if (!kept.length) return page
+  const root = page.messages[0]?.root ? [page.messages[0]] : []
+  return { ...page, messages: [...root, ...kept, ...page.messages.slice(root.length)], older: t.older }
+}
+
+/** The seq Load older pages back from: the oldest reply shown. */
+export const olderCursor = (t: ThreadView) => t.messages.find(m => !m.root && m.seq != null)?.seq ?? null
 
 /** Open a thread or channel tab (once) and show it. */
 export function openTab(t: PaneTabs, kind: OpenTab['kind'], id: string, title: string): PaneTabs {

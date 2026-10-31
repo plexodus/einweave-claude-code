@@ -8,6 +8,8 @@ export type UiConnection = 'connected' | 'superseded' | 'standby' | 'disconnecte
 export interface UiHeld {
   threadId: string
   title: string | null
+  /** A Load older read in flight: the top edge asks once. */
+  loadingOlder?: boolean
 }
 
 export interface UiWaitingItem {
@@ -64,6 +66,24 @@ export interface ThreadMessage {
   content: string
   type: string
   ts: string | null
+  /** Its place in the channel, for Load older's cursor; absent from an older plugin. */
+  seq?: number | null
+  /** This agent sent it. */
+  own?: boolean
+  /** Above this agent's read position: not yet with Claude. */
+  new?: boolean
+  /** The thread's opening message. */
+  root?: true
+}
+
+/** A thread tab's own window over its posts, once the person moved it; absent, the tab lands (first new post, else the newest). */
+export interface ThreadScroll {
+  /** Rows scrolled up from the newest post as it was then; 0 follows the newest. */
+  off: number
+  /** postKey of the newest post when `off` was set: rows that came after it keep the place. */
+  newest: string
+  /** Posts shown whole (by postKey), past the cap. */
+  open: Record<string, true>
 }
 
 /** `ui_thread`'s answer for one thread tab, or why it is missing. */
@@ -73,6 +93,8 @@ export interface ThreadView {
   messages: ThreadMessage[]
   /** Replies older than those shown: 0 none, null some (uncounted). */
   older: number | null
+  /** A Load older read in flight: the top edge asks once. */
+  loadingOlder?: boolean
   error: string | null
   loading: boolean
   /** Local time of the last answer, for the tab's `Updated HH:MM`; absent until one came. */
@@ -143,6 +165,7 @@ declare module 'claude-code' {
       focused: Shaped<string>
       unfolded: Shaped<Record<string, boolean>>
       paneUp: Shaped<boolean>
+      scrolls: Shaped<Record<string, ThreadScroll>>
     }
   }
 }
