@@ -475,10 +475,10 @@ const WAITING: UiSnapshot = {
     forYou: 25,
     channel: 4,
     more: true,
-    // Snapshot order (toWaiting sorted it): For you quiet longest first, then Open.
+    // Snapshot order (toWaiting sorted it): For you newest first, then Open quiet longest first.
     top: [
-      { threadId: T_OLD, title: 'Older ask', channel: 'ops', why: 'participant', hold: 'parked', quietSince: '2026-10-30T08:00:00.000Z' },
       { threadId: T_NEW, title: 'Newer ask', channel: 'ops', why: 'addressed', hold: 'unheld', quietSince: '2026-10-30T09:50:00.000Z' },
+      { threadId: T_OLD, title: 'Older ask', channel: 'ops', why: 'participant', hold: 'parked', quietSince: '2026-10-30T08:00:00.000Z' },
       { threadId: T_CH, title: 'Demo notes', channel: 'general', why: 'channel', hold: 'unheld', quietSince: '2026-10-30T07:00:00.000Z' },
     ],
   },
@@ -495,7 +495,7 @@ test('the Inbox is the default tab: For you, then Unowned, each with how long it
   // The pane's own name, as the canvas draws it.
   expect(await ui.find({ type: 'Text', text: 'einweave' })).toMatchObject({ props: { color: '#4cc3ad', weight: 'bold' } })
   const keys = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('open:'))
-  expect(keys).toEqual([`open:${T_OLD}`, `open:${T_NEW}`, `open:${T_CH}`])
+  expect(keys).toEqual([`open:${T_NEW}`, `open:${T_OLD}`, `open:${T_CH}`])
   // Each heading says how many wait in it (the server's counts), so they add up to the tab: 25 + 4 = 29.
   expect(await ui.find({ type: 'Text', text: 'For you 25' })).toMatchObject({ props: { weight: 'bold' } })
   expect(await ui.find({ type: 'Text', text: 'questions and messages aimed at you' })).toMatchObject({ props: { dimColor: true } })
@@ -863,12 +863,12 @@ test('the keyboard stops on marks only: a move onto a record\'s title or Take go
   const { clock } = engine(on, { polled: WAITING })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await focus($, `mark:${T_OLD}`)
-  await focus($, `open:${T_OLD}`)
-  expect(landed.at(-1)).toBe(`mark:${T_NEW}`)
-  // Up from T_NEW's mark the ring meets T_OLD's title: back to T_OLD's mark.
-  await focus($, `open:${T_OLD}`)
+  await focus($, `mark:${T_NEW}`)
+  await focus($, `open:${T_NEW}`)
   expect(landed.at(-1)).toBe(`mark:${T_OLD}`)
+  // Up from T_OLD's mark the ring meets T_NEW's title: back to T_NEW's mark.
+  await focus($, `open:${T_NEW}`)
+  expect(landed.at(-1)).toBe(`mark:${T_NEW}`)
   // Past the last record its title stays reachable: the ring goes on beyond the list.
   await focus($, `mark:${T_CH}`)
   await focus($, `open:${T_CH}`)
@@ -1029,7 +1029,11 @@ test('the button standard: full strength only for the shown tab and the one thin
 
 test('the band lists what is aimed at you (board Main): #channel brand, the title, why amber; View opens the pane on its tab, Take takes it', async ($, on) => {
   const thread = { thread: { id: T_NEW, title: 'Newer ask' }, messages: [], has_older: false, older_count: 0 }
-  const { calls, pane, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : c.tool === 'take' ? text('This session now holds Older ask.') : undefined) })
+  const { calls, pane, clock } = engine(on, {
+    polled: WAITING,
+    now: Date.parse('2026-10-30T10:00:00.000Z'),
+    answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : c.tool === 'take' ? text('This session now holds Older ask.') : undefined),
+  })
   await start($, clock)
   const band = await $.ui.mount(BAND)
   // Addressed only: taken part in, and the channel tier, wait in the pane.
@@ -1048,6 +1052,22 @@ test('the band lists what is aimed at you (board Main): #channel brand, the titl
   await clock.settle()
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: T_NEW }])
   await band.unmount()
+})
+
+test('an ask quiet a day or more leaves the band (it waits in the pane): the band is for what needs you now', async ($, on) => {
+  // Newer ask was last active 2026-10-30 09:50: in the band until 09:50 the next day, not after.
+  const { clock } = engine(on, { polled: WAITING, now: Date.parse('2026-10-31T09:49:00.000Z') })
+  await start($, clock)
+  const band = await $.ui.mount(BAND)
+  expect((await band.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('band-view:'))).toEqual([`band-view:${T_NEW}`])
+  await band.unmount()
+  await clock.advance(60_000)
+  const later = await $.ui.mount(BAND)
+  expect((await later.findAll({ type: 'Button' })).map(b => String(b.key)).filter(k => k.startsWith('band-view:'))).toEqual([])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: `open:${T_NEW}` })).toBeDefined()
+  await ui.unmount()
+  await later.unmount()
 })
 
 test('a held thread\'s tab is live (board ThreadTab): read again every 15 s while shown, and says so; no Refresh', async ($, on) => {

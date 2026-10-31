@@ -112,7 +112,7 @@ describe("toWaiting", () => {
     expect(toWaiting({ rows: many, more: false, counts: null }).top).toHaveLength(20);
   });
 
-  test("For you before Open, each quiet longest first, an untimed or unparseable row last; sorted BEFORE the cut, so the newest are what is dropped", () => {
+  test("For you newest first, then Open quiet longest first, an untimed or unparseable row last in each; sorted BEFORE the cut", () => {
     // Server order: newest first.
     const rows = [
       timed("new", "addressed", "2026-10-30T09:59:00.000Z"),
@@ -121,13 +121,15 @@ describe("toWaiting", () => {
       timed("none", "participant"),
       timed("mid", "participant", "2026-10-30T07:00:00.000Z"),
       timed("old", "addressed", "2026-10-29T07:00:00.000Z"),
+      timed("ch-new", "channel", "2026-10-30T10:00:00.000Z"),
+      timed("ch-none", "channel"),
     ];
-    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["old", "mid", "new", "bad", "none", "ch"]);
+    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["new", "mid", "old", "bad", "none", "ch", "ch-new", "ch-none"]);
     const cut = toWaiting({ rows, more: false, counts: null }, 2);
-    expect(cut.top.map((t) => t.threadId)).toEqual(["old", "mid"]);
+    expect(cut.top.map((t) => t.threadId)).toEqual(["new", "mid"]);
     // Rows were cut, so there is more than shown even with no next page.
     expect(cut.more).toBe(true);
-    expect(toWaiting({ rows, more: false, counts: null }, 6).more).toBe(false);
+    expect(toWaiting({ rows, more: false, counts: null }, 8).more).toBe(false);
   });
 
   test("a server without counts: null, not 0", () => {

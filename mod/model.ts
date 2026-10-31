@@ -311,6 +311,8 @@ export interface InboxRow {
   old: boolean
   /** Quiet STALE_MS or longer: its age is drawn amber. */
   stale: boolean
+  /** Active within BAND_MS: an aimed row only reaches the band while fresh, so old asks stay in the pane. */
+  fresh: boolean
 }
 
 const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts' }
@@ -318,6 +320,9 @@ const HOLD: Record<UiWaitingItem['hold'], string> = { unheld: 'unheld', parked: 
 
 /** Quiet this long, a waiting thread's age is drawn amber (board Unowned: `1 h 10 min` amber, `25 min` not). */
 export const STALE_MS = 3_600_000
+
+/** Quiet less than this, a thread aimed at the person shows in the band (Jörgen 2026-10-31; unread replaces it once takeable rows carry it). */
+export const BAND_MS = 86_400_000
 
 /** A thread quiet this long folds under "Older (n)". */
 export const OLD_MS = 7 * 86_400_000
@@ -330,11 +335,14 @@ export function quietFor(iso: string | null | undefined, now: number): { age: st
 
 /**
  * The Inbox tab: For you (addressed, or taken part in) and Open (new posts in a followed channel),
- * in the snapshot's order -- quiet longest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
+ * in the snapshot's order -- For you newest first, Open quiet longest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
  */
 export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: InboxRow[]; open: InboxRow[] } {
   const rows = waiting?.top ?? []
-  const row = (w: UiWaitingItem): InboxRow => ({ threadId: w.threadId, aimed: w.why === 'addressed', title: w.title, channel: w.channel, meta: `${WHY[w.why]} · ${HOLD[w.hold]}`, ...quietFor(w.quietSince, now) })
+  const row = (w: UiWaitingItem): InboxRow => {
+    const t = w.quietSince ? Date.parse(w.quietSince) : NaN
+    return { threadId: w.threadId, aimed: w.why === 'addressed', title: w.title, channel: w.channel, meta: `${WHY[w.why]} · ${HOLD[w.hold]}`, ...quietFor(w.quietSince, now), fresh: Number.isFinite(t) && now - t < BAND_MS }
+  }
   return { forYou: rows.filter(w => w.why !== 'channel').map(row), open: rows.filter(w => w.why === 'channel').map(row) }
 }
 

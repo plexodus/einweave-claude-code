@@ -151,8 +151,9 @@ export const UI_WAITING_PAGES = 4;
 
 /**
  * needSomeone's raw rows, shaped down to what the mod draws: held ones dropped, For you (addressed,
- * taken part in) before Open (the channel tier), each quiet longest first, a row without a time last.
- * The server sends newest first, so this sorts BEFORE it cuts: cutting first would keep the newest.
+ * taken part in) newest first -- what needs the person now -- before Open (the channel tier) quiet
+ * longest first (board Unowned "oldest first"); a row without a time last in each. Sorted BEFORE the
+ * cut, so the cut drops the oldest For you and the newest Open.
  */
 export function toWaiting(r: {
   rows: ReadonlyArray<{ thread: { id: string; title: string; lastActivityAt?: string }; channel: { name: string }; why: UiWaitingItem["why"]; hold: { state: UiWaitingItem["hold"] } }>;
@@ -166,7 +167,12 @@ export function toWaiting(r: {
   const open = r.rows
     .filter((x) => x.hold.state !== "held")
     .map((x) => ({ x, tier: x.why === "channel" ? 1 : 0, t: at(x.thread.lastActivityAt) }))
-    .sort((a, b) => a.tier - b.tier || (a.t === b.t ? 0 : a.t < b.t ? -1 : 1));
+    .sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      if (a.t === b.t) return 0;
+      if (a.t === Number.POSITIVE_INFINITY || b.t === Number.POSITIVE_INFINITY) return a.t === Number.POSITIVE_INFINITY ? 1 : -1;
+      return (a.t < b.t ? -1 : 1) * (a.tier === 0 ? -1 : 1);
+    });
   return {
     forYou: r.counts?.forYou ?? null,
     channel: r.counts?.channel ?? null,

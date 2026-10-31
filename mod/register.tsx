@@ -362,8 +362,9 @@ export const register: Register = on => {
     // The way back whenever this window is not connected and not already retrying (Jörgen 2026-10-31).
     const back = warn || i.kind === 'idle' || i.kind === 'standby'
     const s = v.snap
-    // Board Main / Indicator: what is aimed at the person (addressed, not only taken part in), one row each, under the state line.
-    const forYou = s?.connection.state === 'connected' ? inbox(s.waiting, now).forYou.filter(r => r.aimed) : []
+    // Board Main / Indicator: what is aimed at the person (addressed, not only taken part in) and active in the last day,
+    // newest first, one row each, under the state line. An older ask waits in the pane, not here for good.
+    const forYou = s?.connection.state === 'connected' ? inbox(s.waiting, now).forYou.filter(r => r.aimed && r.fresh) : []
     const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     return (
       <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
