@@ -383,14 +383,19 @@ export const register: Register = on => {
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const w = win
     if (!w) return next(e)
-    // The engine's answer first, before any await: a slow hook (an older page loading) let the engine
-    // place the window itself, a row or two off the tree drawn (live 2026-11-01).
-    const held = next({ ...e, offset: 0 })
-    const sc = (await read($, scrolls))[w.id]
-    const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
-    await update($, scrolls, m => ({ ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }))
-    if (moved.atTop && e.by < 0 && w.older) void loadOlder($, w.id)
-    return held
+    // The engine's window kept, never committed (as the engine's own docked mods do): a commit, even to
+    // row 0, still let it show its window a row or two off the tree drawn (live 2026-11-01). The move
+    // reads the place inside update, so ticks crowding in each add to the last.
+    let atTop = false
+    void update($, scrolls, m => {
+      const sc = m[w.id]
+      const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
+      atTop = moved.atTop
+      return { ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }
+    }).then(() => {
+      if (atTop && e.by < 0 && w.older) void loadOlder($, w.id)
+    })
+    return {}
   })
 
   // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on.

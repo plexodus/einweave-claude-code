@@ -1173,8 +1173,8 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   await ui.unmount()
 })
 
-test('layout A: opens at the first new post (else the newest); the wheel moves its own window and holds the engine at row 0; the top edge loads older', async ($, on) => {
-  // The engine beneath: where the plugin left the engine's own window.
+test('layout A: opens at the first new post (else the newest); the wheel moves its own window and leaves the engine its own; the top edge loads older', async ($, on) => {
+  // The engine beneath: reached only when the plugin hands the engine's own window on.
   const offsets: number[] = []
   on('ui.scroll', ($, e) => {
     offsets.push(e.offset)
@@ -1196,7 +1196,7 @@ test('layout A: opens at the first new post (else the newest); the wheel moves i
   await $.ui.scroll(scrollEv(-100))
   await clock.settle()
   expect(await offOf(ui)).toBe(22 - 4)
-  expect(offsets).toEqual([0, 0, 0])
+  expect(offsets).toEqual([])
   expect(calls.filter(c => c.tool === 'ui_thread' && c.args.before_seq).map(c => c.args)).toEqual([{ thread_id: T_OLD, before_seq: 30, limit: 20 }])
   expect(await ui.find({ key: `post:${T_OLD}:s10` })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '5 older replies' })).toBeDefined()
@@ -1228,7 +1228,7 @@ test('layout A: "more" opens a capped post in place; inline (or on a desktop) th
   await desk.unmount()
 })
 
-test('layout A: the spacers follow the window, so whatever row it opens on it shows exactly the pane (no top spacer before the first scroll); the wheel holds the engine at row 0', async ($, on) => {
+test('layout A: the spacers follow the window, so whatever row it opens on it shows exactly the pane (no top spacer before the first scroll); the wheel leaves the engine its own window', async ($, on) => {
   const offsets: number[] = []
   on('ui.scroll', ($, e) => {
     offsets.push(e.offset)
@@ -1242,9 +1242,9 @@ test('layout A: the spacers follow the window, so whatever row it opens on it sh
     await clock.settle()
     expect((await ui.find({ key: 'spacer:top' }))?.props.height).toBe(top)
     expect((await ui.find({ key: 'spacer:end' }))?.props.height).toBe(end)
-    // Wherever it was, the wheel holds the engine at row 0: a fast wheel never leaves it a row off the tree drawn.
+    // Wherever it was, the wheel keeps it there: a commit, even to row 0, let the engine show a row off the tree drawn.
     await $.ui.scroll({ ...(scrollEv(-1) as object), offset: offset + 1 } as never)
-    expect(offsets.at(-1)).toBe(0)
+    expect(offsets).toEqual([])
     await ui.unmount()
   }
 })
