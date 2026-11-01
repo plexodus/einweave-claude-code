@@ -292,6 +292,8 @@ interface ThreadWindow {
   messages: readonly ThreadMessage[]
   room: number
   older: boolean
+  /** The engine's row it was drawn at: its spacers follow it, so ui.scroll keeps the engine there. */
+  at: number
 }
 
 export const register: Register = on => {
@@ -299,8 +301,6 @@ export const register: Register = on => {
   let stops: string[] = []
   let last = ''
   let win: ThreadWindow | null = null
-  // A nudge of the engine's window to its one-row-in rest is out; cleared when it lands.
-  let nudging = false
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The command first: a reload runs this again while the plugin's server may be slow to answer,
@@ -380,20 +380,15 @@ export const register: Register = on => {
   })
 
   // A thread tab scrolls its posts itself, under a pinned header (layout A): the wheel and keys move its
-  // window; the engine's stays one row in (spacer rows top and bottom), so arrows keep firing both ways.
+  // window; the engine's stays on the row the tab was drawn at (its spacers follow it), so nothing jumps.
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const w = win
     if (!w) return next(e)
-    // Our own nudge (render's): the posts stay, only the engine comes one row in.
-    if (e.origin.kind === 'plugin') {
-      nudging = false
-      return next({ ...e, offset: 1 })
-    }
     const sc = (await read($, scrolls))[w.id]
     const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
     await update($, scrolls, m => ({ ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }))
     if (moved.atTop && e.by < 0 && w.older) void loadOlder($, w.id)
-    return next({ ...e, offset: 1 })
+    return next({ ...e, offset: w.at })
   })
 
   // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on.
@@ -923,7 +918,7 @@ export const register: Register = on => {
       const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 1 + 4 + 3
       const room = Math.max(3, e.props.scroll.bodyRows - pinned)
       const off = own ? threadOff(sc, layout, th.messages, room) : 0
-      win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder } : null
+      win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder, at: Math.min(2, Math.max(0, e.props.scroll.offset)) } : null
       const expand = (key: string, more: number) => () =>
         void update($, scrolls, m => {
           const was = m[id]
@@ -1040,32 +1035,23 @@ export const register: Register = on => {
         <Text dimColor>{`${footActs.length ? ' · ' : ''}enter open · esc back`}</Text>
       </Box>
     ) : null
-    // The engine opens the window at row 0, which shows the top spacer and cuts the footer's last row
-    // (live 2026-10-31): bring it one row in before the person has to scroll.
-    if (own && e.props.scroll.offset !== 1 && !nudging) {
-      nudging = true
-      void $.ui.scroll({ to: 'end', in: PANE }).then(
-        r => {
-          if (r.deny) nudging = false
-        },
-        () => {
-          nudging = false
-        },
-      )
-    }
+    // Spacer rows above as many as the engine's window is down, the rest below: whatever row it stands on
+    // (it opens at 0), it shows exactly the pane. A fixed top spacer showed until the first scroll, and
+    // nudging the window to row 1 flicked (Jörgen 2026-11-01).
+    const lead = Math.min(2, Math.max(0, e.props.scroll.offset))
     if (own)
       return (
-        // Exactly the window and a spacer row each end: the engine, held one row in, shows all but the
-        // spacers and still has a row to scroll each way, so its arrows fire (probe 2026-10-31).
+        // Exactly the window and two spacer rows: the engine always has a row to scroll, so its wheel and
+        // arrows fire (live 2026-11-01, from row 0 and from row 1).
         <Box key="pane" flexDirection="column" paddingX={PANE_PAD} height={e.props.scroll.bodyRows + 2}>
-          <Text key="spacer:top"> </Text>
+          {lead ? <Box key="spacer:top" height={lead} flexShrink={0} /> : null}
           {header}
           {tabRow}
           {rule('rule:tabs')}
           <Box flexDirection="column" marginTop={1} flexShrink={0}>
             {body}
           </Box>
-          <Text key="spacer:end"> </Text>
+          {lead < 2 ? <Box key="spacer:end" height={2 - lead} flexShrink={0} /> : null}
         </Box>
       )
     return (

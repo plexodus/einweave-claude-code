@@ -1166,7 +1166,7 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   await ui.unmount()
 })
 
-test('layout A: opens at the first new post (else the newest); the wheel moves its own window and keeps the engine one row in; the top edge loads older', async ($, on) => {
+test('layout A: opens at the first new post (else the newest); the wheel moves its own window and leaves the engine on the row it was drawn at; the top edge loads older', async ($, on) => {
   // The engine beneath: where the plugin left the engine's own window.
   const offsets: number[] = []
   on('ui.scroll', ($, e) => {
@@ -1189,7 +1189,7 @@ test('layout A: opens at the first new post (else the newest); the wheel moves i
   await $.ui.scroll(scrollEv(-100))
   await clock.settle()
   expect(await offOf(ui)).toBe(22 - 4)
-  expect(offsets).toEqual([1, 1, 1])
+  expect(offsets).toEqual([0, 0, 0])
   expect(calls.filter(c => c.tool === 'ui_thread' && c.args.before_seq).map(c => c.args)).toEqual([{ thread_id: T_OLD, before_seq: 30, limit: 20 }])
   expect(await ui.find({ key: `post:${T_OLD}:s10` })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '5 older replies' })).toBeDefined()
@@ -1219,4 +1219,18 @@ test('layout A: "more" opens a capped post in place; inline (or on a desktop) th
   const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
   expect(await desk.find({ key: `md:${T_OLD}:root` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at **14:00**?' } })
   await desk.unmount()
+})
+
+test('layout A: the spacers follow the window, so whatever row it opens on it shows exactly the pane (no top spacer before the first scroll)', async ($, on) => {
+  on('ui.scroll', () => ({}))
+  const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
+  await start($, clock)
+  for (const [offset, top, end] of [[0, undefined, 2], [1, 1, 1], [2, 2, undefined]] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset, bodyRows: 16 } } })
+    if (!offset) await ui.press({ key: `open:${T_OLD}` })
+    await clock.settle()
+    expect((await ui.find({ key: 'spacer:top' }))?.props.height).toBe(top)
+    expect((await ui.find({ key: 'spacer:end' }))?.props.height).toBe(end)
+    await ui.unmount()
+  }
 })
