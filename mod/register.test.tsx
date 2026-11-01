@@ -1143,12 +1143,19 @@ const scrollEv = (by: number) => ({ component: 'Pane', requestId: 'einweave', of
 test('layout A, docked: posts in chat order under a pinned header and footer, the tree the window plus a spacer row each end', async ($, on) => {
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
   await start($, clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
   expect(await ui.find({ key: 'pane' })).toMatchObject({ props: { height: PANE.props.scroll.bodyRows + 2 } })
-  const posts = (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
-  expect(posts).toEqual(['root', 's30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
+  const keys = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
+  // Only what meets the window is drawn: 18 rows of 22 leave the root above it (a long thread stays cheap per tick).
+  expect(await keys()).toEqual(['s30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
+  await ui.unmount()
+  // Room for all 22 rows: every post, in chat order.
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } } })
+  await clock.settle()
+  expect(await keys()).toEqual(['root', 's30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
+  expect(await ui.find({ key: `tail:${T_OLD}` })).toBeUndefined()
   // Own posts blue with (you); new ones say so in the brand, bold.
   expect(await ui.find({ type: 'Text', text: 'Bellman (you)' })).toMatchObject({ props: { color: PALETTE.blue, weight: 'bold' } })
   expect(await ui.findAll({ type: 'Text', text: /^new$/ })).toHaveLength(2)
@@ -1166,7 +1173,7 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   await ui.unmount()
 })
 
-test('layout A: opens at the first new post (else the newest); the wheel moves its own window and leaves the engine on the row it was drawn at; the top edge loads older', async ($, on) => {
+test('layout A: opens at the first new post (else the newest); the wheel moves its own window and holds the engine at row 0; the top edge loads older', async ($, on) => {
   // The engine beneath: where the plugin left the engine's own window.
   const offsets: number[] = []
   on('ui.scroll', ($, e) => {
@@ -1221,8 +1228,12 @@ test('layout A: "more" opens a capped post in place; inline (or on a desktop) th
   await desk.unmount()
 })
 
-test('layout A: the spacers follow the window, so whatever row it opens on it shows exactly the pane (no top spacer before the first scroll)', async ($, on) => {
-  on('ui.scroll', () => ({}))
+test('layout A: the spacers follow the window, so whatever row it opens on it shows exactly the pane (no top spacer before the first scroll); the wheel holds the engine at row 0', async ($, on) => {
+  const offsets: number[] = []
+  on('ui.scroll', ($, e) => {
+    offsets.push(e.offset)
+    return {}
+  })
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
   await start($, clock)
   for (const [offset, top, end] of [[0, undefined, 2], [1, 1, 1], [2, 2, undefined]] as const) {
@@ -1231,6 +1242,9 @@ test('layout A: the spacers follow the window, so whatever row it opens on it sh
     await clock.settle()
     expect((await ui.find({ key: 'spacer:top' }))?.props.height).toBe(top)
     expect((await ui.find({ key: 'spacer:end' }))?.props.height).toBe(end)
+    // Wherever it was, the wheel holds the engine at row 0: a fast wheel never leaves it a row off the tree drawn.
+    await $.ui.scroll({ ...(scrollEv(-1) as object), offset: offset + 1 } as never)
+    expect(offsets.at(-1)).toBe(0)
     await ui.unmount()
   }
 })

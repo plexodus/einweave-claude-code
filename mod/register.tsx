@@ -292,8 +292,6 @@ interface ThreadWindow {
   messages: readonly ThreadMessage[]
   room: number
   older: boolean
-  /** The engine's row it was drawn at: its spacers follow it, so ui.scroll keeps the engine there. */
-  at: number
 }
 
 export const register: Register = on => {
@@ -380,15 +378,19 @@ export const register: Register = on => {
   })
 
   // A thread tab scrolls its posts itself, under a pinned header (layout A): the wheel and keys move its
-  // window; the engine's stays on the row the tab was drawn at (its spacers follow it), so nothing jumps.
+  // window; the engine's is held at row 0, its two spare rows below, so the arrows fire both ways and a
+  // fast wheel never shows the engine a row off the tree last drawn (a flicker, Jörgen 2026-11-01).
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const w = win
     if (!w) return next(e)
+    // The engine's answer first, before any await: a slow hook (an older page loading) let the engine
+    // place the window itself, a row or two off the tree drawn (live 2026-11-01).
+    const held = next({ ...e, offset: 0 })
     const sc = (await read($, scrolls))[w.id]
     const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
     await update($, scrolls, m => ({ ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }))
     if (moved.atTop && e.by < 0 && w.older) void loadOlder($, w.id)
-    return next({ ...e, offset: w.at })
+    return held
   })
 
   // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on.
@@ -918,7 +920,7 @@ export const register: Register = on => {
       const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 1 + 4 + 3
       const room = Math.max(3, e.props.scroll.bodyRows - pinned)
       const off = own ? threadOff(sc, layout, th.messages, room) : 0
-      win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder, at: Math.min(2, Math.max(0, e.props.scroll.offset)) } : null
+      win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder } : null
       const expand = (key: string, more: number) => () =>
         void update($, scrolls, m => {
           const was = m[id]
@@ -944,7 +946,12 @@ export const register: Register = on => {
             : <Text> </Text>}
         </Box>
       )
-      const posts = layout.blocks.map(b => {
+      // Docked, only what meets the window: a long thread drawn whole made each wheel tick slow enough for
+      // the engine to show its own window a row or two off the tree meanwhile (a flicker, live 2026-11-01).
+      const foot = layout.total - off
+      const meets = (top: number, rows: number) => !own || (top < foot && top + rows > foot - room)
+      const shown = layout.blocks.filter(b => meets(b.top, b.rows))
+      const post = (b: (typeof layout.blocks)[number]) => {
         const m = th.messages[b.n]!
         return (
           <Box key={`post:${id}:${b.key}`} flexDirection="column" flexShrink={0} marginTop={b.top ? 1 : 0}>
@@ -961,9 +968,9 @@ export const register: Register = on => {
             ) : null}
           </Box>
         )
-      })
+      }
       // Under the root: how many older replies the tab has not read, and the way to them.
-      const gap = layout.gap ? (
+      const gap = layout.gap && meets(layout.gap.top, layout.gap.rows) ? (
         <Box key={`gap:${id}`} flexDirection="row" columnGap={1} marginTop={1} height={1} overflow="hidden" flexShrink={0}>
           <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'}`}</Text>
           {th.loadingOlder ? (
@@ -973,7 +980,10 @@ export const register: Register = on => {
           )}
         </Box>
       ) : null
-      const flow = [...posts.slice(0, 1), ...(gap ? [gap] : []), ...posts.slice(1)]
+      const flow = [...shown.slice(0, 1).map(post), ...(gap ? [gap] : []), ...shown.slice(1).map(post)]
+      // The rows under the last one drawn, as one empty box: the window's foot stays `off` rows up.
+      const last = Math.max(0, ...shown.map(b => b.top + b.rows), gap && layout.gap ? layout.gap.top + layout.gap.rows : 0)
+      const tail = own && shown.length ? layout.total - last : 0
       const notes = [
         th.error ? <Text key="err" color={PALETTE.red} wrap="truncate-end">{th.error}</Text> : null,
         th.loading && !th.messages.length ? <Text key="loading" dimColor>Loading…</Text> : null,
@@ -1003,6 +1013,7 @@ export const register: Register = on => {
               <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
                 {notes}
                 {flow}
+                {tail ? <Box key={`tail:${id}`} height={tail} flexShrink={0} /> : null}
               </Box>
             </Box>
           ) : (
@@ -1035,14 +1046,14 @@ export const register: Register = on => {
         <Text dimColor>{`${footActs.length ? ' · ' : ''}enter open · esc back`}</Text>
       </Box>
     ) : null
-    // Spacer rows above as many as the engine's window is down, the rest below: whatever row it stands on
-    // (it opens at 0), it shows exactly the pane. A fixed top spacer showed until the first scroll, and
-    // nudging the window to row 1 flicked (Jörgen 2026-11-01).
+    // Spacer rows above as many as the engine's window is down, the rest below: at row 0, where ui.scroll
+    // holds it, both below; on a row the engine reached itself (a clamp from a longer tab) it still shows
+    // exactly the pane. A fixed top spacer showed until the first scroll (Jörgen 2026-11-01).
     const lead = Math.min(2, Math.max(0, e.props.scroll.offset))
     if (own)
       return (
-        // Exactly the window and two spacer rows: the engine always has a row to scroll, so its wheel and
-        // arrows fire (live 2026-11-01, from row 0 and from row 1).
+        // Exactly the window and two spacer rows: the engine always has rows to scroll, so its wheel and
+        // arrows fire (live 2026-11-01: at row 0, up and down).
         <Box key="pane" flexDirection="column" paddingX={PANE_PAD} height={e.props.scroll.bodyRows + 2}>
           {lead ? <Box key="spacer:top" height={lead} flexShrink={0} /> : null}
           {header}
