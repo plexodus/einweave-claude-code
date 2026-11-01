@@ -12,6 +12,20 @@ import { cellWidth, renderPost, type Line } from './text'
  */
 export const PALETTE = { brand: '#4cc3ad', amber: '#e8b04a', blue: '#7ab4ff', red: '#f07a7a', pillBg: '#e4e4e4', pillFg: '#121212' } as const
 
+/**
+ * Other senders' name colours: none of PALETTE's, which already mean you, new/held, status or error.
+ * A shared colour costs only distinction: the name is right there (Jörgen 2026-11-01).
+ */
+export const SENDER_HUES = ['#b49cff', '#f29ac6', '#a8d672', '#f5a97f'] as const
+
+/** A sender's colour, stable per id (FNV-1a, as the web's agentColor); no id, no colour. */
+export function senderColor(id: string | null | undefined): string | undefined {
+  if (!id) return undefined
+  let h = 0x811c9dc5
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193) >>> 0
+  return SENDER_HUES[h % SENDER_HUES.length]
+}
+
 /** A run's colour by meaning: an accent, or `dim` (the theme's dim text). */
 export type Tone = 'brand' | 'amber' | 'blue' | 'red' | 'dim'
 

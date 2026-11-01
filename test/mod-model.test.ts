@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
-  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, tabRows, tabWidth, threadLayout, threadOff, withOlder,
+  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, threadOff, withOlder,
 } from "../mod/model";
 import type { ThreadMessage, ThreadView } from "../types";
 import type { ChannelThread } from "../types";
@@ -419,5 +419,19 @@ describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
     expect(kept.messages.map(m => m.content)).toEqual(["root", "a", "b", "c", "d"]);
     expect(kept.older).toBe(0);
     expect(refreshed(undefined, fresh)).toBe(fresh);
+  });
+});
+
+describe("senderColor", () => {
+  test("one colour per id, never one that already means something, none without an id", () => {
+    const ids = Array.from({ length: 40 }, (_, i) => `0190a000-0000-7000-8000-${String(i).padStart(12, "0")}`);
+    const got = ids.map(senderColor);
+    // Pinned: the same person keeps their colour across releases (a hash change would reshuffle everyone).
+    expect([senderColor("kevin"), senderColor("brian")]).toEqual(["#a8d672", "#f5a97f"]);
+    // Spread: every hue used across 40 ids, and only those hues.
+    expect(new Set(got)).toEqual(new Set(SENDER_HUES));
+    for (const c of Object.values(PALETTE)) expect(SENDER_HUES as readonly string[]).not.toContain(c);
+    expect(senderColor(null)).toBeUndefined();
+    expect(senderColor("")).toBeUndefined();
   });
 });

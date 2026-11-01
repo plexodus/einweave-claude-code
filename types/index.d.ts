@@ -68,6 +68,8 @@ export interface ThreadMessage {
   ts: string | null
   /** Its place in the channel, for Load older's cursor; absent from an older plugin. */
   seq?: number | null
+  /** The sending agent's or person's id: the pane's colour key; absent from an older plugin. */
+  senderId?: string | null
   /** This agent sent it. */
   own?: boolean
   /** Above this agent's read position: not yet with Claude. */

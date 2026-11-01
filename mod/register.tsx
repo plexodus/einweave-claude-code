@@ -13,7 +13,7 @@ import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 import type { ChannelView, OpenTab, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
 import {
   applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
-  indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText,
+  indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
   type InboxRow, type Seg, type ThreadLayout, type Tone,
 } from './model'
@@ -968,10 +968,11 @@ export const register: Register = on => {
       const shown = layout.blocks.filter(b => meets(b.top, b.rows))
       const post = (b: (typeof layout.blocks)[number]) => {
         const m = th.messages[b.n]!
+        const tint = m.own ? PALETTE.blue : senderColor(m.senderId)
         return (
           <Box key={`post:${id}:${b.key}`} flexDirection="column" flexShrink={0} marginTop={b.top ? 1 : 0}>
             <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
-              <Text weight="bold" {...(m.own ? { color: PALETTE.blue } : {})}>{`${m.sender ?? '?'}${m.own ? ' (you)' : ''}`}</Text>
+              <Text weight="bold" {...(tint ? { color: tint } : {})}>{`${m.sender ?? '?'}${m.own ? ' (you)' : ''}`}</Text>
               {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
               {m.type !== 'text' ? <Text color={PALETTE.amber}>{m.type}</Text> : null}
               <Box flexGrow={1} />

@@ -8,7 +8,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { UiSnapshot } from '../types'
-import { PALETTE } from './model'
+import { PALETTE, senderColor } from './model'
 
 const SNAP: UiSnapshot = {
   v: 1,
@@ -1127,9 +1127,9 @@ const THREAD_A = {
   channel_id: 'c',
   channel: 'ops',
   messages: [
-    { sender: 'Kevin', content: 'Can I take the NAS at **14:00**?', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
+    { sender: 'Kevin', senderId: 'kevin', content: 'Can I take the NAS at **14:00**?', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
     { sender: 'Brian', content: LONG, type: 'text', ts: '2026-10-30T08:05:00.000Z', seq: 30, own: false, new: false },
-    { sender: 'Bellman', content: 'On it: see https://example.com/x', type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
+    { sender: 'Bellman', senderId: 'bellman', content: 'On it: see https://example.com/x', type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
     { sender: 'Kevin', content: 'thanks', type: 'text', ts: '2026-10-30T08:07:00.000Z', seq: 32, own: false, new: true },
     { sender: 'Kevin', content: 'one more', type: 'text', ts: '2026-10-30T08:08:00.000Z', seq: 33, own: false, new: true },
   ],
@@ -1161,6 +1161,9 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   expect(await ui.find({ key: `tail:${T_OLD}` })).toBeUndefined()
   // Own posts blue with (you); new ones say so in the brand, bold.
   expect(await ui.find({ type: 'Text', text: 'Bellman (you)' })).toMatchObject({ props: { color: PALETTE.blue, weight: 'bold' } })
+  // Others in their own colour by id; one without an id (an older plugin) stays plain bold.
+  expect(await ui.find({ type: 'Text', text: 'Kevin' })).toMatchObject({ props: { color: senderColor('kevin'), weight: 'bold' } })
+  expect((await ui.find({ type: 'Text', text: 'Brian' }))?.props.color).toBeUndefined()
   expect(await ui.findAll({ type: 'Text', text: /^new$/ })).toHaveLength(2)
   expect(await ui.find({ type: 'Text', text: /^new$/ })).toMatchObject({ props: { color: PALETTE.brand, weight: 'bold' } })
   // Post text is our own lines: bold run, link run, each line one row.

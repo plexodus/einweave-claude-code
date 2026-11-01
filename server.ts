@@ -4295,6 +4295,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           type: m.type ?? "text",
           ts: m.createdAt,
           seq: m.seq == null ? null : Number(m.seq),
+          // The pane colours each sender by this: an id, so a rename keeps the colour (as the web does).
+          senderId: cleanOrNull(m.agentId ?? m.userId),
           own: !!agentId && m.agentId === agentId,
           new: !(agentId && m.agentId === agentId) && readSeq !== null && m.seq != null && Number(m.seq) > readSeq,
           ...(root ? { root: true } : {}),

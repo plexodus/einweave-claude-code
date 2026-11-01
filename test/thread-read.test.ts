@@ -463,7 +463,8 @@ describe("read_thread / list_threads", () => {
   test("ui_thread (the mod's View) shows the thread but marks nothing read and acks nothing: a person looking is not the model reading", async () => {
     const view = await ok("ui_thread", { thread_id: THREAD });
     expect(view.messages.map((m: any) => m.content)).toEqual(["Bug: Threaded replies do not work", "r1", "r2", "r3"]);
-    expect(view.messages[0]).toMatchObject({ sender: "Kevin", ts: "2026-09-23T05:55:07.000Z" });
+    // senderId is the pane's colour key: the id, never the name.
+    expect(view.messages[0]).toMatchObject({ sender: "Kevin", senderId: "kevin", ts: "2026-09-23T05:55:07.000Z" });
     // The tab's header names the channel, from the cached channel map.
     expect(view).toMatchObject({ channel_id: CHANNEL_ID, channel: CHANNEL_NAME, has_older: false, older_count: 0 });
     // The NEWEST page (backward from the top), never the first: a long thread's open question is at its end.
