@@ -89,6 +89,8 @@ export interface ThreadScroll {
 /** `ui_thread`'s answer for one thread tab, or why it is missing. */
 export interface ThreadView {
   title: string | null
+  /** Its channel's name, for the tab's header; null when the plugin could not name it. */
+  channel?: string | null
   status: string | null
   messages: ThreadMessage[]
   /** Replies older than those shown: 0 none, null some (uncounted). */

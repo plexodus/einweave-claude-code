@@ -391,10 +391,10 @@ export function takeOutcome(text: string): { kind: 'taken' } | { kind: 'ask'; qu
 /** `ui_thread`'s JSON → a thread tab's content; anything else is an error to show. */
 export function threadView(text: string): ThreadView {
   try {
-    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null }; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
+    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null }; channel?: string | null; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
     if (!o || !Array.isArray(o.messages)) throw new Error('no messages')
     const older = o.has_older !== true ? 0 : typeof o.older_count === 'number' ? o.older_count : null
-    return { title: o.thread?.title ?? null, status: o.thread?.status ?? null, messages: o.messages, older, error: null, loading: false }
+    return { title: o.thread?.title ?? null, channel: o.channel ?? null, status: o.thread?.status ?? null, messages: o.messages, older, error: null, loading: false }
   } catch {
     return { title: null, status: null, messages: [], older: 0, error: text || 'ui_thread answered nothing', loading: false }
   }

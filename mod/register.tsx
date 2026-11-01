@@ -524,8 +524,6 @@ export const register: Register = on => {
     // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
     // VS Code): there a title is a link and a record's actions live in the tab it opens.
     const desk = e.surface !== 'terminal'
-    // A button's face: its hotkey before its label, but not on a desktop, whose webview drops hotkeys.
-    const keyed = (hotkey: string, label: string) => (desk ? label : [<Text key="k" color="suggestion">{hotkey}</Text>, ` ${label}`])
 
     /**
      * A record: a one-cell mark, its title (opens it) on the first line, `meta` on a second. The mark is
@@ -691,11 +689,11 @@ export const register: Register = on => {
       )
 
     const tabRow = gated ? (
-      <Box flexDirection="row" columnGap={1} marginTop={1}>
+      <Box flexDirection="row" columnGap={1}>
         {tabButton('tab:session', 'Session', 'session', show('session'))}
       </Box>
     ) : (
-      <Box flexDirection="row" columnGap={1} marginTop={1} flexWrap="wrap">
+      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
         {tabButton('tab:inbox', `Inbox ${connected ? total : 0}`, 'inbox', show('inbox'))}
         {tabButton('tab:held', `Held ${s.holds.length}`, 'held', show('held'))}
         {tabButton('tab:channels', 'Channels', 'channels', showChannels)}
@@ -716,6 +714,9 @@ export const register: Register = on => {
                   void update($, tabs, x => closeTab(x, o.id))
                   if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                   else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
+                  // Its place goes too: View opens it again where it lands (first new, else newest), not where it was
+                  // left (Jörgen 2026-11-01).
+                  void update($, scrolls, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                 }}
               >
                 {tab === o.id && !desk ? <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{'× '}</Text> : undefined}
@@ -845,6 +846,8 @@ export const register: Register = on => {
               s.staleSince ? [<Text key="v">{s.version}</Text>, <Text key="st" color={PALETTE.amber}>· updated on disk: restart Claude Code to use it</Text>] : <Text>{s.version}</Text>,
             )}
           </Box>
+          {/* Said once here, not on every thread tab (Jörgen 2026-11-01). */}
+          <Text dimColor>Thread tabs are read-only and cost no tokens. new stays new until it reaches Claude.</Text>
           <Box flexDirection="row" columnGap={1}>
             {connected ? (
               <Button key="disconnect" label="Disconnect" onPress={act('disconnect', {})} />
@@ -919,10 +922,17 @@ export const register: Register = on => {
       const sc = (await read($, scrolls))[id]
       const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older)
       // Rows the pinned parts take: the pane's header (+ the detail under it while down), the tabs, the rule, the
-      // thread's own header (title, hold line, actions), its footer, and the margins between.
+      // thread's own header (title, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
       const openW = t.open.map(o => tabWidth(tabLabel(o.title), o.id === tab ? 'shown' : 'rest'))
-      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 1 + 4 + 3
+      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + tabRows([...tabsW, ...openW], width) + 1 + 3 + 2
+      // A desktop has no hotkeys: there the key bar is labels alone.
+      const hot = (key: string) => (desk ? {} : { hotkey: key })
+      const threadRule = (key: string) => (
+        <Box key={key} height={1} flexShrink={0}>
+          <Text color={RULE}>{'─'.repeat(width)}</Text>
+        </Box>
+      )
       const room = Math.max(3, e.props.scroll.bodyRows - pinned)
       const off = own ? threadOff(sc, layout, th.messages, room) : 0
       win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder } : null
@@ -995,23 +1005,22 @@ export const register: Register = on => {
       ]
       body = (
         <Box flexDirection="column">
+          {/* Board ThreadTab, chrome A (Jörgen 2026-11-01): #channel and title, how fresh at the right; the hold
+              line; a rule, so the posts start below the header, not under its buttons. */}
           <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
-            <Text weight="bold" wrap="truncate-end">{title}</Text>
+            {th.channel ? <Text key="ch" color={PALETTE.brand}>{`#${th.channel}`}</Text> : null}
+            <Box flexShrink={1} overflow="hidden">
+              <Text weight="bold" wrap="truncate-end">{title}</Text>
+            </Box>
+            <Box flexGrow={1} />
+            {held ? <Text key="stamp" dimColor>● live</Text> : th.at !== undefined ? <Text key="stamp" dimColor>{`Updated ${clockOf(th.at)}`}</Text> : null}
           </Box>
           {held ? (
             <Text color={PALETTE.brand} wrap="truncate-end">held by you · replies come here</Text>
           ) : (
             <Text color={PALETTE.amber} wrap="truncate-end">not held here · Claude has not seen it · Take brings it here</Text>
           )}
-          <Box flexDirection="row" columnGap={1} marginTop={1} height={1} overflow="hidden">
-            {held ? (
-              <Button key={`release:${id}`} hotkey="r" dimColor onPress={act('release', { ref: id })}>{keyed('r', 'Release')}</Button>
-            ) : (
-              <Button key={`take:${id}`} hotkey="t" onPress={take(id)}>{keyed('t', 'Take')}</Button>
-            )}
-            <Button key={`new:${id}`} hotkey="n" dimColor onPress={newSession(id)}>{keyed('n', 'New session')}</Button>
-            {held ? null : <Button key={`refresh:${id}`} label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
-          </Box>
+          {threadRule('rule:head')}
           {own ? (
             // Bottom-anchored: the newest at the window's foot; `off` rows up from it.
             <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent="flex-end" flexShrink={0}>
@@ -1027,11 +1036,20 @@ export const register: Register = on => {
               {flow}
             </Box>
           )}
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor wrap="truncate-end">
-              {held ? 'Held: live. New replies appear here as they arrive.' : `Unheld: not pushed here.${th.at !== undefined ? ` Updated ${clockOf(th.at)}` : ''} · ↻ to refresh.`}
-            </Text>
-            <Text dimColor wrap="truncate-end">Read-only · no tokens · new stays new until it reaches Claude.</Text>
+          {threadRule('rule:foot')}
+          {/* The key bar: the thread's actions on their keys (`t: Take`), drawn as the pane's footer for a record. */}
+          <Box key={`keys:${id}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+            {held ? (
+              <Button key={`release:${id}`} plain {...hot('r')} label="Release" dimColor onPress={act('release', { ref: id })} />
+            ) : (
+              <Button key={`take:${id}`} plain {...hot('t')} label="Take" onPress={take(id)} />
+            )}
+            <Text dimColor>·</Text>
+            <Button key={`new:${id}`} plain {...hot('n')} label="New session" dimColor onPress={newSession(id)} />
+            {held ? null : <Text key="sep:refresh" dimColor>·</Text>}
+            {held ? null : <Button key={`refresh:${id}`} plain label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
+            <Box flexGrow={1} />
+            <Text dimColor>read-only</Text>
           </Box>
         </Box>
       )
@@ -1064,7 +1082,7 @@ export const register: Register = on => {
           {header}
           {tabRow}
           {rule('rule:tabs')}
-          <Box flexDirection="column" marginTop={1} flexShrink={0}>
+          <Box flexDirection="column" flexShrink={0}>
             {body}
           </Box>
           {lead < 2 ? <Box key="spacer:end" height={2 - lead} flexShrink={0} /> : null}
@@ -1077,7 +1095,7 @@ export const register: Register = on => {
         {header}
         {tabRow}
         {rule('rule:tabs')}
-        <Box flexDirection="column" marginTop={1} flexGrow={1}>
+        <Box flexDirection="column" flexGrow={1}>
           {body}
         </Box>
         {footer ? rule('rule:footer') : null}

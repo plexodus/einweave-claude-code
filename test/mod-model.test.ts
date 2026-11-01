@@ -261,8 +261,10 @@ describe("the Inbox and thread tabs", () => {
   });
 
   test("threadView: ui_thread's JSON, or its text as the error", () => {
-    const v = threadView(JSON.stringify({ thread: { id: "t", title: "Hi", status: "open" }, messages: [{ sender: "K", content: "c", type: "text", ts: null }], has_older: true, older_count: 7 }));
-    expect(v).toEqual({ title: "Hi", status: "open", messages: [{ sender: "K", content: "c", type: "text", ts: null }], older: 7, error: null, loading: false });
+    const v = threadView(JSON.stringify({ thread: { id: "t", title: "Hi", status: "open" }, channel: "ops", messages: [{ sender: "K", content: "c", type: "text", ts: null }], has_older: true, older_count: 7 }));
+    expect(v).toEqual({ title: "Hi", channel: "ops", status: "open", messages: [{ sender: "K", content: "c", type: "text", ts: null }], older: 7, error: null, loading: false });
+    // An older plugin's answer has no channel: the header then shows the title alone.
+    expect(threadView(JSON.stringify({ messages: [] })).channel).toBeNull();
     // Older replies a server did not count: some; none at all: 0.
     expect(threadView(JSON.stringify({ messages: [], has_older: true, older_count: null })).older).toBeNull();
     expect(threadView(JSON.stringify({ messages: [], has_older: false, older_count: 0 })).older).toBe(0);

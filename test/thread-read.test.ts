@@ -464,7 +464,8 @@ describe("read_thread / list_threads", () => {
     const view = await ok("ui_thread", { thread_id: THREAD });
     expect(view.messages.map((m: any) => m.content)).toEqual(["Bug: Threaded replies do not work", "r1", "r2", "r3"]);
     expect(view.messages[0]).toMatchObject({ sender: "Kevin", ts: "2026-09-23T05:55:07.000Z" });
-    expect(view).toMatchObject({ channel_id: CHANNEL_ID, has_older: false, older_count: 0 });
+    // The tab's header names the channel, from the cached channel map.
+    expect(view).toMatchObject({ channel_id: CHANNEL_ID, channel: CHANNEL_NAME, has_older: false, older_count: 0 });
     // The NEWEST page (backward from the top), never the first: a long thread's open question is at its end.
     const q = new URLSearchParams(stub.calls.filter((c) => c.includes("/messages")).at(-1)!.split("?")[1]);
     expect(q.get("sinceSeq")).toBeNull();

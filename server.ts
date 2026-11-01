@@ -4299,9 +4299,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           new: !(agentId && m.agentId === agentId) && readSeq !== null && m.seq != null && Number(m.seq) > readSeq,
           ...(root ? { root: true } : {}),
         });
+        const channelId = data.thread?.channelId ?? data.parent?.channelId ?? null;
+        // The tab's header names the channel: the map is cached, fetched only for a channel it lacks.
+        if (channelId && !channelNameOf(channelId)) await ensureChannelMap().catch(() => {});
         const view = {
           thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
-          channel_id: data.thread?.channelId ?? data.parent?.channelId ?? null,
+          channel_id: channelId,
+          channel: (channelId && cleanOrNull(channelNameOf(channelId))) || null,
           messages: [...(data.parent ? [shape(data.parent, true)] : []), ...(data.replies ?? []).map((m: any) => shape(m, false))],
           // Replies older than those shown, and how many (null from a server that does not count them).
           has_older: data.hasOlder === true,
