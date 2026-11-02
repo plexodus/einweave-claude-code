@@ -80,6 +80,7 @@ import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type 
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
+import { handleRefusal } from "./send-refusals";
 
 /** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
 function cleanOrNull(v: unknown): string | null {
@@ -2079,7 +2080,8 @@ const HTTP_TIMEOUT_MS = 20000;
 async function apiFetch(
   path: string,
   opts: RequestInit = {},
-  retried = false
+  retried = false,
+  busyRetried = false
 ): Promise<Response> {
   let auth: Awaited<ReturnType<typeof creds.httpAuth>>;
   try {
@@ -2143,8 +2145,11 @@ async function apiFetch(
     } else {
       auth.client.invalidateAccess(auth.token);
     }
-    return apiFetch(path, opts, true);
+    return apiFetch(path, opts, true, busyRetried);
   }
+  // RFC-034 send refusals (one rule for every tool): carry the server's own message, and
+  // retry parser_busy once. A throttled 429 is such a refusal too, so it goes first.
+  res = await handleRefusal(res, path, () => apiFetch(path, opts, retried, true), busyRetried);
   if (res.status === 429) {
     const retryAfter = Number(res.headers.get("retry-after")) || undefined;
     throw new Error(
