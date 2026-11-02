@@ -15,4 +15,6 @@ for (const k of Object.keys(process.env)) if (k.startsWith("BRIDGE_")) delete pr
  */
 process.env.EINWEAVE_TEST = "1";
 process.env.EINWEAVE_TEST_SESSION_MAP_WAIT_MS = "0";
+// Its sibling: the late look for the Claude pid (server.ts watchForClaudePid), a `ps` walk a second.
+process.env.EINWEAVE_TEST_CLAUDE_PID_LATE_MS = "0";
 process.env.EINWEAVE_TEST_SHUTDOWN_GRACE_MS = "50";

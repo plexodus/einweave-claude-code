@@ -51,7 +51,7 @@ import { dirname, join } from "path";
 import { createLabelSetting } from "./session-settings";
 import { readConnectState, writeConnectState, connectStateFileFor, sweepConnectStateFiles, readConnectKind, writeConnectKind, connectKindFileFor, readScopeSet, writeScopeSet, connectScopeFileFor, touchSessionFiles, type ConnectKind } from "./connect-store";
 import { describeClose, type CloseClass, type HolderIdentity } from "./reconnect-policy";
-import { writeProc, removeProc, updateProcState, listProcs, type ProcInfo } from "./proc-registry";
+import { writeProc, removeProc, updateProcState, patchProc, listProcs, type ProcInfo } from "./proc-registry";
 import { readOrphanedAt, decideStaleNotice, staleNoticeText, findInstalledVersion, INITIAL_STALE_WATCH_STATE, type StaleWatchState } from "./stale-watcher";
 import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
@@ -80,6 +80,7 @@ import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type 
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
+import { sendMessage, isSendRefusal } from "./send-refusals";
 
 /** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
 function cleanOrNull(v: unknown): string | null {
@@ -252,6 +253,10 @@ const SESSION_MAP_DIRS = [
 // suite); test/preload.ts sets 0, and tests of the wait itself set it back.
 const SESSION_MAP_WAIT_MS = testKnob("EINWEAVE_TEST_SESSION_MAP_WAIT_MS", (n) => Number.isInteger(n) && n >= 0) ?? 3000;
 const SESSION_MAP_POLL_MS = 100;
+// A hook later than SESSION_MAP_WAIT_MS (a loaded machine) still names this process's Claude pid:
+// keep looking this long (watchForClaudePid). 0 = not at all; test/preload.ts sets it, like the wait.
+const CLAUDE_PID_LATE_MS = testKnob("EINWEAVE_TEST_CLAUDE_PID_LATE_MS", (n) => Number.isInteger(n) && n >= 0) ?? 60_000;
+const CLAUDE_PID_LATE_POLL_MS = 1000;
 
 
 /** The controlling terminal of a live pid (D2: `ps -o tty= -p <claudePid>`). "" if unknown. */
@@ -293,18 +298,45 @@ function pidAlive(pid: unknown): boolean {
  * Costs one `ps` per level, bounded. Returns null where `ps` does not exist
  * (Windows) — the caller then falls back rather than pretending.
  */
-function parentPid(pid: number): number | null {
+/** One `ps` step: `ran` false when `ps` itself failed (none here, or a spawn failure); `ppid` null at the top. */
+function parentPid(pid: number): { ran: boolean; ppid: number | null } {
   try {
     const r = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)]);
-    if (!r.success) return null;
+    if (!r.success) return { ran: false, ppid: null };
     const n = Number(new TextDecoder().decode(r.stdout).trim());
-    return Number.isSafeInteger(n) && n > 1 ? n : null;
+    return { ran: true, ppid: Number.isSafeInteger(n) && n > 1 ? n : null };
   } catch {
-    return null;
+    return { ran: false, ppid: null };
   }
 }
 
 const ANCESTRY_MAX_DEPTH = 8;
+const ANCESTRY_ATTEMPTS = 3;
+/**
+ * This process and its ancestors, nearest first; null where `ps` cannot run. Walked once: an
+ * ancestor's pid does not change while it lives, so the late-pid poll reads files and spawns
+ * nothing. A walk a failed `ps` cut short is tried again -- a spawn can fail under load -- since
+ * one failure would otherwise turn the sse key back on for the window's life.
+ */
+const ANCESTORS: number[] | null = (() => {
+  for (let attempt = 0; attempt < ANCESTRY_ATTEMPTS; attempt++) {
+    const chain = [process.pid];
+    let ran = true;
+    while (chain.length < ANCESTRY_MAX_DEPTH) {
+      const step = parentPid(chain[chain.length - 1]!);
+      if (!step.ran) {
+        ran = false;
+        break;
+      }
+      if (step.ppid === null) break;
+      chain.push(step.ppid);
+    }
+    if (ran) return chain;
+  }
+  return null;
+})();
+/** `ps` answers here, so the pid key can be found: the sse key must not be used (resolveSessionKey). */
+const ANCESTRY_WORKS = ANCESTORS !== null;
 
 /** RFC-017 D2: this process's own identity fields, shared by the proc registry write
  * below AND the session lock record (P3) — computed once (the ancestry walk costs a
@@ -315,28 +347,26 @@ interface MyIdentity {
   termProgram: string;
   cwd: string;
 }
+// A null pid cached here once stuck for the window's life (no ctl socket, 2026-10-31): watchForClaudePid
+// replaces it when the hook's pid map turns up late.
 let myIdentityCache: MyIdentity | null = null;
+function identityOf(claudePid: number | null): MyIdentity {
+  return {
+    claudePid,
+    tty: claudePid !== null ? ttyOf(claudePid) : "",
+    termProgram: process.env.TERM_PROGRAM ?? "",
+    cwd: PROJECT_DIR,
+  };
+}
 function myIdentity(): MyIdentity {
-  if (!myIdentityCache) {
-    const mapped = readMappingByAncestry();
-    const claudePid = mapped?.pid ?? null;
-    myIdentityCache = {
-      claudePid,
-      tty: claudePid !== null ? ttyOf(claudePid) : "",
-      termProgram: process.env.TERM_PROGRAM ?? "",
-      cwd: PROJECT_DIR,
-    };
-  }
-  return myIdentityCache;
+  return (myIdentityCache ??= identityOf(readMappingByAncestry()?.pid ?? null));
 }
 
 /** Mapping written by the hook against any ancestor of ours, nearest first. */
 function readMappingByAncestry(): { id: string; pid: number } | null {
-  let pid: number | null = process.pid;
-  for (let depth = 0; depth < ANCESTRY_MAX_DEPTH && pid; depth++) {
+  for (const pid of ANCESTORS ?? []) {
     const id = readSessionMapping(`pid-${pid}`);
     if (id) return { id, pid };
-    pid = parentPid(pid);
   }
   return null;
 }
@@ -413,13 +443,15 @@ async function resolveSessionKey(): Promise<{ key: string; source: string }> {
   //    or tmux session has none). Headless is also where the bug is worst: on a
   //    `--continue` the MCP env carries a per-launch id that names NO
   //    conversation at all, while the hook still sees the real one.
-  // 2. sse port — kept for IDE sessions and as the fallback wherever the
-  //    ancestry walk cannot run (no `ps`, i.e. Windows).
-  //
-  // The hook writes both files when it can, so this order is a preference, not
-  // a dependency.
+  // 2. sse port — ONLY where the ancestry walk cannot run (no `ps`, i.e. Windows).
+  //    Every window attached to one IDE shares the port, so the sse file names
+  //    whichever of them ran its hook last. Read while our own hook had not yet
+  //    written the pid file, it handed a second window the FIRST window's
+  //    conversation (measured 2026-10-31: plugin up 21 ms before its hook). Where
+  //    the pid key can work, it is the only key.
   const deadline = Date.now() + SESSION_MAP_WAIT_MS;
-  const haveSseKey = /^[0-9]+$/.test(SESSION_MAP_KEY);
+  const haveSseKey = /^[0-9]+$/.test(SESSION_MAP_KEY) && !ANCESTRY_WORKS;
+  if (SESSION_MAP_WAIT_MS > 0) process.stderr.write(`einweave channel: waiting up to ${SESSION_MAP_WAIT_MS} ms for the session map\n`);
   for (;;) {
     const byPid = readMappingByAncestry();
     if (byPid) {
@@ -2114,7 +2146,8 @@ async function apiFetch(
     }
     return apiFetch(path, opts, true);
   }
-  if (res.status === 429) {
+  // A 429 that is an RFC-034 parser_throttled refusal is returned: `sendMessage` throws it with the server's message.
+  if (res.status === 429 && !(await isSendRefusal(res))) {
     const retryAfter = Number(res.headers.get("retry-after")) || undefined;
     throw new Error(
       `einweave API rate-limited this agent (429, ${path}) — wait ${retryAfter ?? "a few"} second(s) before retrying; do not retry immediately.`
@@ -2409,7 +2442,7 @@ const mcp = new Server(
       "",
       "Use the reply tool to send messages to an einweave channel. Pass channel_id from the inbound message. To reply in a thread, set thread_id to the thread_id shown on the message you are replying to — every inbound message carries the id of its thread. Omit thread_id to start a new root message.",
       "",
-      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post.",
+      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. Refer to an earlier message by quoting a few of its words; never cite seq numbers to people — seq is a paging cursor, not a reference, and people never see it.",
       "",
       "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
@@ -2446,7 +2479,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "reply",
       description:
-        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's.",
+        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. Refer to an earlier message by quoting a few of its words; never cite seq numbers to people — seq is a paging cursor, not a reference, and people never see it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3003,6 +3036,15 @@ const workDeps: WorkDeps = {
     } catch {}
     return { status: res.status, body: json, text };
   },
+  send: async (body) => {
+    const res = await sendMessage((b) => apiFetch("/api/messages", { method: "POST", body: JSON.stringify(b) }), body);
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: res.status, body: json, text };
+  },
   onRootSent: (r) => {
     rememberOwnSend(r.id);
     feedWithChannelName(r.channelId, (channelName) =>
@@ -3183,10 +3225,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           if (title) body.title = title;
         }
 
-        const res = await apiFetch(
-          threadId ? `/api/threads/${encodeURIComponent(threadId)}/messages` : "/api/messages",
-          { method: "POST", body: JSON.stringify(body) }
-        );
+        const sendPath = threadId ? `/api/threads/${encodeURIComponent(threadId)}/messages` : "/api/messages";
+        const res = await sendMessage((b) => apiFetch(sendPath, { method: "POST", body: JSON.stringify(b) }), body);
 
         if (res.status === 409 && take) {
           // A take from a holder who is online, unconfirmed: the server wrote nothing. Same question as the take tool.
@@ -4474,24 +4514,51 @@ if (shuttingDown) void feedTap.stop();
 try {
   mkdirSync(join(STATE_DIR, "seq"), { recursive: true, mode: 0o700 });
 } catch {}
+async function startCtl(claudePid: number): Promise<void> {
+  // Dead processes' sockets and half-bound temps, in <state>/ctl AND the per-user tmp fallback;
+  // and the 0.30.0 fallback directory, once nothing live is in it.
+  sweepCtlDirs([join(STATE_DIR, "ctl"), dirname(ctlSocketPath(STATE_DIR, claudePid))], pidAlive);
+  removeLegacyCtlDir(tmpdir(), pidAlive);
+  const mgr = new CtlManager<PendingEntry>({ options: (takeover) => ctlOptions(claudePid, takeover), retryDelaysMs: CTL_RETRY_DELAYS_MS, holdsLock: holdsLiveLock, ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}) });
+  ctlMgr = mgr;
+  await mgr.ensure();
+  if (shuttingDown) mgr.close();
+  // Another copy serves the path — most often the OLD process of a /reload-plugins that
+  // has not exited yet. A bounded wait lets the handover complete; the session-lock
+  // holder takes the socket over regardless (openSession, and every authenticated).
+  else mgr.retry();
+}
+/**
+ * The hook lost the startup race by more than SESSION_MAP_WAIT_MS. A null pid must not stick for
+ * the window's life — no ctl socket is no hook confirmations and no SessionStart re-key, silently —
+ * so keep walking the ancestry, bounded; on a hit, become what a timely hook would have made us.
+ */
+function watchForClaudePid(): void {
+  const deadline = Date.now() + CLAUDE_PID_LATE_MS;
+  const timer = setInterval(() => {
+    if (shuttingDown || Date.now() >= deadline) return clearInterval(timer);
+    const mapped = readMappingByAncestry();
+    if (!mapped) return;
+    clearInterval(timer);
+    myIdentityCache = identityOf(mapped.pid);
+    if (myProc) {
+      // A patch: the file's `state` is current (connected, standby…), myProc's is not.
+      myProc = { ...myProc, claudePid: mapped.pid, tty: myIdentityCache.tty };
+      patchProc(STATE_DIR, process.pid, { claudePid: mapped.pid, tty: myIdentityCache.tty });
+    }
+    process.stderr.write(`einweave channel: Claude pid ${mapped.pid} found late (session map)\n`);
+    void startCtl(mapped.pid);
+    const moved = conversationMovedTo();
+    if (moved) rekeyTo(moved.id, moved.source);
+  }, CLAUDE_PID_LATE_POLL_MS);
+  timer.unref();
+}
 {
   // Leftover temp files of a move that died hold credential bytes: remove those of dead processes.
   sweepMigrationTemps(STATE_DIR, pidAlive);
   const claudePid = myIdentity().claudePid;
-  if (claudePid !== null) {
-    // Dead processes' sockets and half-bound temps, in <state>/ctl AND the per-user tmp fallback;
-    // and the 0.30.0 fallback directory, once nothing live is in it.
-    sweepCtlDirs([join(STATE_DIR, "ctl"), dirname(ctlSocketPath(STATE_DIR, claudePid))], pidAlive);
-    removeLegacyCtlDir(tmpdir(), pidAlive);
-    const mgr = new CtlManager<PendingEntry>({ options: (takeover) => ctlOptions(claudePid, takeover), retryDelaysMs: CTL_RETRY_DELAYS_MS, holdsLock: holdsLiveLock, ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}) });
-    ctlMgr = mgr;
-    await mgr.ensure();
-    if (shuttingDown) mgr.close();
-    // Another copy serves the path — most often the OLD process of a /reload-plugins that
-    // has not exited yet. A bounded wait lets the handover complete; the session-lock
-    // holder takes the socket over regardless (openSession, and every authenticated).
-    else mgr.retry();
-  }
+  if (claudePid !== null) await startCtl(claudePid);
+  else if (ANCESTRY_WORKS && CLAUDE_PID_LATE_MS > 0) watchForClaudePid();
 }
 // Only a CURRENT copy writes the launcher. An old window restarting from an orphaned
 // plugin root (a newer version is installed; this directory is on its deletion clock)

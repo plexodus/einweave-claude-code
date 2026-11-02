@@ -121,13 +121,22 @@ export function writeProc(stateDir: string, info: ProcInfo): void {
  * superseded -> superseded) is P3/P4's job; this is the primitive they call.
  */
 export function updateProcState(stateDir: string, pid: number, state: ProcState): void {
+  patchProc(stateDir, pid, { state });
+}
+
+/**
+ * Patch fields of this process's own record in place, on updateProcState's terms. The record on disk
+ * is the only one whose `state` is current (every transition patches the file, not an in-memory copy),
+ * so a late fact (the Claude pid, found after startup) must patch, never rewrite the whole record.
+ */
+export function patchProc(stateDir: string, pid: number, fields: Partial<Pick<ProcInfo, "state" | "claudePid" | "tty">>): void {
   const target = procFile(stateDir, pid);
   try {
     const existing = JSON.parse(__io.readFileSync(target, "utf8"));
     const format = typeof existing.format === "number" ? existing.format : 0;
     if (format > PROC_FORMAT) return; // D8: not ours to rewrite
     const tmp = `${target}.${pid}.tmp`;
-    __io.writeFileSync(tmp, JSON.stringify({ ...existing, state }, null, 2) + "\n", { mode: 0o600 });
+    __io.writeFileSync(tmp, JSON.stringify({ ...existing, ...fields }, null, 2) + "\n", { mode: 0o600 });
     __io.renameSync(tmp, target);
   } catch {}
 }
