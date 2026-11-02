@@ -23,6 +23,7 @@ function msg(id: string, over: Partial<Inbound> = {}): Inbound {
     senderContextId: "01992f6e-0000-7000-8000-00000000bbbb",
     metadata: JSON.stringify({}),
     deliveryReasons: ["broadcast" as never],
+    addressed: false,
     ...over,
   } as Inbound;
 }
@@ -129,16 +130,24 @@ describe("link/adapter — what reaches the model", () => {
   test("the agent's other session: a broadcast is dismissed, an addressed one is surfaced", async () => {
     const h = harness();
     await h.adapter.push!(asEntry(msg("b1", { agentId: ME.agent })));
-    await h.adapter.push!(asEntry(msg("b2", { agentId: ME.agent, deliveryReasons: ["target" as never] })));
+    await h.adapter.push!(asEntry(msg("b2", { agentId: ME.agent, deliveryReasons: ["target" as never], addressed: true })));
     expect(h.dismissed).toEqual(["b1"]);
     expect(h.pushed).toEqual(["b2"]);
+  });
+
+  test("RFC-035: the server's `addressed` decides, not this build's vocab -- an unknown reason it addressed is surfaced, a known one it did not is dismissed", async () => {
+    const h = harness();
+    await h.adapter.push!(asEntry(msg("r1", { agentId: ME.agent, deliveryReasons: ["reply" as never], addressed: true })));
+    await h.adapter.push!(asEntry(msg("r2", { agentId: ME.agent, deliveryReasons: ["target" as never], addressed: false })));
+    expect(h.pushed).toEqual(["r1"]);
+    expect(h.dismissed).toEqual(["r2"]);
   });
 
   test("RFC-028: a sibling session's contribution to a thread this session holds is surfaced, naming the holder; the old per-message target is gone", async () => {
     const h = harness();
     // A pre-0.31 server stamped contextId; it means nothing now -- the hold is the target.
     await h.adapter.push!(asEntry(msg("e1", { metadata: JSON.stringify({ contextId: "other-grant", contextAgentId: ME.agent }) })));
-    await h.adapter.push!(asEntry(msg("e2", { agentId: ME.agent, deliveryReasons: ["thread" as never], metadata: JSON.stringify({ contribution: { holder: { id: ME.grant, label: "my window #aaaa" } } }) })));
+    await h.adapter.push!(asEntry(msg("e2", { agentId: ME.agent, deliveryReasons: ["thread" as never], addressed: true, metadata: JSON.stringify({ contribution: { holder: { id: ME.grant, label: "my window #aaaa" } } }) })));
     expect(h.dismissed).toEqual([]);
     expect(h.pushed).toEqual(["e1", "e2"]);
     expect(h.notified[0]!.meta.context_id).toBeUndefined();

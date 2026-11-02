@@ -57,7 +57,7 @@ import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
 import { Session, createRuntime, isApiRequestError, type Api, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
-import { isAddressed, deadline } from "./vendor/einweave-agent-sdk/core/index.js";
+import { deadline } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
@@ -1292,7 +1292,7 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
       // RFC-022 D8: the feed gets exactly what the host was handed, once it accepted it.
       if (entry.kind === "message") {
         const m = entry.message;
-        feedWithChannelName(m.channelId, (channelName) => feedTap?.inbound(m, { channelName, targeted: isAddressed(m.deliveryReasons) }));
+        feedWithChannelName(m.channelId, (channelName) => feedTap?.inbound(m, { channelName, targeted: m.addressed }));
       }
     },
     failed: (entry, err) => {

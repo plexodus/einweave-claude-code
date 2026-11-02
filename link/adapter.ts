@@ -10,7 +10,6 @@
  * or an action's entry id rides as `message_id` too: it is the id the hook confirms.
  */
 import type { DeliveryAdapter, Entry, Inbound } from "../vendor/einweave-agent-sdk/index.js";
-import { isAddressed } from "../vendor/einweave-agent-sdk/core/index.js";
 import { renderThreadEventContent } from "../work-tools";
 
 export type ChannelMeta = Record<string, string>;
@@ -133,7 +132,7 @@ export function shouldDismiss(entry: Entry, d: Pick<AdapterDeps, "myGrant" | "my
   const mine = d.myGrant();
   const m = entry.message;
   const ownSend = (mine && senderGrant(m) === mine) || d.isOwnSend(entry.id);
-  const ownAgentBroadcast = !!m.agentId && m.agentId === d.myAgentId() && !isAddressed(m.deliveryReasons);
+  const ownAgentBroadcast = !!m.agentId && m.agentId === d.myAgentId() && !m.addressed;
   return !!(ownSend || ownAgentBroadcast);
 }
 
