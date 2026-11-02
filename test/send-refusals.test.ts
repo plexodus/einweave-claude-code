@@ -137,4 +137,9 @@ describe("the wiring: every message send goes through sendMessage", () => {
   test("apiFetch has no busy logic of its own", () => {
     expect(src).not.toContain("busyRetried");
   });
+
+  test("apiFetch's 429 rate-limit error lets a parser_throttled refusal through to sendMessage", () => {
+    // Without it every 429 throws the generic rate-limit text and the server's message never reaches the model.
+    expect(src).toContain("if (res.status === 429 && !(await isSendRefusal(res))) {");
+  });
 });
