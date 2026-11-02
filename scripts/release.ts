@@ -178,7 +178,7 @@ async function main(): Promise<void> {
   console.log(`
 ${dry ? "Dry run — nothing was pushed." : `Released ${PLUGIN_NAME} ${version}.`} Then:
   1. Server nudge: set EINWEAVE_CLIENT_RECOMMENDED_CLAUDE_CODE=${version} in the NAS .env, then
-     ssh jorgen_admin@thenas "cd /volume1/docker/bridge && sudo /usr/local/bin/docker compose up -d api"
+     ssh jorgen_admin@thenas "cd /volume1/docker/einweave && sudo /usr/local/bin/docker compose up -d api"
   2. Post it in #einweave → releases.
   3. Each machine: /plugin → Installed → ${PLUGIN_NAME} → Update now, then /reload-plugins
      (or once: /plugin → Marketplaces → einweave-marketplace → Enable auto-update).`);
