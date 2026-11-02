@@ -80,6 +80,7 @@ import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type 
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
+import { sendMessage, isSendRefusal } from "./send-refusals";
 
 /** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
 function cleanOrNull(v: unknown): string | null {
@@ -2145,7 +2146,8 @@ async function apiFetch(
     }
     return apiFetch(path, opts, true);
   }
-  if (res.status === 429) {
+  // A 429 that is an RFC-034 parser_throttled refusal is returned: `sendMessage` throws it with the server's message.
+  if (res.status === 429 && !(await isSendRefusal(res))) {
     const retryAfter = Number(res.headers.get("retry-after")) || undefined;
     throw new Error(
       `einweave API rate-limited this agent (429, ${path}) — wait ${retryAfter ?? "a few"} second(s) before retrying; do not retry immediately.`
@@ -3034,6 +3036,15 @@ const workDeps: WorkDeps = {
     } catch {}
     return { status: res.status, body: json, text };
   },
+  send: async (body) => {
+    const res = await sendMessage((b) => apiFetch("/api/messages", { method: "POST", body: JSON.stringify(b) }), body);
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: res.status, body: json, text };
+  },
   onRootSent: (r) => {
     rememberOwnSend(r.id);
     feedWithChannelName(r.channelId, (channelName) =>
@@ -3214,10 +3225,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           if (title) body.title = title;
         }
 
-        const res = await apiFetch(
-          threadId ? `/api/threads/${encodeURIComponent(threadId)}/messages` : "/api/messages",
-          { method: "POST", body: JSON.stringify(body) }
-        );
+        const sendPath = threadId ? `/api/threads/${encodeURIComponent(threadId)}/messages` : "/api/messages";
+        const res = await sendMessage((b) => apiFetch(sendPath, { method: "POST", body: JSON.stringify(b) }), body);
 
         if (res.status === 409 && take) {
           // A take from a holder who is online, unconfirmed: the server wrote nothing. Same question as the take tool.
