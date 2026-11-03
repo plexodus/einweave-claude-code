@@ -44,7 +44,7 @@ type Call = { tool: string; args: Record<string, unknown> }
  */
 function engine(
   on: Parameters<Parameters<typeof test>[1]>[1],
-  o: { now?: number; polled?: UiSnapshot | null; polledRev?: number; connectAfterMs?: number; pushed?: string[]; pushes?: string[][]; stayOpen?: boolean; hang?: boolean; answer?: (c: Call) => unknown } = {},
+  o: { engineVersion?: string | null; now?: number; polled?: UiSnapshot | null; polledRev?: number; connectAfterMs?: number; pushed?: string[]; pushes?: string[][]; stayOpen?: boolean; hang?: boolean; answer?: (c: Call) => unknown } = {},
 ) {
   const calls: Call[] = []
   const spawns: { env?: Record<string, string> }[] = []
@@ -58,6 +58,12 @@ function engine(
   })
   on('session.end', () => ({ sessionId: 's1' }))
   on('classic.SessionStart', () => ({}))
+  // The engine's version: a current one unless the test names another; null, an engine without the call.
+  on('session.version', () => {
+    if (o.engineVersion === null) throw new Error('$.session.version is not a function')
+    const v = o.engineVersion ?? '2.1.317'
+    return { value: { version: v, base: v, builtAt: '2026-11-01T00:00:00Z' } }
+  })
   const registered: string[] = []
   on('command.register', ($, e) => {
     registered.push(e.name)
@@ -1280,6 +1286,35 @@ test('layout A: the spacers follow the window, so whatever row it opens on it sh
     // Wherever it was, the wheel keeps it there: a commit, even to row 0, let the engine show a row off the tree drawn.
     await $.ui.scroll({ ...(scrollEv(-1) as object), offset: offset + 1 } as never)
     expect(offsets).toEqual([])
+    await ui.unmount()
+  }
+})
+
+// Claude Code before 2.1.299 has no Text `weight` and refuses a tree that names it whole: an empty pane,
+// no band (seen on 2.1.296 under WSL, 2026-11-03). There the band and the pane say what to do instead.
+for (const engineVersion of ['2.1.296', null] as const) {
+  test(`on Claude Code ${engineVersion ?? 'with no version call'} the band and the pane say to update, with no weight anywhere`, async ($, on) => {
+    const { clock } = engine(on, { engineVersion })
+    await start($, clock)
+    for (const target of [BAND, { ...PANE, surface: 'terminal' as const }] as const) {
+      const ui = await $.ui.mount(target)
+      const need = await ui.find({ type: 'Text', text: 'einweave needs Claude Code 2.1.299 or later' })
+      expect(need?.text).toBe(`einweave needs Claude Code 2.1.299 or later (this is ${engineVersion ?? 'an older version'}).`)
+      expect((await ui.find({ type: 'Text', text: 'claude update' }))?.text).toBe('Run `claude update`, then restart Claude Code.')
+      for (const t of await ui.findAll({ type: 'Text' })) expect(t.props).not.toHaveProperty('weight')
+      expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+      await ui.unmount()
+    }
+  })
+}
+
+test('on Claude Code 2.1.299, the minimum, the band and the pane draw as usual', async ($, on) => {
+  const { clock } = engine(on, { engineVersion: '2.1.299' })
+  await start($, clock)
+  for (const target of [BAND, { ...PANE, surface: 'terminal' as const }] as const) {
+    const ui = await $.ui.mount(target)
+    expect(await ui.find({ type: 'Text', text: 'needs Claude Code' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'einweave' })).toBeDefined()
     await ui.unmount()
   }
 })

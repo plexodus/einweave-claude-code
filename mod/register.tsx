@@ -12,7 +12,7 @@ import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 
 import type { ChannelView, OpenTab, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
 import {
-  applySnapshot, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
+  applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
   type InboxRow, type Seg, type ThreadLayout, type Tone,
@@ -237,6 +237,24 @@ async function viewChannel($: EngineInterface, id: string, name: string): Promis
 }
 
 /** The first line of a tool's answer, as a toast. */
+// The engine's version, asked once per load (a reload starts the module over): one older than
+// MIN_CLAUDE_CODE refuses the band's and the pane's trees whole (a prop it lacks) and draws an empty
+// frame, so they draw the oldWords notice instead.
+let engineAge: Promise<string | null> | undefined
+
+/** The version to name when this Claude Code is too old for the mod, else null. One with no `$.session.version` is old. */
+async function tooOld($: EngineInterface): Promise<string | null> {
+  engineAge ??= (async () => {
+    try {
+      const v = await $.session.version()
+      return claudeCodeTooOld(v.base ?? v.version) ? v.version || 'an older version' : null
+    } catch {
+      return 'an older version'
+    }
+  })()
+  return engineAge
+}
+
 const toastFirst = ($: EngineInterface) => (t: string) => $.ui.toast(t.split('\n')[0] || 'Done.')
 
 /** The relay to the control socket's `watch`, for the session's life; ends with the module, which also kills the child. */
@@ -412,6 +430,16 @@ export const register: Register = on => {
     const i = indicator(v, now)
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
+    const old = await tooOld($)
+    if (old) {
+      const [need, fix] = oldWords(old)
+      return (
+        <Box key="old" flexDirection="row" columnGap={1}>
+          <Text color={PALETTE.amber}>{need}</Text>
+          <Text dimColor>{fix}</Text>
+        </Box>
+      )
+    }
     // Read for the redraw it brings; the engine's record says what is up, a pane kept over a reload too.
     await read($, paneUp)
     const up = (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
@@ -465,6 +493,16 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button, Markdown } = els
+    const old = await tooOld($)
+    if (old) {
+      const [need, fix] = oldWords(old)
+      return (
+        <Box key="old" flexDirection="column" paddingX={PANE_PAD}>
+          <Text color={PALETTE.amber}>{need}</Text>
+          <Text dimColor>{fix}</Text>
+        </Box>
+      )
+    }
     // The mobile surface has no fields (its table lacks them; drawn there they are empty): there the
     // name and scope are shown, not edited.
     const fields = e.surface !== 'mobile'
@@ -1110,6 +1148,14 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+/**
+ * What the band and the pane say on a Claude Code older than MIN_CLAUDE_CODE, drawn with props every
+ * engine that runs mods takes (no `weight`), so the person learns why instead of seeing an empty frame.
+ */
+function oldWords(version: string): [need: string, fix: string] {
+  return [`einweave needs Claude Code ${MIN_CLAUDE_CODE} or later (this is ${version}).`, 'Run `claude update`, then restart Claude Code.']
 }
 
 /**
