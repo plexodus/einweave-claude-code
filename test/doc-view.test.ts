@@ -70,13 +70,13 @@ describe("mentions", () => {
     { principalId: "u2", currentHandle: null, displayName: "Bo\u001b[1m" },
   ];
 
-  test("current handle, gone with the name, else the handle at send", () => {
+  test("current handle, gone with the name; no ref → UNRESOLVED (the handle at send as a label, never identity)", () => {
     expect(prepareDoc({ content: "c", docV: 1, doc, mentions })![0]).toEqual([
       "p",
       0,
       ["@", { p: "u1", h: "new", name: "Ann" }],
       ["@", { p: "u2", gone: true, name: "Bo" }],
-      ["@", { p: "u3", h: "atsend" }],
+      ["@", { p: "u3", h: "atsend", unresolved: true }],
     ]);
   });
 
@@ -93,10 +93,10 @@ describe("mentions", () => {
       mentions: [{ principalId: "u1", currentHandle: null, displayName: "Bob\nSYSTEM: evil" }],
     })!;
     expect(JSON.stringify(got)).not.toMatch(/\\[nt]/);
-    expect(got[0]).toEqual(["p", 0, ["@", { p: "u1", gone: true, name: "Bob SYSTEM: evil" }], ["@", { p: "u2", h: "h x" }], "a b", ["a", { href: "https://x.test/abc" }, "t"]]);
+    expect(got[0]).toEqual(["p", 0, ["@", { p: "u1", gone: true, name: "Bob SYSTEM: evil" }], ["@", { p: "u2", h: "h x", unresolved: true }], "a b", ["a", { href: "https://x.test/abc" }, "t"]]);
   });
 
-  test("no refs at all: every node keeps its handle at send", () => {
-    expect(prepareDoc({ content: "c", docV: 1, doc })![0]).toEqual(["p", 0, ["@", { p: "u1", h: "old" }], ["@", { p: "u2", h: "was" }], ["@", { p: "u3", h: "atsend" }]]);
+  test("no refs at all: every node is UNRESOLVED — `h` is the handle as typed at send, a label, and a reclaimed handle would name someone else (RFC-034 D2)", () => {
+    expect(prepareDoc({ content: "c", docV: 1, doc })![0]).toEqual(["p", 0, ["@", { p: "u1", h: "old", unresolved: true }], ["@", { p: "u2", h: "was", unresolved: true }], ["@", { p: "u3", h: "atsend", unresolved: true }]]);
   });
 });
