@@ -28,7 +28,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-p72pz35n.js";
+} from "./index-4rgb4r5t.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -918,7 +918,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.22.0";
+var SDK_VERSION = "0.23.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

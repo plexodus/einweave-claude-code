@@ -506,6 +506,19 @@ describe("read_thread / list_threads", () => {
     expect(view.messages[0]).toMatchObject({ sender: "Kevin", content: "red alert" });
   });
 
+  test("ui_thread asks for the doc and hands the mod one ready to draw: links checked, mentions resolved; no doc → null (RFC-034 D6)", async () => {
+    const doc = [["p", 0, ["a", { href: "javascript:x" }, "bad"], " ", ["@", { p: "u1", h: "old" }]]];
+    stub.set({
+      root: { ...msg(12, "root"), doc, docV: 1, mentions: [{ principalId: "u1", currentHandle: "new", displayName: "Ann", kind: "human", handleAtSend: "old" }] },
+      replies: [{ ...msg(20, "**plain**"), docV: 0 }],
+    });
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    expect(view.messages[0].doc).toEqual([["p", 0, "bad", " ", ["@", { p: "u1", h: "new", name: "Ann" }]]]);
+    expect(view.messages[1]).toMatchObject({ content: "**plain**", doc: null });
+    const q = new URLSearchParams(stub.calls.filter((c) => c.includes("/messages")).at(-1)!.split("?")[1]);
+    expect(q.get("include")).toBe("doc");
+  });
+
   test("ui_channels: the channels it is in or follows (mine, no include), named from the list; counts passed through, ABSENT ones stay absent", async () => {
     const counts = { open: 4, unheld: 1, parked: 1, oldestWaitingAt: "2026-10-30T09:00:00.000Z" };
     stub.set({

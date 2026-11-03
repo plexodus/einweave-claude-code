@@ -4,7 +4,7 @@
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
 import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
-import { cellWidth, renderPost, type Line } from './text'
+import { cellWidth, docLines, plainLines, type Line } from './text'
 
 /**
  * The design canvas's colours (https://claude.ai/artifact/4JomhfdVJR8goTtoaaqHNR, every board).
@@ -438,6 +438,11 @@ export function threadView(text: string): ThreadView {
   }
 }
 
+/** A post's lines: the server's doc when `ui_thread` handed one over, else its `content` as typed (G11). */
+export function threadLines(m: ThreadMessage, width: number): Line[] {
+  return Array.isArray(m.doc) ? docLines(m.doc, width) : plainLines(m.content, width)
+}
+
 /** A post shows this many lines until it is opened (Thread tab, layout A, decision 2026-10-31). */
 export const POST_CAP = 6
 /** Replies one Load older brings. */
@@ -453,6 +458,8 @@ export interface PostBlock {
   key: string
   n: number
   lines: Line[]
+  /** Every line, the cap ignored: what a surface that scrolls itself (a desktop) draws. */
+  all: Line[]
   more: number
   top: number
   rows: number
@@ -477,12 +484,12 @@ export function threadLayout(messages: readonly ThreadMessage[], width: number, 
   let row = 0
   messages.forEach((m, n) => {
     const key = postKey(m, n)
-    const all = renderPost(m.content, width)
+    const all = threadLines(m, width)
     const cut = !open[key] && all.length > POST_CAP + 1
     const lines = cut ? all.slice(0, POST_CAP) : all
     const more = cut ? all.length - POST_CAP : 0
     const rows = (blocks.length ? 1 : 0) + 1 + lines.length + (more ? 1 : 0)
-    blocks.push({ key, n, lines, more, top: row, rows })
+    blocks.push({ key, n, lines, all, more, top: row, rows })
     row += rows
     if (m.root && older !== 0 && n < messages.length - 1) {
       gap = { top: row, rows: 2 }

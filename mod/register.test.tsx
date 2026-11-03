@@ -1135,9 +1135,10 @@ const THREAD_A = {
   channel_id: 'c',
   channel: 'ops',
   messages: [
-    { sender: 'Kevin', senderId: 'kevin', content: 'Can I take the NAS at **14:00**?', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
+    // The server's doc, as ui_thread hands it over (RFC-034 D6): the mod draws it and parses nothing.
+    { sender: 'Kevin', senderId: 'kevin', content: 'Can I take the NAS at **14:00**?', doc: [['p', 0, 'Can I take the NAS at ', ['strong', 0, '14:00'], '?']], type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
     { sender: 'Brian', content: LONG, type: 'text', ts: '2026-10-30T08:05:00.000Z', seq: 30, own: false, new: false },
-    { sender: 'Bellman', senderId: 'bellman', content: 'On it: see https://example.com/x', type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
+    { sender: 'Bellman', senderId: 'bellman', content: 'On it: see https://example.com/x', doc: [['p', 0, 'On it: see ', ['a', { href: 'https://example.com/x' }, 'https://example.com/x']]], type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
     { sender: 'Kevin', content: 'thanks', type: 'text', ts: '2026-10-30T08:07:00.000Z', seq: 32, own: false, new: true },
     { sender: 'Kevin', content: 'one more', type: 'text', ts: '2026-10-30T08:08:00.000Z', seq: 33, own: false, new: true },
   ],
@@ -1179,6 +1180,8 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   // Post text is our own lines: bold run, link run, each line one row.
   expect(await ui.find({ type: 'Text', text: '14:00' })).toMatchObject({ props: { weight: 'bold' } })
   expect(await ui.find({ type: 'Text', text: 'https://example.com/x' })).toMatchObject({ props: { color: PALETTE.blue, underline: true } })
+  // A link is the kit's Link on the terminal too (an OSC 8 link), not coloured text alone.
+  expect(await ui.find({ type: 'Link', props: { href: 'https://example.com/x' } })).toBeDefined()
   // The long post capped at 6 lines, a "more" row after them.
   expect((await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith(`ln:${T_OLD}:s30:`))).toHaveLength(6)
   expect(await ui.find({ key: `more:${T_OLD}:s30` })).toMatchObject({ props: { label: '▸ 4 more lines', dimColor: true } })
@@ -1265,7 +1268,12 @@ test('layout A: "more" opens a capped post in place; inline (or on a desktop) th
   expect(await inline.find({ key: `ln:${T_OLD}:root:0` })).toBeDefined()
   await inline.unmount()
   const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
-  expect(await desk.find({ key: `md:${T_OLD}:root` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at **14:00**?' } })
+  // A desktop draws the same lines from the doc, never the kit's Markdown over `content` (RFC-034 D6); links are the kit's Link.
+  expect(await desk.find({ key: `md:${T_OLD}:root` })).toBeUndefined()
+  expect(await desk.find({ type: 'Markdown', text: /14:00/ })).toBeUndefined()
+  expect(await desk.find({ key: `ln:${T_OLD}:root:0` })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: '14:00' })).toMatchObject({ props: { weight: 'bold' } })
+  expect(await desk.find({ type: 'Link', props: { href: 'https://example.com/x' } })).toBeDefined()
   await desk.unmount()
 })
 

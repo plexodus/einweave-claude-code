@@ -76,6 +76,7 @@ import type { NoticeEntry } from "./delivery/notice";
 import { deliveryState } from "./delivery/state";
 import { localIso } from "./local-time";
 import { sanitizeChannelParams, stripControlChars } from "./control-chars";
+import { prepareDoc } from "./doc-view";
 import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type FeedTap } from "./feed-tap";
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
@@ -4293,7 +4294,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         // `before_seq` pages back from there: the pane's Load older.
         const beforeSeq = Number.isSafeInteger(args.before_seq) && (args.before_seq as number) >= 0 ? (args.before_seq as number) : Number.MAX_SAFE_INTEGER;
         const limit = Number.isSafeInteger(args.limit) ? Math.min(Math.max(args.limit as number, 1), UI_THREAD_LIMIT) : UI_THREAD_LIMIT;
-        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq, limit, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
+        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq, limit, markRead: false, include: "doc" }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
         if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
         // New = above this agent's read position: it stays new until it reaches Claude. Own = this agent sent it.
         const readSeq = typeof data.thread?.readSeq === "number" ? data.thread.readSeq : null;
@@ -4301,6 +4302,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const shape = (m: any, root: boolean) => ({
           sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId),
           content: stripControlChars(String(m.content ?? "")),
+          // The doc ready to draw (RFC-034 D6, doc-view.ts); null = draw `content` as plain text.
+          doc: prepareDoc(m),
           type: m.type ?? "text",
           ts: m.createdAt,
           seq: m.seq == null ? null : Number(m.seq),

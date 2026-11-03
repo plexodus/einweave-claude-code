@@ -492,7 +492,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text, Button, Markdown } = els
+    const { Box, Text, Button, Markdown, Link } = els
     const old = await tooOld($)
     if (old) {
       const [need, fix] = oldWords(old)
@@ -992,12 +992,14 @@ export const register: Register = on => {
                 <Text
                   key={`${key}:${n}`}
                   wrap="truncate-end"
-                  {...(r.href ? { color: PALETTE.blue, underline: true } : r.dim ? { dimColor: true } : {})}
+                  {...(r.href ? { color: PALETTE.blue, underline: true } : r.mention === 'active' ? { color: PALETTE.brand } : r.dim ? { dimColor: true } : {})}
                   {...(r.code ? { backgroundColor: RULE } : {})}
                   {...(r.bold ? { weight: 'bold' as const } : {})}
                   {...(r.italic ? { italic: true } : {})}
+                  {...(r.strike ? { strikethrough: true } : {})}
                 >
-                  {r.text}
+                  {/* The kit's Link: an OSC 8 link in a terminal, an anchor on a desktop. doc-view.ts checked the URL (G8). */}
+                  {r.href ? <Link href={r.href}>{r.text}</Link> : r.text}
                 </Text>
               ))
             : <Text> </Text>}
@@ -1020,7 +1022,9 @@ export const register: Register = on => {
               <Box flexGrow={1} />
               {m.new ? <Text color={PALETTE.brand} weight="bold">new</Text> : null}
             </Box>
-            {desk && !own ? <Markdown key={`md:${id}:${b.key}`} text={m.content} /> : b.lines.map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
+            {/* Every surface draws the server's doc as these lines (RFC-034 D6): no Markdown parsed here. A desktop
+                shows the whole post (its surface scrolls), so no cap there. */}
+            {(desk && !own ? b.all : b.lines).map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
             {b.more && !(desk && !own) ? (
               <Button key={`more:${id}:${b.key}`} plain dimColor label={`▸ ${b.more} more ${b.more === 1 ? 'line' : 'lines'}`} onPress={expand(b.key, b.more)} />
             ) : null}
