@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, threadOff, withOlder,
 } from "../mod/model";
@@ -435,5 +435,32 @@ describe("senderColor", () => {
     expect(SENDER_HUES).toEqual(["#9ce0e8", "#f29ac6", "#a8d672", "#f5a97f"]);
     expect(senderColor(null)).toBeUndefined();
     expect(senderColor("")).toBeUndefined();
+  });
+});
+
+describe("claudeCodeTooOld (the mod's minimum Claude Code)", () => {
+  test("older than the minimum is old; the minimum and later are not", () => {
+    expect(MIN_CLAUDE_CODE).toBe("2.1.299");
+    expect(claudeCodeTooOld("2.1.296")).toBe(true);
+    expect(claudeCodeTooOld("2.1.298")).toBe(true);
+    expect(claudeCodeTooOld("2.0.999")).toBe(true);
+    expect(claudeCodeTooOld("2.1.299")).toBe(false);
+    expect(claudeCodeTooOld("2.1.317")).toBe(false);
+    expect(claudeCodeTooOld("2.2.0")).toBe(false);
+    expect(claudeCodeTooOld("3.0.0")).toBe(false);
+  });
+  test("compares numbers, not strings: 2.1.1000 is newer than 2.1.299", () => {
+    expect(claudeCodeTooOld("2.1.1000")).toBe(false);
+    expect(claudeCodeTooOld("2.1.30")).toBe(true);
+  });
+  test("a development build reads as its release", () => {
+    expect(claudeCodeTooOld("2.1.298-dev")).toBe(true);
+    expect(claudeCodeTooOld("2.1.320-dev.20261101.t101500.sha1a2b3c4")).toBe(false);
+  });
+  test("unknown counts as old", () => {
+    expect(claudeCodeTooOld(undefined)).toBe(true);
+    expect(claudeCodeTooOld(null)).toBe(true);
+    expect(claudeCodeTooOld("")).toBe(true);
+    expect(claudeCodeTooOld("dev")).toBe(true);
   });
 });

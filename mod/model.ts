@@ -28,6 +28,28 @@ export function senderColor(id: string | null | undefined): string | undefined {
   return SENDER_HUES[h % SENDER_HUES.length]
 }
 
+/**
+ * The oldest Claude Code that draws this mod. 2.1.299 added `Text`'s `weight` (its changelog: "Added
+ * `size`, `weight`, `mono` and `tabular` to a mod's `Text`"); an older engine refuses every tree that
+ * names it and draws its own, an empty pane and no band (seen on 2.1.296, 2026-11-03). Raise it when the
+ * mod starts using a prop or noun a later release added.
+ */
+export const MIN_CLAUDE_CODE = '2.1.299'
+
+/**
+ * Whether `version` (`$.session.version()`'s `base`, or its `version`) is older than MIN_CLAUDE_CODE.
+ * Unknown (absent, or not `x.y.z`) counts as old: the engine that cannot say its version predates the
+ * call, and the notice is the one drawing every engine shows.
+ */
+export function claudeCodeTooOld(version: string | null | undefined): boolean {
+  const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)/.exec(v)?.slice(1).map(Number)
+  const have = version ? parse(version) : undefined
+  if (!have) return true
+  const need = parse(MIN_CLAUDE_CODE)!
+  for (let i = 0; i < 3; i++) if (have[i] !== need[i]) return have[i]! < need[i]!
+  return false
+}
+
 /** A run's colour by meaning: an accent, or `dim` (the theme's dim text). */
 export type Tone = 'brand' | 'amber' | 'blue' | 'red' | 'dim'
 
