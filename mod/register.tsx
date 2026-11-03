@@ -14,7 +14,7 @@ import type { ChannelView, OpenTab, ThreadMessage, ThreadScroll, ThreadView, UiS
 import {
   applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
-  scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
+  scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
   type InboxRow, type Seg, type ThreadLayout, type Tone,
 } from './model'
 import type { Line } from './text'
@@ -792,14 +792,22 @@ export const register: Register = on => {
 
     // Tabs (board Main): the shown one a filled pill, bold; the rest dim. A desktop draws its own
     // buttons and no fill, so there dimness alone says which is shown (decision E3).
-    const tabButton = (key: string, label: string, id: string, onPress: () => void) =>
+    const tabButton = (key: string, label: string, id: string, onPress: () => void, lit?: ReturnType<typeof tabLit>) =>
       tab === id ? (
         // No pointer inversion: it would turn the filled pill dark, a change on the tab already shown (Jörgen 2026-10-31).
         <Button key={key} label={label} plain hover={{ inverse: false }} onPress={onPress}>
           <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{` ${label} `}</Text>
         </Button>
       ) : (
-        <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
+        // An opened tab's label lights with its × (tabLit): dim and hover are the Text's, as the shown pill's fill
+        // is; a dimColor Button would keep the lit Text grey beside a bright × (live 2026-11-03).
+        lit ? (
+          <Button key={key} label={` ${label} `} plain onPress={onPress}>
+            <Text dimColor hover={lit}>{` ${label} `}</Text>
+          </Button>
+        ) : (
+          <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
+        )
       )
 
     // A blank row between the pane's name and its tabs (Jörgen 2026-11-03): the name cannot move up onto the
@@ -818,16 +826,23 @@ export const register: Register = on => {
         {tabButton('tab:session', 'Session', 'session', show('session'))}
         {t.open.map(o => {
           const label = tabLabel(o.title)
+          const shown = tab === o.id
+          // A tab and its × are one thing: the pointer on either lights both, as the pointer draws a tab
+          // (tabLit), so the × reads as part of the tab (Jörgen 2026-11-03). The tab's Box joins the
+          // group too: a Text inside a Button lights with it but does not set it off (seen live 2026-11-03: the
+          // label lit, the × not), and the Box is the whole tab under the pointer. A desktop draws no hover.
+          const lit = desk ? undefined : tabLit(o.id)
           return (
-            <Box key={`tabbox:${o.id}`} flexDirection="row">
-              {tabButton(`tab:${o.id}`, label, o.id, showOpen(o))}
+            <Box key={`tabbox:${o.id}`} flexDirection="row" {...(lit ? { hover: { scope: lit.scope } } : {})}>
+              {tabButton(`tab:${o.id}`, label, o.id, showOpen(o), lit)}
               {/* The shown tab's × sits inside its pill, drawn as the pill (Jörgen 2026-10-31); the rest dim. A desktop
-                  draws no fill, so there it stays dim: full strength is the shown tab's and the one thing to do. */}
+                  draws no fill, so there it stays dim: full strength is the shown tab's and the one thing to do.
+                  On the terminal every × is `× `, the pill's own width, so a tab keeps its width when shown. */}
               <Button
                 key={`close:${o.id}`}
                 label="×"
                 plain
-                {...(tab === o.id && !desk ? { hover: { inverse: false } } : { dimColor: true })}
+                {...(shown && !desk ? { hover: { inverse: false } } : lit ? {} : { dimColor: true })}
                 onPress={() => {
                   void update($, tabs, x => closeTab(x, o.id))
                   if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
@@ -837,7 +852,11 @@ export const register: Register = on => {
                   void update($, scrolls, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                 }}
               >
-                {tab === o.id && !desk ? <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{'× '}</Text> : undefined}
+                {shown && !desk ? (
+                  <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{'× '}</Text>
+                ) : lit ? (
+                  <Text dimColor hover={lit}>{'× '}</Text>
+                ) : undefined}
               </Button>
             </Box>
           )
@@ -1045,7 +1064,7 @@ export const register: Register = on => {
       // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
       // rule, the thread's own header (title, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
-      const openW = t.open.map(o => tabWidth(tabLabel(o.title), o.id === tab ? 'shown' : 'rest'))
+      const openW = t.open.map(o => tabWidth(tabLabel(o.title), true))
       const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 3 + 2
       // A desktop has no hotkeys: there the key bar is labels alone.
       const hot = (key: string) => (desk ? {} : { hotkey: key })
