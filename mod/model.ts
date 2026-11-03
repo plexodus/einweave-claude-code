@@ -15,8 +15,10 @@ export const PALETTE = { brand: '#4cc3ad', amber: '#e8b04a', blue: '#7ab4ff', re
 /**
  * Other senders' name colours: none of PALETTE's, which already mean you, new/held, status or error.
  * A shared colour costs only distinction: the name is right there (Jörgen 2026-11-01).
+ * Light cyan, not violet: any violet collapses into PALETTE.blue (you) for one red-weak type; cyan stays
+ * apart for all three (bridge plan 2026-11-01-mentions.md D2, CVD-simulated).
  */
-export const SENDER_HUES = ['#b49cff', '#f29ac6', '#a8d672', '#f5a97f'] as const
+export const SENDER_HUES = ['#9ce0e8', '#f29ac6', '#a8d672', '#f5a97f'] as const
 
 /** A sender's colour, stable per id (FNV-1a, as the web's agentColor); no id, no colour. */
 export function senderColor(id: string | null | undefined): string | undefined {

@@ -688,6 +688,10 @@ export const register: Register = on => {
         <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
       )
 
+    // A blank row between the pane's name and its tabs (Jörgen 2026-11-03): the name cannot move up onto the
+    // close mark's row, which a dock keeps for the engine.
+    const gap = <Box key="gap:tabs" height={1} flexShrink={0} />
+
     const tabRow = gated ? (
       <Box flexDirection="row" columnGap={1}>
         {tabButton('tab:session', 'Session', 'session', show('session'))}
@@ -921,11 +925,11 @@ export const register: Register = on => {
       const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
       const sc = (await read($, scrolls))[id]
       const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older)
-      // Rows the pinned parts take: the pane's header (+ the detail under it while down), the tabs, the rule, the
-      // thread's own header (title, hold line, rule) and its key bar under a rule.
+      // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
+      // rule, the thread's own header (title, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
       const openW = t.open.map(o => tabWidth(tabLabel(o.title), o.id === tab ? 'shown' : 'rest'))
-      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + tabRows([...tabsW, ...openW], width) + 1 + 3 + 2
+      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 3 + 2
       // A desktop has no hotkeys: there the key bar is labels alone.
       const hot = (key: string) => (desk ? {} : { hotkey: key })
       const threadRule = (key: string) => (
@@ -1081,6 +1085,7 @@ export const register: Register = on => {
         <Box key="pane" flexDirection="column" paddingX={PANE_PAD} height={e.props.scroll.bodyRows + 2}>
           {lead ? <Box key="spacer:top" height={lead} flexShrink={0} /> : null}
           {header}
+          {gap}
           {tabRow}
           {rule('rule:tabs')}
           <Box flexDirection="column" flexShrink={0}>
@@ -1094,6 +1099,7 @@ export const register: Register = on => {
       // row. Inline the frame fits the tree, so there it would only take rows from the transcript.
       <Box key="pane" flexDirection="column" paddingX={PANE_PAD} minHeight={e.props.placement === 'dock' ? e.props.scroll.bodyRows : undefined}>
         {header}
+        {gap}
         {tabRow}
         {rule('rule:tabs')}
         <Box flexDirection="column" flexGrow={1}>

@@ -336,6 +336,8 @@ test('the pane keeps a column free each side, its rules fitting inside it', asyn
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'pane' })).toMatchObject({ props: { paddingX: 1 } })
+  // A blank row between the name and the tabs (Jörgen 2026-11-03).
+  expect(await ui.find({ key: 'gap:tabs' })).toMatchObject({ props: { height: 1 } })
   expect((await ui.find({ type: 'Text', text: /^─+$/ }))?.text).toBe('─'.repeat(PANE.props.bodyColumns - 2))
   await ui.unmount()
 })
@@ -1145,13 +1147,15 @@ const scrollEv = (by: number) => ({ component: 'Pane', requestId: 'einweave', of
 test('layout A, docked: posts in chat order under a pinned header and footer, the tree the window plus a spacer row each end', async ($, on) => {
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
   await start($, clock)
-  // Pinned: name 1, tabs 1, rule 1, thread header 3 (title, hold, rule), key bar 2 (rule, keys) = 8; 26 rows leave 18.
+  // Pinned: name 1, gap 1, tabs 1, rule 1, thread header 3 (title, hold, rule), key bar 2 (rule, keys) = 9; 26 rows leave 17.
   let ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 26 } } })
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
   expect(await ui.find({ key: 'pane' })).toMatchObject({ props: { height: 26 + 2 } })
+  // The gap under the name is drawn here too, the row `pinned` counts for it.
+  expect(await ui.find({ key: 'gap:tabs' })).toMatchObject({ props: { height: 1 } })
   const keys = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
-  // Only what meets the window is drawn: 18 rows of 22 leave the root above it (a long thread stays cheap per tick).
+  // Only what meets the window is drawn: 17 rows of 22 leave the root above it (a long thread stays cheap per tick).
   expect(await keys()).toEqual(['s30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
   await ui.unmount()
   // Room for all 22 rows: every post, in chat order.
@@ -1196,8 +1200,8 @@ test('layout A: opens at the first new post (else the newest); the wheel moves i
   })
   const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(c.args.before_seq ? { ...THREAD_A, messages: [THREAD_A.messages[0], { sender: 'Kevin', content: 'older one', type: 'text', ts: null, seq: 10 }], has_older: true, older_count: 5 } : THREAD_A)) : undefined) })
   await start($, clock)
-  // Pinned: name 1, tabs 1, rule 1, thread header 3, key bar 2 = 8; a 12-row body leaves 4.
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 12 } } })
+  // Pinned: name 1, gap 1, tabs 1, rule 1, thread header 3, key bar 2 = 9; a 13-row body leaves 4.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 13 } } })
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
   // Rows: root 2, gap 2, s30 9, s31 3, s32 3, s33 3 = 22; s32's sender row is row 17: 22 - 4 - 17 up from the end.
@@ -1225,7 +1229,7 @@ test('layout A: opens at the first new post (else the newest); the wheel moves i
 test('layout A: × forgets the place: View opens the tab again where it lands, not where it was left', async ($, on) => {
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
   await start($, clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 12 } } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 13 } } })
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
   expect(await offOf(ui)).toBe(1)

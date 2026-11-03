@@ -431,6 +431,8 @@ describe("senderColor", () => {
     // Spread: every hue used across 40 ids, and only those hues.
     expect(new Set(got)).toEqual(new Set(SENDER_HUES));
     for (const c of Object.values(PALETTE)) expect(SENDER_HUES as readonly string[]).not.toContain(c);
+    // D2: light cyan, never a violet that a red-weak eye reads as PALETTE.blue (you).
+    expect(SENDER_HUES).toEqual(["#9ce0e8", "#f29ac6", "#a8d672", "#f5a97f"]);
     expect(senderColor(null)).toBeUndefined();
     expect(senderColor("")).toBeUndefined();
   });
