@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { buildUiState, toWaiting, UiWatch, type UiInputs } from "../ui/ui-state";
+import { buildUiState, mergeRefresh, toWaiting, UiWatch, type UiInputs } from "../ui/ui-state";
 import { ctlSocketPath } from "../delivery/ctl-path";
 import { openCtlServer, MAX_WATCHERS, type CtlServer, type WatchPort } from "../delivery/ctl-server";
 import { MissedTracker } from "../delivery/missed";
@@ -33,6 +33,7 @@ const INPUTS: UiInputs = {
   holds: ["t1"],
   titles: new Map([["t1", "Fix the build"]]),
   waiting: { forYou: 2, channel: 0, more: false, top: [] },
+  gateway: { online: true, label: "bridge-gw" },
   version: "0.38.0",
   staleSince: null,
 };
@@ -44,6 +45,7 @@ describe("buildUiState", () => {
     expect(s.session).toEqual({ agent: "bellman", label: "probe", kind: "session", scope: { mode: "none" } });
     expect(s.holds).toEqual([{ threadId: "t1", title: "Fix the build" }]);
     expect(s.waiting?.forYou).toBe(2);
+    expect(s.gateway).toEqual({ online: true, label: "bridge-gw" });
   });
 
   test("a held thread whose title is not known yet (or has none) carries title null, in hold order", () => {
@@ -56,6 +58,7 @@ describe("buildUiState", () => {
     expect(s.connection).toEqual({ state: "disconnected", detail: "disconnected (reconnect attempt 2, in 4s)" });
     expect(s.holds).toEqual([]);
     expect(s.waiting).toBeNull();
+    expect(s.gateway).toBeNull();
     expect(s.session.scope).toBeNull();
   });
 
@@ -109,7 +112,7 @@ describe("toWaiting", () => {
     expect(toWaiting({ rows: many, more: false, counts: null }).top).toHaveLength(20);
   });
 
-  test("For you before Open, each quiet longest first, an untimed or unparseable row last; sorted BEFORE the cut, so the newest are what is dropped", () => {
+  test("For you newest first, then Open quiet longest first, an untimed or unparseable row last in each; sorted BEFORE the cut", () => {
     // Server order: newest first.
     const rows = [
       timed("new", "addressed", "2026-10-30T09:59:00.000Z"),
@@ -118,13 +121,15 @@ describe("toWaiting", () => {
       timed("none", "participant"),
       timed("mid", "participant", "2026-10-30T07:00:00.000Z"),
       timed("old", "addressed", "2026-10-29T07:00:00.000Z"),
+      timed("ch-new", "channel", "2026-10-30T10:00:00.000Z"),
+      timed("ch-none", "channel"),
     ];
-    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["old", "mid", "new", "bad", "none", "ch"]);
+    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["new", "mid", "old", "bad", "none", "ch", "ch-new", "ch-none"]);
     const cut = toWaiting({ rows, more: false, counts: null }, 2);
-    expect(cut.top.map((t) => t.threadId)).toEqual(["old", "mid"]);
+    expect(cut.top.map((t) => t.threadId)).toEqual(["new", "mid"]);
     // Rows were cut, so there is more than shown even with no next page.
     expect(cut.more).toBe(true);
-    expect(toWaiting({ rows, more: false, counts: null }, 6).more).toBe(false);
+    expect(toWaiting({ rows, more: false, counts: null }, 8).more).toBe(false);
   });
 
   test("a server without counts: null, not 0", () => {
@@ -374,3 +379,18 @@ test("server: ui_state answers with structuredContent even unconfigured (idle)",
     await client.close().catch(() => {});
   }
 }, 30_000);
+
+describe("mergeRefresh", () => {
+  const W = { forYou: 1, channel: 0, more: false, top: [] };
+  const W2 = { forYou: 2, channel: 0, more: false, top: [] };
+  const G = { online: true, label: "bridge-gw" };
+  const G2 = { online: false, label: null };
+  const ok = <T,>(value: T): PromiseSettledResult<T> => ({ status: "fulfilled", value });
+  const no: PromiseSettledResult<never> = { status: "rejected", reason: new Error("403") };
+
+  test("each side keeps its last good value when only its own read failed", () => {
+    expect(mergeRefresh({ waiting: W, gateway: G }, ok(W2), no)).toEqual({ waiting: W2, gateway: G });
+    expect(mergeRefresh({ waiting: W, gateway: G }, no, ok(G2))).toEqual({ waiting: W, gateway: G2 });
+    expect(mergeRefresh({ waiting: null, gateway: null }, no, no)).toEqual({ waiting: null, gateway: null });
+  });
+});

@@ -3,7 +3,40 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
+import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
+import { cellWidth, renderPost, type Line } from './text'
+
+/**
+ * The design canvas's colours (https://claude.ai/artifact/4JomhfdVJR8goTtoaaqHNR, every board).
+ * Accents only: body text and dim text follow the person's theme, so a light terminal stays legible.
+ */
+export const PALETTE = { brand: '#4cc3ad', amber: '#e8b04a', blue: '#7ab4ff', red: '#f07a7a', pillBg: '#e4e4e4', pillFg: '#121212' } as const
+
+/**
+ * Other senders' name colours: none of PALETTE's, which already mean you, new/held, status or error.
+ * A shared colour costs only distinction: the name is right there (Jörgen 2026-11-01).
+ * Light cyan, not violet: any violet collapses into PALETTE.blue (you) for one red-weak type; cyan stays
+ * apart for all three (bridge plan 2026-11-01-mentions.md D2, CVD-simulated).
+ */
+export const SENDER_HUES = ['#9ce0e8', '#f29ac6', '#a8d672', '#f5a97f'] as const
+
+/** A sender's colour, stable per id (FNV-1a, as the web's agentColor); no id, no colour. */
+export function senderColor(id: string | null | undefined): string | undefined {
+  if (!id) return undefined
+  let h = 0x811c9dc5
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193) >>> 0
+  return SENDER_HUES[h % SENDER_HUES.length]
+}
+
+/** A run's colour by meaning: an accent, or `dim` (the theme's dim text). */
+export type Tone = 'brand' | 'amber' | 'blue' | 'red' | 'dim'
+
+/** One run of a line, in its tone and weight (the canvas: 700 labels and headings, 600 thread titles). */
+export interface Seg {
+  text: string
+  tone?: Tone
+  weight?: 'semibold' | 'bold'
+}
 
 /** A drop shorter than this shows as "reconnecting", not in the band (plan decision 5). */
 export const BAND_GRACE_MS = 10_000
@@ -97,6 +130,39 @@ export function indicator(v: View, now: number): Indicator {
 /** The band shows only while something needs the person: a lasting disconnect, or a takeover by another window. */
 export function needsBand(i: Indicator): boolean {
   return i.kind === 'disconnected' || i.kind === 'superseded'
+}
+
+/**
+ * The band's and the pane header's state after the `einweave` label (boards Main, Indicator,
+ * ConnectFlow): what waits when connected, amber for what is aimed at the person, red when
+ * messages are not arriving.
+ */
+export function stateLine(v: View, now: number): Seg[] {
+  const i = indicator(v, now)
+  switch (i.kind) {
+    case 'connected': {
+      const s = v.snap!
+      const out: Seg[] = [{ text: `holds ${s.holds.length}` }]
+      const w = s.waiting
+      if (w?.forYou) out.push({ text: ' · ', tone: 'dim' }, { text: `${w.forYou} for you`, tone: 'amber' })
+      if (w?.channel) out.push({ text: ' · ', tone: 'dim' }, { text: `${w.channel} unowned` })
+      return out
+    }
+    case 'reconnecting':
+      return [{ text: '↻ reconnecting', tone: 'amber' }]
+    case 'disconnected':
+      return [{ text: '○ disconnected · messages are not arriving', tone: 'red' }]
+    case 'superseded':
+      return [{ text: '○ moved to another window · messages arrive there', tone: 'red' }]
+    case 'standby':
+      return [{ text: 'standby · another window has this session', tone: 'amber' }]
+    case 'idle':
+      return [{ text: '○ not connected', tone: 'dim' }]
+    case 'no-answer':
+      return [{ text: 'not answering', tone: 'red' }]
+    case 'starting':
+      return [{ text: 'starting', tone: 'dim' }]
+  }
 }
 
 export type Action =
@@ -241,42 +307,59 @@ export const EMPTY_TABS: PaneTabs = { tab: 'inbox', open: [] }
 /** How long ago, in one short unit: `40s`, `12m`, `3h`, `2d`. */
 export function ago(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86_400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86_400)}d`
+  // The canvas's units: `20 s`, `25 min`, `2 h`.
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.floor(s / 60)} min`
+  if (s < 86_400) return `${Math.floor(s / 3600)} h`
+  return `${Math.floor(s / 86_400)} d`
 }
 
 export interface InboxRow {
   threadId: string
+  /** Addressed to the person: the band lists only these (board Indicator: "only while something needs you"). */
+  aimed: boolean
   title: string
   channel: string
-  /** `unheld · addressed to you`, `parked · you took part` ... */
+  /** `addressed to you · unheld`, `you took part · holder offline` ... */
   meta: string
   /** `3h`: since the thread's last post; null when the server sent no time. */
   age: string | null
   /** Quiet longer than OLD_MS: drawn under the "Older" fold. */
   old: boolean
+  /** Quiet STALE_MS or longer: its age is drawn amber. */
+  stale: boolean
+  /** Active within BAND_MS: an aimed row only reaches the band while fresh, so old asks stay in the pane. */
+  fresh: boolean
 }
 
-const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts in your channel' }
+const WHY: Record<UiWaitingItem['why'], string> = { addressed: 'addressed to you', participant: 'you took part', channel: 'new posts' }
+const HOLD: Record<UiWaitingItem['hold'], string> = { unheld: 'unheld', parked: 'holder offline', held: 'held' }
+
+/** Quiet this long, a waiting thread's age is drawn amber (board Unowned: `1 h 10 min` amber, `25 min` not). */
+export const STALE_MS = 3_600_000
+
+/** Quiet less than this, a thread aimed at the person shows in the band (Jörgen 2026-10-31; unread replaces it once takeable rows carry it). */
+export const BAND_MS = 86_400_000
 
 /** A thread quiet this long folds under "Older (n)". */
 export const OLD_MS = 7 * 86_400_000
 
 /** How long since `iso`, and whether that is past OLD_MS; an absent or unreadable time is neither. */
-export function quietFor(iso: string | null | undefined, now: number): { age: string | null; old: boolean } {
+export function quietFor(iso: string | null | undefined, now: number): { age: string | null; old: boolean; stale: boolean } {
   const t = iso ? Date.parse(iso) : NaN
-  return Number.isFinite(t) ? { age: ago(now - t), old: now - t > OLD_MS } : { age: null, old: false }
+  return Number.isFinite(t) ? { age: ago(now - t), old: now - t > OLD_MS, stale: now - t >= STALE_MS } : { age: null, old: false, stale: false }
 }
 
 /**
  * The Inbox tab: For you (addressed, or taken part in) and Open (new posts in a followed channel),
- * in the snapshot's order -- quiet longest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
+ * in the snapshot's order -- For you newest first, Open quiet longest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
  */
 export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: InboxRow[]; open: InboxRow[] } {
   const rows = waiting?.top ?? []
-  const row = (w: UiWaitingItem): InboxRow => ({ threadId: w.threadId, title: w.title, channel: w.channel, meta: `${w.hold} · ${WHY[w.why]}`, ...quietFor(w.quietSince, now) })
+  const row = (w: UiWaitingItem): InboxRow => {
+    const t = w.quietSince ? Date.parse(w.quietSince) : NaN
+    return { threadId: w.threadId, aimed: w.why === 'addressed', title: w.title, channel: w.channel, meta: `${WHY[w.why]} · ${HOLD[w.hold]}`, ...quietFor(w.quietSince, now), fresh: Number.isFinite(t) && now - t < BAND_MS }
+  }
   return { forYou: rows.filter(w => w.why !== 'channel').map(row), open: rows.filter(w => w.why === 'channel').map(row) }
 }
 
@@ -285,26 +368,27 @@ export function fold<T extends { old: boolean }>(rows: T[]): { recent: T[]; olde
   return { recent: rows.filter(r => !r.old), older: rows.filter(r => r.old) }
 }
 
-/** The record a pane element belongs to: `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
+/** The record a pane element belongs to: `mark:<id>`, `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
 export function recordOf(element: string | undefined): string {
-  const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
+  const m = element && /^(mark|open|take|new|release|join):(.+)$/.exec(element)
   return m ? m[2]! : ''
 }
 
 /**
- * Where the pane's focus ring lands. Records' titles (and the "Older" folds between them) are its only
- * stops: the ring moves linearly like Tab, so a move onto a record's action goes on to the stop after
- * that record when it came from that record (moving down) and back to the record's own title otherwise
- * (moving up). After the last stop the actions are left as they are: past them the ring goes on to
- * what follows the list. `stops` are the stop keys drawn, top to bottom; `last` where the ring was.
+ * Where the pane's focus ring lands. Records' marks (and the "Older" folds between them) are its only
+ * stops: a record's title and actions are pressable by the pointer but no stop. The ring moves linearly
+ * like Tab, so a move onto a record's title or action goes on to the stop after that record when it came
+ * from that record (moving down) and back to the record's own mark otherwise (moving up). After the last
+ * stop they are left as they are: past them the ring goes on to what follows the list (the footer).
+ * `stops` are the stop keys drawn, top to bottom; `last` where the ring was.
  */
 export function focusTarget(stops: readonly string[], last: string, element: string | undefined): string | undefined {
-  const m = element && /^(take|new|release|join):(.+)$/.exec(element)
+  const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
   if (!m) return element
   const id = m[2]!
-  const at = stops.indexOf(`open:${id}`)
+  const at = stops.indexOf(`mark:${id}`)
   if (at < 0) return element
-  if (recordOf(last) !== id) return `open:${id}`
+  if (recordOf(last) !== id) return `mark:${id}`
   return stops[at + 1] ?? element
 }
 
@@ -323,14 +407,151 @@ export function takeOutcome(text: string): { kind: 'taken' } | { kind: 'ask'; qu
 /** `ui_thread`'s JSON → a thread tab's content; anything else is an error to show. */
 export function threadView(text: string): ThreadView {
   try {
-    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null }; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
+    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null }; channel?: string | null; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
     if (!o || !Array.isArray(o.messages)) throw new Error('no messages')
     const older = o.has_older !== true ? 0 : typeof o.older_count === 'number' ? o.older_count : null
-    return { title: o.thread?.title ?? null, status: o.thread?.status ?? null, messages: o.messages, older, error: null, loading: false }
+    return { title: o.thread?.title ?? null, channel: o.channel ?? null, status: o.thread?.status ?? null, messages: o.messages, older, error: null, loading: false }
   } catch {
     return { title: null, status: null, messages: [], older: 0, error: text || 'ui_thread answered nothing', loading: false }
   }
 }
+
+/** A post shows this many lines until it is opened (Thread tab, layout A, decision 2026-10-31). */
+export const POST_CAP = 6
+/** Replies one Load older brings. */
+export const OLDER_PAGE = 20
+
+/** A post's stable name across reads: its seq, or the root. */
+export function postKey(m: ThreadMessage, n: number): string {
+  return m.root ? 'root' : m.seq != null ? `s${m.seq}` : `i${n}`
+}
+
+/** One post as drawn: its lines (cut at the cap unless opened), how many the cap hid, and its rows from the top. */
+export interface PostBlock {
+  key: string
+  n: number
+  lines: Line[]
+  more: number
+  top: number
+  rows: number
+}
+
+/** A thread's posts laid out at a width, row by row, so the pane can scroll them itself. */
+export interface ThreadLayout {
+  blocks: PostBlock[]
+  /** The "older replies" row under the root, where Load older brings them; null with none. */
+  gap: { top: number; rows: number } | null
+  total: number
+}
+
+/**
+ * Posts in chat order (oldest first): a blank row between posts, the sender row, the lines (POST_CAP
+ * of them unless `open`), and a "N more lines" row where the cap cut. With replies older than those
+ * read, the gap row sits under the root, a blank row above it.
+ */
+export function threadLayout(messages: readonly ThreadMessage[], width: number, open: Record<string, true>, older: number | null): ThreadLayout {
+  const blocks: PostBlock[] = []
+  let gap: ThreadLayout['gap'] = null
+  let row = 0
+  messages.forEach((m, n) => {
+    const key = postKey(m, n)
+    const all = renderPost(m.content, width)
+    const cut = !open[key] && all.length > POST_CAP + 1
+    const lines = cut ? all.slice(0, POST_CAP) : all
+    const more = cut ? all.length - POST_CAP : 0
+    const rows = (blocks.length ? 1 : 0) + 1 + lines.length + (more ? 1 : 0)
+    blocks.push({ key, n, lines, more, top: row, rows })
+    row += rows
+    if (m.root && older !== 0 && n < messages.length - 1) {
+      gap = { top: row, rows: 2 }
+      row += 2
+    }
+  })
+  return { blocks, gap, total: row }
+}
+
+/** The window's lowest offset: rows up from the end at which the top shows. */
+const maxOff = (l: ThreadLayout, room: number) => Math.max(0, l.total - room)
+
+/** Where a tab first opens: its first new post at the top of the window, else the newest. */
+export function landOff(l: ThreadLayout, messages: readonly ThreadMessage[], room: number): number {
+  const first = l.blocks.find(b => messages[b.n]?.new)
+  if (!first) return 0
+  // Its blank row above it stays out of view.
+  const top = first.top + (first.top ? 1 : 0)
+  return Math.min(maxOff(l, room), Math.max(0, l.total - room - top))
+}
+
+/**
+ * The window now: landed while the person has not moved it; else their place, kept when posts came
+ * after the one that was newest (a held thread is live), clamped to what fits.
+ */
+export function threadOff(sc: ThreadScroll | undefined, l: ThreadLayout, messages: readonly ThreadMessage[], room: number): number {
+  if (!sc) return landOff(l, messages, room)
+  let off = sc.off
+  if (off > 0) {
+    const at = l.blocks.findIndex(b => b.key === sc.newest)
+    if (at >= 0) off += l.blocks.slice(at + 1).reduce((a, b) => a + b.rows, 0)
+  }
+  return Math.min(maxOff(l, room), Math.max(0, off))
+}
+
+/** The window moved `by` rows (negative toward the top), and whether it now shows the top. */
+export function scrollBy(off: number, by: number, l: ThreadLayout, room: number): { off: number; atTop: boolean } {
+  const max = maxOff(l, room)
+  const next = Math.min(max, Math.max(0, off - by))
+  return { off: next, atTop: next >= max }
+}
+
+/** The newest post's key, what ThreadScroll.newest records. */
+export const newestKey = (l: ThreadLayout) => l.blocks.at(-1)?.key ?? ''
+
+/**
+ * Rows a wrapping row of tabs takes at `width`: each tab `widths[n]` cells, a cell between, greedy as
+ * flex-wrap lays them out.
+ */
+export function tabRows(widths: readonly number[], width: number): number {
+  let rows = 1
+  let x = 0
+  for (const w of widths) {
+    if (x > 0 && x + 1 + w > width) {
+      rows++
+      x = w
+    } else x += (x > 0 ? 1 : 0) + w
+  }
+  return rows
+}
+
+/** A tab's label cut as the tab row draws it. */
+export const tabLabel = (title: string) => (title.length > 18 ? `${title.slice(0, 17)}…` : title)
+
+/** Cells a tab takes in the row: its label padded a cell each side, an opened tab's × after it. */
+export const tabWidth = (label: string, closable: false | 'shown' | 'rest') => cellWidth(label) + 2 + (closable === 'shown' ? 2 : closable ? 1 : 0)
+
+/** Prepend an older page's replies (the root dropped: the tab has it) to what the tab shows. */
+export function withOlder(t: ThreadView, page: ThreadView): ThreadView {
+  const have = new Set(t.messages.map(m => m.seq).filter(s => s != null))
+  const older = page.messages.filter(m => !m.root && !(m.seq != null && have.has(m.seq)))
+  const root = t.messages[0]?.root ? [t.messages[0]] : []
+  const rest = root.length ? t.messages.slice(1) : t.messages
+  return { ...t, messages: [...root, ...older, ...rest], older: page.older, loadingOlder: false }
+}
+
+/**
+ * A fresh read (the newest page) over what the tab shows: the older pages loaded before are kept
+ * under it, so a held thread's live read does not undo Load older.
+ */
+export function refreshed(t: ThreadView | undefined, page: ThreadView): ThreadView {
+  const first = olderCursor(page)
+  if (!t || page.error || first === null) return page
+  const kept = t.messages.filter(m => !m.root && m.seq != null && m.seq < first)
+  if (!kept.length) return page
+  const root = page.messages[0]?.root ? [page.messages[0]] : []
+  return { ...page, messages: [...root, ...kept, ...page.messages.slice(root.length)], older: t.older }
+}
+
+/** The seq Load older pages back from: the oldest reply shown. */
+export const olderCursor = (t: ThreadView) => t.messages.find(m => !m.root && m.seq != null)?.seq ?? null
 
 /** Open a thread or channel tab (once) and show it. */
 export function openTab(t: PaneTabs, kind: OpenTab['kind'], id: string, title: string): PaneTabs {
@@ -381,22 +602,24 @@ export function waitingIn(c: ChannelCounts | undefined): number {
 /** A channel row's meta: `2 waiting · oldest 3h · 4 open`; "counts unknown" when the server did not say (never 0). */
 export function channelMeta(c: ChannelCounts | undefined, now: number): string {
   if (!c) return 'counts unknown'
-  const parts: string[] = []
+  // Board ChannelsTab: `12 open · 2 unowned · oldest waiting 2 h`.
+  const parts = [`${c.open} open`]
   const w = waitingIn(c)
-  if (w) parts.push(`${w} waiting`)
-  if (w && c.oldestWaitingAt && Number.isFinite(Date.parse(c.oldestWaitingAt))) parts.push(`oldest ${ago(now - Date.parse(c.oldestWaitingAt))}`)
-  parts.push(`${c.open} open`)
+  if (w) parts.push(`${w} unowned`)
+  if (w && c.oldestWaitingAt && Number.isFinite(Date.parse(c.oldestWaitingAt))) parts.push(`oldest waiting ${ago(now - Date.parse(c.oldestWaitingAt))}`)
   return parts.join(' · ')
 }
 
 /** Who holds a thread, for its row: here, another session (online or not), or nobody. Absent hold (older server): null. */
-export function holdBadge(hold: ChannelThread['hold'], heldHere: boolean): { text: string; color: 'cyan' | 'yellow' | undefined } | null {
-  if (heldHere) return { text: 'held here', color: 'cyan' }
+export function holdBadge(hold: ChannelThread['hold'], heldHere: boolean): { text: string; tone: Tone | undefined; asks: boolean } | null {
+  // Board ChannelsTab: brand for yours, amber for nobody's, dim for another session's.
+  if (heldHere) return { text: 'held by you', tone: 'brand', asks: false }
   if (!hold) return null
   const who = hold.holder?.label ?? 'another session'
-  if (hold.state === 'unheld') return { text: 'unheld', color: 'yellow' }
-  if (hold.state === 'parked') return { text: `parked, ${who} offline`, color: 'yellow' }
-  return { text: `held by ${who} ${hold.holder?.online ? 'online' : 'offline'}`, color: undefined }
+  if (hold.state === 'unheld') return { text: 'unheld', tone: 'amber', asks: false }
+  if (hold.state === 'parked' || !hold.holder?.online) return { text: `held by ${who} · offline`, tone: 'dim', asks: false }
+  // From an online holder, Take asks the person first: the button says so.
+  return { text: `held by ${who} · online`, tone: 'dim', asks: true }
 }
 
 /** A channel tab shows at most this many threads; the web app has the rest. */

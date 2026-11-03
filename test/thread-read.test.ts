@@ -463,8 +463,10 @@ describe("read_thread / list_threads", () => {
   test("ui_thread (the mod's View) shows the thread but marks nothing read and acks nothing: a person looking is not the model reading", async () => {
     const view = await ok("ui_thread", { thread_id: THREAD });
     expect(view.messages.map((m: any) => m.content)).toEqual(["Bug: Threaded replies do not work", "r1", "r2", "r3"]);
-    expect(view.messages[0]).toMatchObject({ sender: "Kevin", ts: "2026-09-23T05:55:07.000Z" });
-    expect(view).toMatchObject({ channel_id: CHANNEL_ID, has_older: false, older_count: 0 });
+    // senderId is the pane's colour key: the id, never the name.
+    expect(view.messages[0]).toMatchObject({ sender: "Kevin", senderId: "kevin", ts: "2026-09-23T05:55:07.000Z" });
+    // The tab's header names the channel, from the cached channel map.
+    expect(view).toMatchObject({ channel_id: CHANNEL_ID, channel: CHANNEL_NAME, has_older: false, older_count: 0 });
     // The NEWEST page (backward from the top), never the first: a long thread's open question is at its end.
     const q = new URLSearchParams(stub.calls.filter((c) => c.includes("/messages")).at(-1)!.split("?")[1]);
     expect(q.get("sinceSeq")).toBeNull();
@@ -477,6 +479,25 @@ describe("read_thread / list_threads", () => {
     expect(stub.acks).toEqual([{ ids: [one.root.id, ...one.replies.map((r: any) => r.id)], how: "model" }]);
     expect(one.replies).toHaveLength(1);
     expect(stub.readBodies).toEqual([]);
+  });
+
+  test("ui_thread marks each message: its seq, the root, own (this agent sent it), new (above the read position); before_seq pages back for Load older", async () => {
+    stub.set({ replies: [msg(20, "r1"), { ...msg(21, "mine"), agentId: "bellman" }, msg(22, "r3")] });
+    // The model reads up to 20 (bellman is the agent under test).
+    await ok("read_thread", { thread_id: THREAD, limit: 1, mark_read: true });
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    expect(view.messages.map((m: any) => [m.content, m.seq, m.own, m.new, m.root ?? false])).toEqual([
+      ["Bug: Threaded replies do not work", 12, false, false, true],
+      ["r1", 20, false, false, false],
+      // Its own post is with Claude already: never new.
+      ["mine", 21, true, false, false],
+      ["r3", 22, false, true, false],
+    ]);
+    const older = await ok("ui_thread", { thread_id: THREAD, before_seq: 22, limit: 1 });
+    expect(older.messages.map((m: any) => m.content)).toEqual(["Bug: Threaded replies do not work", "mine"]);
+    expect(older).toMatchObject({ has_older: true, older_count: 1 });
+    const q = new URLSearchParams(stub.calls.filter((c) => c.includes("/messages")).at(-1)!.split("?")[1]);
+    expect([q.get("beforeSeq"), q.get("limit")]).toEqual(["22", "1"]);
   });
 
   test("ui_thread strips control characters from what the pane draws: one would refuse the whole pane and style the terminal", async () => {

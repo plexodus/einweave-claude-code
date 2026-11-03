@@ -28,6 +28,13 @@ export interface UiWaiting {
   top: UiWaitingItem[];
 }
 
+/** The agent's gateway (RFC-028 D2), for board Unowned's line: online, it routes unheld work; off, that work waits for a take. */
+export interface UiGateway {
+  online: boolean;
+  /** The gateway session's name; null when none is online. */
+  label: string | null;
+}
+
 export interface UiHeld {
   threadId: string;
   title: string | null;
@@ -41,6 +48,8 @@ export interface UiState {
   holds: UiHeld[];
   /** Unheld work this session could take; null until first read, or while not connected. */
   waiting: UiWaiting | null;
+  /** Null until first read, while not connected, or when the sessions list cannot be read. */
+  gateway: UiGateway | null;
   version: string;
   staleSince: string | null;
 }
@@ -64,6 +73,7 @@ export interface UiInputs {
   /** Titles read so far (holds.titlesOf); a held id missing here is drawn without one. */
   titles: ReadonlyMap<string, string | null>;
   waiting: UiWaiting | null;
+  gateway: UiGateway | null;
   version: string;
   staleSince: string | null;
 }
@@ -90,6 +100,7 @@ export function buildUiState(i: UiInputs): UiState {
     session: { agent: i.agent, label: i.label, kind: i.kind, scope: i.authenticated ? (i.scope ?? null) : null },
     holds: i.authenticated ? i.holds.map((threadId) => ({ threadId, title: i.titles.get(threadId) ?? null })) : [],
     waiting: i.authenticated ? i.waiting : null,
+    gateway: i.authenticated ? i.gateway : null,
     version: i.version,
     staleSince: i.staleSince,
   };
@@ -133,6 +144,21 @@ export class UiWatch {
   }
 }
 
+/**
+ * One refresh's two reads, merged: each side keeps its last good value when only its read failed,
+ * so a failing sessions list never blanks what waits, nor the reverse.
+ */
+export function mergeRefresh(
+  prev: { waiting: UiWaiting | null; gateway: UiGateway | null },
+  waiting: PromiseSettledResult<UiWaiting>,
+  gateway: PromiseSettledResult<UiGateway>
+): { waiting: UiWaiting | null; gateway: UiGateway | null } {
+  return {
+    waiting: waiting.status === "fulfilled" ? waiting.value : prev.waiting,
+    gateway: gateway.status === "fulfilled" ? gateway.value : prev.gateway,
+  };
+}
+
 /** The mod's Inbox lists this many, picked from up to UI_WAITING_PAGES pages of UI_WAITING_PAGE (the server's max). */
 export const UI_WAITING_LIMIT = 20;
 export const UI_WAITING_PAGE = 50;
@@ -140,8 +166,9 @@ export const UI_WAITING_PAGES = 4;
 
 /**
  * needSomeone's raw rows, shaped down to what the mod draws: held ones dropped, For you (addressed,
- * taken part in) before Open (the channel tier), each quiet longest first, a row without a time last.
- * The server sends newest first, so this sorts BEFORE it cuts: cutting first would keep the newest.
+ * taken part in) newest first -- what needs the person now -- before Open (the channel tier) quiet
+ * longest first (board Unowned "oldest first"); a row without a time last in each. Sorted BEFORE the
+ * cut, so the cut drops the oldest For you and the newest Open.
  */
 export function toWaiting(r: {
   rows: ReadonlyArray<{ thread: { id: string; title: string; lastActivityAt?: string }; channel: { name: string }; why: UiWaitingItem["why"]; hold: { state: UiWaitingItem["hold"] } }>;
@@ -155,7 +182,12 @@ export function toWaiting(r: {
   const open = r.rows
     .filter((x) => x.hold.state !== "held")
     .map((x) => ({ x, tier: x.why === "channel" ? 1 : 0, t: at(x.thread.lastActivityAt) }))
-    .sort((a, b) => a.tier - b.tier || (a.t === b.t ? 0 : a.t < b.t ? -1 : 1));
+    .sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      if (a.t === b.t) return 0;
+      if (a.t === Number.POSITIVE_INFINITY || b.t === Number.POSITIVE_INFINITY) return a.t === Number.POSITIVE_INFINITY ? 1 : -1;
+      return (a.t < b.t ? -1 : 1) * (a.tier === 0 ? -1 : 1);
+    });
   return {
     forYou: r.counts?.forYou ?? null,
     channel: r.counts?.channel ?? null,

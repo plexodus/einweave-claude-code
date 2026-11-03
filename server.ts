@@ -66,7 +66,7 @@ import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
-import { buildUiState, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiWaiting } from "./ui/ui-state";
+import { buildUiState, mergeRefresh, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiGateway, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath } from "./delivery/ctl-path";
@@ -1230,6 +1230,7 @@ const forYou = forYouBox();
 // control socket's `watch`ers. Defined here, before anything can open the socket.
 const uiWatch = new UiWatch();
 let uiWaiting: UiWaiting | null = null;
+let uiGateway: UiGateway | null = null;
 /** Read-tool acks that found no live Session (delivery/returned-acks.ts). */
 const returnedAcks = new ReturnedAcks();
 /** Entries handed to the host in this process — `status`'s "idle" until the first. */
@@ -1362,7 +1363,7 @@ function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<Pend
       subscribe: (fn) => {
         const off = uiWatch.subscribe(fn);
         // The first watcher: read what waits now rather than at the next minute.
-        if (uiWaiting === null) void refreshWaiting();
+        if (uiWaiting === null || uiGateway === null) void refreshWaiting();
         return off;
       },
     },
@@ -2955,7 +2956,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         "For the einweave terminal mod, not for conversation: a thread as the PERSON views it in the mod's pane. It neither marks the thread read nor counts as delivered to you. To read a thread yourself use read_thread.",
       inputSchema: {
         type: "object",
-        properties: { thread_id: { type: "string", description: "The thread's id." } },
+        properties: {
+          thread_id: { type: "string", description: "The thread's id." },
+          before_seq: { type: "integer", minimum: 0, description: "Only replies older than this seq (the pane's Load older)." },
+          limit: { type: "integer", minimum: 1, maximum: UI_THREAD_LIMIT, description: `Replies to show, newest first; default ${UI_THREAD_LIMIT}.` },
+        },
         required: ["thread_id"],
       },
     },
@@ -3080,6 +3085,7 @@ function uiSnapshot() {
     holds: serverHolds,
     titles: new Map([...heldTitles].map(([id, t]) => [id, t.title])),
     waiting: uiWaiting,
+    gateway: uiGateway,
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
   });
@@ -3123,13 +3129,14 @@ function refreshUi(): void {
   uiWatch.set(uiSnapshot());
 }
 
-/** What waits (one API call). Only while someone draws it: a session no mod watches pays nothing. */
+/** What waits, and whether the gateway routes it (two API calls). Only while someone draws it: a session no mod watches pays nothing. */
 async function refreshWaiting(): Promise<void> {
-  if (!authenticated || creds.configError()) uiWaiting = null;
-  else {
-    try {
-      uiWaiting = toWaiting(await holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES));
-    } catch {}
+  if (!authenticated || creds.configError()) {
+    uiWaiting = null;
+    uiGateway = null;
+  } else {
+    const [waiting, gateway] = await Promise.allSettled([holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES).then((r) => toWaiting(r)), holds.gateway()]);
+    ({ waiting: uiWaiting, gateway: uiGateway } = mergeRefresh({ waiting: uiWaiting, gateway: uiGateway }, waiting, gateway));
   }
   refreshUi();
 }
@@ -4269,7 +4276,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
       case "ui_state": {
         // Not gated, like status: the mod draws "disconnected" from it too.
-        if (authenticated && uiWaiting === null) await refreshWaiting();
+        if (authenticated && (uiWaiting === null || uiGateway === null)) await refreshWaiting();
         refreshUi();
         const cur = uiWatch.current()!;
         const structured = { rev: cur.rev, ...cur.state };
@@ -4283,14 +4290,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         // A person looking is not the model reading: markRead false, and NO confirmReturned -- an ack here
         // would tell the server the model has these entries and end their missed-tracking (silent loss).
         // The newest page (backward from the top), not the first: the open question is at the end of a long thread.
-        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq: Number.MAX_SAFE_INTEGER, limit: UI_THREAD_LIMIT, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
+        // `before_seq` pages back from there: the pane's Load older.
+        const beforeSeq = Number.isSafeInteger(args.before_seq) && (args.before_seq as number) >= 0 ? (args.before_seq as number) : Number.MAX_SAFE_INTEGER;
+        const limit = Number.isSafeInteger(args.limit) ? Math.min(Math.max(args.limit as number, 1), UI_THREAD_LIMIT) : UI_THREAD_LIMIT;
+        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq, limit, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
         if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
+        // New = above this agent's read position: it stays new until it reaches Claude. Own = this agent sent it.
+        const readSeq = typeof data.thread?.readSeq === "number" ? data.thread.readSeq : null;
         // The pane draws all of this: a control character in any of it refuses the whole pane (and styles the terminal).
-        const shape = (m: any) => ({ sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId), content: stripControlChars(String(m.content ?? "")), type: m.type ?? "text", ts: m.createdAt });
+        const shape = (m: any, root: boolean) => ({
+          sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId),
+          content: stripControlChars(String(m.content ?? "")),
+          type: m.type ?? "text",
+          ts: m.createdAt,
+          seq: m.seq == null ? null : Number(m.seq),
+          // The pane colours each sender by this: an id, so a rename keeps the colour (as the web does).
+          senderId: cleanOrNull(m.agentId ?? m.userId),
+          own: !!agentId && m.agentId === agentId,
+          new: !(agentId && m.agentId === agentId) && readSeq !== null && m.seq != null && Number(m.seq) > readSeq,
+          ...(root ? { root: true } : {}),
+        });
+        const channelId = data.thread?.channelId ?? data.parent?.channelId ?? null;
+        // The tab's header names the channel: the map is cached, fetched only for a channel it lacks.
+        if (channelId && !channelNameOf(channelId)) await ensureChannelMap().catch(() => {});
         const view = {
           thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
-          channel_id: data.thread?.channelId ?? data.parent?.channelId ?? null,
-          messages: [...(data.parent ? [shape(data.parent)] : []), ...(data.replies ?? []).map(shape)],
+          channel_id: channelId,
+          channel: (channelId && cleanOrNull(channelNameOf(channelId))) || null,
+          messages: [...(data.parent ? [shape(data.parent, true)] : []), ...(data.replies ?? []).map((m: any) => shape(m, false))],
           // Replies older than those shown, and how many (null from a server that does not count them).
           has_older: data.hasOlder === true,
           older_count: typeof data.olderCount === "number" ? data.olderCount : null,
