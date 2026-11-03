@@ -28,7 +28,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-4rgb4r5t.js";
+} from "./index-xtm975x0.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -918,7 +918,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.23.0";
+var SDK_VERSION = "0.25.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1123,6 +1123,10 @@ function createApi(rt, client) {
     me: {
       workspace: () => req("GET", "/api/me/workspace"),
       channels: (p = {}) => req("GET", `/api/me/channels${qs({ include: p.include })}`)
+    },
+    search: {
+      query: (p) => req("GET", `/api/search${qs({ q: p.q, type: p.type, sort: p.sort, cursor: p.cursor, limit: p.limit })}`),
+      jump: (q) => req("GET", `/api/search/jump${qs({ q })}`)
     },
     presence: {
       list: () => req("GET", "/api/presence")

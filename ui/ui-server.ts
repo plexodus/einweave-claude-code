@@ -7,7 +7,8 @@
  * person looking, not a model reading, so it reads over HTTP from here instead (`$.http.fetch` with
  * `socketPath`), whole. The `ui_*` MCP tools stay as the fallback and keep their size budget.
  *
- * ROUTES (JSON): GET `/state`, `/channels`, `/channel/:id`, `/thread/:id?before_seq=&limit=` (no body);
+ * ROUTES (JSON): GET `/state`, `/channels`, `/channel/:id`, `/thread/:id?before_seq=&limit=`,
+ * `/search?q=&type=&sort=&cursor=&limit=` (RFC-031; no body);
  * POST `/tool/:name` with a JSON object of arguments: an action a PERSON started in the pane (Take,
  * Release, Connect, a `/einweave` command), run by the same code as the MCP tool of that name and
  * answered with its result. Only the tools the routes allow (server.ts PERSON_TOOLS): the socket is not
@@ -43,6 +44,8 @@ export interface UiRoutes {
   channels(): Promise<unknown>;
   channel(id: string): Promise<unknown>;
   thread(id: string, page: { beforeSeq?: number; limit?: number }): Promise<unknown>;
+  /** RFC-031: one search page; a refused query is a value in the answer, not an error. */
+  search(p: { query: string; type?: "threads" | "messages"; sort?: "relevance" | "newest"; cursor?: string; limit?: number }): Promise<unknown>;
   /** A person's action: the MCP tool `name`'s result; a tool not allowed is a UiHttpError 403. */
   tool(name: string, args: Record<string, unknown>): Promise<unknown>;
 }
@@ -114,6 +117,16 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
           }
           if (!args || typeof args !== "object" || Array.isArray(args)) return json(400, { error: "arguments must be an object" });
           return json(200, await routes.tool(id, args as Record<string, unknown>));
+        }
+        if (head === "search" && rest === undefined) {
+          const q = url.searchParams;
+          const query = q.get("q") ?? "";
+          if (!query.trim()) return json(400, { error: "q is required" });
+          const type = q.get("type");
+          const sort = q.get("sort");
+          if (type !== null && type !== "threads" && type !== "messages") return json(400, { error: "bad type" });
+          if (sort !== null && sort !== "relevance" && sort !== "newest") return json(400, { error: "bad sort" });
+          return json(200, await routes.search({ query, type: type ?? undefined, sort: sort ?? undefined, cursor: q.get("cursor") ?? undefined, limit: intParam(q.get("limit")) }));
         }
         if (head === "thread" && rest !== undefined) {
           return json(200, await routes.thread(id, { beforeSeq: intParam(url.searchParams.get("before_seq")), limit: intParam(url.searchParams.get("limit")) }));

@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, threadOff, withOlder,
 } from "../mod/model";
@@ -334,11 +334,20 @@ describe("the Inbox and thread tabs", () => {
     expect(channelView("")).toMatchObject({ error: "ui_channel answered nothing", loading: false });
   });
 
-  test("find keeps the list's own numbers, needs every word, and passes a non-list answer through", () => {
-    const list = "Threads this session could take:\n1. #general · Fix the build — unheld\n2. #ops · Review the build PR — unheld\n3. #ops · Release notes — unheld";
-    expect(findInList(list, "BUILD pr")).toBe("2. #ops · Review the build PR — unheld\nTake one with /einweave take N.");
-    expect(findInList(list, "nothing")).toBe('No takeable thread matches "nothing".');
-    expect(findInList("No threads to take: nothing open.", "x")).toBe("No threads to take: nothing open.");
+  test("find (searchText): a line per thread with where it matched and its id; refusal and non-JSON pass through", () => {
+    const page = {
+      results: [
+        { thread_id: "t-1", title: "Deploy window today", channel: "ops", kind: "question", status: "open", matching_replies: 3, snippet_parts: [{ text: "after the ", hit: false }, { text: "deploy", hit: true }, { text: "  window", hit: false }] },
+        { thread_id: "t-2", title: "Deployment checklist", channel: "ops", kind: "task", status: "todo", similar_title: true, matching_replies: 0, snippet_parts: [{ text: "Deployment checklist", hit: false }] },
+      ],
+      total: { count: 1000, capped: true },
+    };
+    expect(searchText(JSON.stringify(page), "deploy")).toBe(
+      '1000+ for "deploy":\n#ops · Deploy window today — "after the deploy window" · 3 replies match\n   t-1\n#ops · Deployment checklist — similar title\n   t-2\nTake one with /einweave take <id>.',
+    );
+    expect(searchText(JSON.stringify({ results: [], total: { count: 0, capped: false } }), "zz")).toBe('Nothing matches "zz". Try fewer words, or drop a filter.');
+    expect(searchText(JSON.stringify({ refused: { code: "unresolved_filter", message: "Nothing you can read matches in:#opz. Did you mean: in:#ops?" } }), "x")).toBe("Nothing you can read matches in:#opz. Did you mean: in:#ops?");
+    expect(searchText("This einweave server is too old for search", "x")).toBe("This einweave server is too old for search");
   });
 
   test("verbs: take [ref], find <words>", () => {

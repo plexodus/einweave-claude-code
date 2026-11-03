@@ -12,7 +12,7 @@ import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 
 import type { ChannelView, OpenTab, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
 import {
-  applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, findInList, focusTarget, fold, fromTool, holdBadge, inbox,
+  applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
   type InboxRow, type Seg, type ThreadLayout, type Tone,
@@ -65,11 +65,12 @@ const paint = (tone: Tone | undefined) => (tone === 'dim' ? { dimColor: true } :
  * a policy) falls back to the MCP tool for that call, which keeps its size budget; an answer, even an error, stands.
  * `ui_state` goes over MCP until a snapshot has named the socket (that read is how the mod learns its path).
  */
-async function uiRead($: EngineInterface, path: string, query: Record<string, number>, tool: string, args: Record<string, string | number>, server = SERVER) {
+async function uiRead($: EngineInterface, path: string, query: Record<string, string | number>, tool: string, args: Record<string, string | number>, server = SERVER) {
   const socketPath = (await read($, view)).snap?.uiSocket
   if (socketPath) {
     try {
-      const qs = Object.entries(query).map(([k, v]) => `${k}=${v}`).join('&')
+      // Encoded: a search query is free text (spaces, #, &, quotes).
+      const qs = new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString()
       const r = await $.http.fetch(`http://einweave${path}${qs ? `?${qs}` : ''}`, { socketPath })
       if (r.ok) return { isError: false, content: [{ type: 'text' as const, text: r.text }] }
       let error = ''
@@ -458,8 +459,8 @@ export const register: Register = on => {
       case 'take':
         return { text: await takeThread($, action.ref) }
       case 'find': {
-        const r = await uiTool($, 'list_threads', { takeable: true, limit: 50 })
-        return { text: r.isError ? textOf(r) || 'list_threads failed' : findInList(textOf(r), action.words) }
+        const r = await uiRead($, '/search', { q: action.words }, 'ui_search', { query: action.words })
+        return { text: r.isError ? textOf(r) || 'search failed' : searchText(textOf(r), action.words) }
       }
     }
   })

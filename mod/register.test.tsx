@@ -777,15 +777,15 @@ test('New session copies the command that takes the thread in a new window', asy
   await ui.unmount()
 })
 
-test('/einweave take N and /einweave find: take by ref, find filters the takeable list and keeps its numbers', async ($, on) => {
-  const list = 'Threads this session could take (pick with take N, a link, an id, or words from the title):\n1. #general · Fix the build — unheld\n2. #ops · Review the PR — held by Bellman #cd34 (online)'
-  const { calls, clock } = engine(on, { answer: c => (c.tool === 'list_threads' ? text(list) : c.tool === 'take' ? text('This session now holds Fix the build.') : undefined) })
+test('/einweave take N and /einweave find: take by ref; find is the search (RFC-031), one line per thread with its id', async ($, on) => {
+  const page = { results: [{ thread_id: 't-9', title: 'Review the PR', channel: 'ops', kind: 'task', status: 'open', matching_replies: 0, snippet_parts: [{ text: 'Review', hit: true }, { text: ' the PR', hit: false }] }], total: { count: 1, capped: false } }
+  const { calls, clock } = engine(on, { answer: c => (c.tool === 'ui_search' ? text(JSON.stringify(page)) : c.tool === 'take' ? text('This session now holds Fix the build.') : undefined) })
   await start($, clock)
   expect((await $.command.run({ command: 'einweave', args: 'take 1' })).text).toBe('This session now holds Fix the build.')
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: '1' }])
-  const found = await $.command.run({ command: 'einweave', args: 'find review' })
-  expect(calls.filter(c => c.tool === 'list_threads').map(c => c.args)).toEqual([{ takeable: true, limit: 50 }])
-  expect(found.text).toBe('2. #ops · Review the PR — held by Bellman #cd34 (online)\nTake one with /einweave take N.')
+  const found = await $.command.run({ command: 'einweave', args: 'find review in:#ops' })
+  expect(calls.filter(c => c.tool === 'ui_search').map(c => c.args)).toEqual([{ query: 'review in:#ops' }])
+  expect(found.text).toBe('1 for "review in:#ops":\n#ops · Review the PR\n   t-9\nTake one with /einweave take <id>.')
 })
 
 const CH_OPS = 'c0000000-0000-7000-8000-00000000000a'

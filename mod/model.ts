@@ -211,7 +211,7 @@ export const USAGE = [
   '/einweave release [N|all]       let go of a thread',
   '/einweave handover [N] [to]     move a thread to another session of this agent',
   '/einweave take [N|id]           take a thread for this session (no ref: the numbered list)',
-  '/einweave find <words>          the takeable threads whose titles hold these words',
+  '/einweave find <words>          search threads and messages (filters: in:#ch from:@who is:open …)',
 ].join('\n')
 
 /** `/einweave <verb> <rest>` → what to do. Every tool named here is the plugin's own. */
@@ -669,15 +669,42 @@ export function channelRows(threads: ChannelThread[]): { rows: (ChannelThread & 
   return { rows: ordered.slice(0, CHANNEL_CAP), more: Math.max(0, ordered.length - CHANNEL_CAP) }
 }
 
+/** One search hit as the plugin's `/search` route answers it (server.ts `searchPage`). */
+export type SearchHit = {
+  thread_id: string
+  title: string | null
+  channel: string | null
+  kind: string | null
+  status: string | null
+  similar_title?: boolean
+  matching_replies?: number
+  snippet_parts: { text: string; hit: boolean }[]
+}
+
 /**
- * `/einweave find`: the lines of `list_threads(takeable)`'s numbered list whose text holds every word,
- * numbers kept -- they are the server-remembered list's, so `/einweave take N` acts on them.
+ * `/einweave find <words>`: the `/search` page (RFC-031) as text: one line per thread with where it
+ * matched, its id to take it by. A refusal is its own sentence; a non-JSON answer (an error) passes
+ * through. Text, not a list to number: `take N` keeps meaning the takeable list.
  */
-export function findInList(text: string, words: string): string {
-  const want = words.toLowerCase().split(/\s+/).filter(Boolean)
-  const hits = text.split('\n').filter(l => /^\d+\. /.test(l) && want.every(w => l.toLowerCase().includes(w)))
-  if (!/^\d+\. /m.test(text)) return text
-  return hits.length ? `${hits.join('\n')}\nTake one with /einweave take N.` : `No takeable thread matches "${words}".`
+export function searchText(raw: string, words: string): string {
+  let page: { refused?: { message?: string }; results?: SearchHit[]; total?: { count: number; capped: boolean } }
+  try {
+    page = JSON.parse(raw)
+  } catch {
+    return raw
+  }
+  if (page.refused) return page.refused.message ?? 'Search refused.'
+  const rows = page.results ?? []
+  if (!rows.length) return `Nothing matches "${words}". Try fewer words, or drop a filter.`
+  const n = page.total ? `${page.total.count}${page.total.capped ? '+' : ''}` : String(rows.length)
+  const lines = rows.map(r => {
+    const snippet = r.snippet_parts.map(p => p.text).join('').replace(/\s+/g, ' ').trim()
+    const where = r.similar_title ? 'similar title' : r.matching_replies ? `${r.matching_replies} ${r.matching_replies === 1 ? 'reply matches' : 'replies match'}` : ''
+    const head = `${r.channel ? `#${r.channel} · ` : ''}${r.title ?? '(untitled)'}`
+    const tail = [snippet && snippet !== r.title ? `"${snippet}"` : '', where].filter(Boolean).join(' · ')
+    return `${head}${tail ? ` — ${tail}` : ''}\n   ${r.thread_id}`
+  })
+  return `${n} for "${words}":\n${lines.join('\n')}\nTake one with /einweave take <id>.`
 }
 
 /** The command a second window starts with to take this thread there. */

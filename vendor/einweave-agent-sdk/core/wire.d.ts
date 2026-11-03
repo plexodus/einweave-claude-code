@@ -236,7 +236,6 @@ declare const WIRE: {
         mentions?: {
             kind: "agent" | "human" | null;
             principalId: string;
-            handleAtSend: string | null;
             currentHandle: string | null;
             displayName: string | null;
         }[] | undefined;
@@ -285,7 +284,6 @@ declare const WIRE: {
             mentions?: {
                 kind: "agent" | "human" | null;
                 principalId: string;
-                handleAtSend: string | null;
                 currentHandle: string | null;
                 displayName: string | null;
             }[] | undefined;
