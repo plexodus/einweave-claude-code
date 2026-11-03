@@ -510,7 +510,7 @@ test('the Inbox is the default tab: For you, then Unowned, each with how long it
   expect(await ui.find({ type: 'Text', text: 'For you 25' })).toMatchObject({ props: { weight: 'bold' } })
   expect(await ui.find({ type: 'Text', text: 'questions and messages aimed at you' })).toMatchObject({ props: { dimColor: true } })
   expect(await ui.find({ type: 'Text', text: 'Unowned 4' })).toMatchObject({ props: { weight: 'bold' } })
-  expect(await ui.find({ type: 'Text', text: 'nobody holds these · oldest first' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'nobody holds these · newest first' })).toBeDefined()
   // Board Unowned: `#channel` in the brand colour, the title semibold, then why and the hold dim; a stale age amber.
   const row = await ui.find({ key: `open:${T_OLD}` })
   expect(row?.children).toMatchObject([
@@ -1026,21 +1026,17 @@ test('Escape hands the keyboard back with no ui.focus: no footer, a grey mark wh
   await ui.unmount()
 })
 
-test('threads quiet over a week fold under "Older (n)", which opens in place', async ($, on) => {
+test('the Inbox has no "Older" fold (2026-11-03): a thread quiet for decades is drawn with the rest', async ($, on) => {
   // Before the mock clock's start, whatever it is: quiet for decades.
   const old = '1900-01-01T00:00:00.000Z'
   const top = WAITING.waiting!.top.map(w => (w.threadId === T_OLD ? { ...w, quietSince: old } : w))
   const { clock } = engine(on, { polled: { ...WAITING, waiting: { ...WAITING.waiting!, top } } })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ key: `open:${T_OLD}` })).toBeUndefined()
-  expect(await ui.find({ key: `open:${T_NEW}` })).toBeDefined()
-  expect(await ui.find({ key: 'fold:forYou' })).toMatchObject({ props: { label: '▸ Older (1)' } })
-  expect(await ui.find({ key: 'fold:open' })).toBeUndefined()
-  await ui.press({ key: 'fold:forYou' })
-  await clock.settle()
-  expect(await ui.find({ key: 'fold:forYou' })).toMatchObject({ props: { label: '▾ Older (1)' } })
   expect(await ui.find({ key: `open:${T_OLD}` })).toBeDefined()
+  expect(await ui.find({ key: `open:${T_NEW}` })).toBeDefined()
+  expect(await ui.find({ key: 'fold:forYou' })).toBeUndefined()
+  expect(await ui.find({ key: 'fold:open' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1111,7 +1107,6 @@ test('the button standard: full strength only for the shown tab and the one thin
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
   const full = async () => (await ui.findAll({ type: 'Button' })).filter(b => !(b.props as { dimColor?: boolean }).dimColor).map(b => String(b.key))
-  await ui.press({ key: 'fold:forYou' })
   expect(await full()).toEqual(['tab:inbox'])
   // A thread not held: Take is the one thing to do. One held: nothing is (Release gives it up).
   await ui.press({ key: `open:${T_CH}`, link: { href: `https://einweave.invalid/${T_CH}` } } as never)
@@ -1425,4 +1420,155 @@ test('on Claude Code 2.1.299, the minimum, the band and the pane draw as usual',
     expect(await ui.find({ type: 'Text', text: 'einweave' })).toBeDefined()
     await ui.unmount()
   }
+})
+
+// ── Inbox search (RFC-031, board Search) ─────────────────────────────────────────────────────────
+
+const hitRow = (id: string, title: string, o: Record<string, unknown> = {}) => ({
+  thread_id: id, title, channel: 'ops', kind: 'question', status: 'open', matched_in: 'message', matching_replies: 3,
+  last_activity_at: '2026-10-30T09:00:00.000Z', similar_title: false,
+  snippet_parts: [{ text: 'after the ', hit: false }, { text: 'deploy', hit: true }, { text: ' window', hit: false }],
+  ...o,
+})
+const searchPageOf = (rows: unknown[], o: Record<string, unknown> = {}) => text(JSON.stringify({ query: { text: 'deploy', filters: [], sort: 'relevance' }, type: 'threads', results: rows, next: null, total: { count: rows.length, capped: false }, ...o }))
+
+test('Inbox search: typing waits for a pause, then the results replace the sections; hits bold, where it matched, Take or Release by hold', async ($, on) => {
+  const { calls, clock } = engine(on, {
+    polled: { ...WAITING, holds: [{ threadId: 't1', title: 'Fix the build' }] },
+    now: Date.parse('2026-10-30T10:00:00.000Z'),
+    answer: c => (c.tool === 'ui_search' ? searchPageOf([hitRow(T_NEW, 'Deploy window today'), hitRow('t1', 'Fix the build')]) : undefined),
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'h:forYou' })).toBeDefined()
+  await ui.input({ key: 'search', text: 'dep', kind: 'change' })
+  await ui.input({ key: 'search', text: 'deploy', kind: 'change' })
+  await clock.advance(100)
+  expect(calls.filter(c => c.tool === 'ui_search')).toEqual([])
+  await clock.advance(200)
+  await clock.settle()
+  // One request, for the text as it stood after the pause.
+  expect(calls.filter(c => c.tool === 'ui_search').map(c => c.args)).toEqual([{ query: 'deploy', type: 'threads', sort: 'relevance' }])
+  expect(await ui.find({ key: 'h:forYou' })).toBeUndefined()
+  expect(await ui.find({ key: `open:${T_NEW}` })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'deploy' })).toMatchObject({ props: { weight: 'bold' } })
+  expect(await ui.find({ type: 'Text', text: 'after the ' })).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: '3 replies match' })).toBeDefined()
+  expect(await ui.find({ key: `take:${T_NEW}` })).toBeDefined()
+  expect(await ui.find({ key: 'release:t1' })).toBeDefined()
+  expect(await ui.find({ key: 'take:t1' })).toBeUndefined()
+  expect(await ui.find({ key: 'search-threads' })).toMatchObject({ props: { label: 'Threads 2' } })
+  // Cleared: the Inbox again, with no request.
+  await ui.input({ key: 'search', text: '', kind: 'change' })
+  await clock.advance(300)
+  await clock.settle()
+  expect(await ui.find({ key: 'h:forYou' })).toBeDefined()
+  expect(calls.filter(c => c.tool === 'ui_search')).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('Inbox search: an answer for an older query never draws over a newer one', async ($, on) => {
+  let clockRef: { sleep(ms: number): Promise<void> } | null = null
+  const { clock } = engine(on, {
+    polled: WAITING,
+    answer: async c => {
+      if (c.tool !== 'ui_search') return undefined
+      if (c.args.query === 'slow') {
+        await clockRef!.sleep(1_000)
+        return searchPageOf([hitRow('t-slow', 'Slow answer')])
+      }
+      return searchPageOf([hitRow('t-fast', 'Fast answer')])
+    },
+  })
+  clockRef = clock
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.input({ key: 'search', text: 'slow', kind: 'change' })
+  await clock.advance(260)
+  await ui.input({ key: 'search', text: 'fast', kind: 'change' })
+  await clock.advance(260)
+  await clock.settle()
+  expect(await ui.find({ key: 'open:t-fast' })).toBeDefined()
+  await clock.advance(1_000)
+  await clock.settle()
+  expect(await ui.find({ key: 'open:t-fast' })).toBeDefined()
+  expect(await ui.find({ key: 'open:t-slow' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Inbox search: a refusal says why; a suggestion pressed rewrites the query and searches at once', async ($, on) => {
+  const { calls, clock } = engine(on, {
+    polled: WAITING,
+    answer: c =>
+      c.tool !== 'ui_search'
+        ? undefined
+        : c.args.query === 'deploy in:#opz'
+          ? text(JSON.stringify({ refused: { code: 'unresolved_filter', token: 'in:#opz', suggestions: ['in:#ops', 'in:#infra'], message: 'Nothing you can read matches in:#opz. Did you mean: in:#ops, in:#infra?' } }))
+          : searchPageOf([hitRow(T_NEW, 'Deploy window today')]),
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.input({ key: 'search', text: 'deploy in:#opz' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'Nothing you can read matches in:#opz. Did you mean: in:#ops, in:#infra?' })).toMatchObject({ props: { color: '#e8b04a' } })
+  await ui.press({ key: 'suggest:in:#ops' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_search').map(c => c.args.query)).toEqual(['deploy in:#opz', 'deploy in:#ops'])
+  expect(await ui.find({ key: 'search' })).toMatchObject({ props: { value: 'deploy in:#ops' } })
+  expect(await ui.find({ key: `open:${T_NEW}` })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Inbox search: Messages and Newest search again at once; Similar titles under their heading; More appends the next page', async ($, on) => {
+  const { calls, clock } = engine(on, {
+    polled: WAITING,
+    answer: c => {
+      if (c.tool !== 'ui_search') return undefined
+      if (c.args.type === 'messages') return searchPageOf([{ message_id: 'm-1', thread_id: T_NEW, thread_title: 'Deploy window today', channel: 'ops', kind: 'question', status: 'open', sender: '@brian', created_at: '2026-10-30T09:00:00.000Z', snippet_parts: [{ text: 'deploy', hit: true }] }])
+      if (c.args.cursor === 'p2') return searchPageOf([hitRow('t-p2', 'Second page')])
+      return searchPageOf([hitRow(T_NEW, 'Deploy window today'), hitRow('t-sim', 'Deployment checklist', { similar_title: true, matched_in: 'title', matching_replies: 0 })], { next: 'p2', total: { count: 1000, capped: true } })
+    },
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.input({ key: 'search', text: 'deploy' })
+  await clock.settle()
+  expect(await ui.find({ key: 'search-threads' })).toMatchObject({ props: { label: 'Threads 1000+' } })
+  expect(await ui.find({ key: 'h:similar' })).toBeDefined()
+  expect(await ui.find({ key: 'open:t-sim' })).toBeDefined()
+  await ui.press({ key: 'search-more' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_search').at(-1)!.args).toEqual({ query: 'deploy', type: 'threads', sort: 'relevance', cursor: 'p2' })
+  expect(await ui.find({ key: `open:${T_NEW}` })).toBeDefined()
+  expect(await ui.find({ key: 'open:t-p2' })).toBeDefined()
+  await ui.press({ key: 'search-messages' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_search').at(-1)!.args).toEqual({ query: 'deploy', type: 'messages', sort: 'relevance' })
+  expect(await ui.find({ key: 'open:msg-m-1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '@brian' })).toBeDefined()
+  await ui.press({ key: 'search-sort' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_search').at(-1)!.args).toEqual({ query: 'deploy', type: 'messages', sort: 'newest' })
+  await ui.unmount()
+})
+
+test('Inbox search: nothing found says so, with what to try', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_search' ? searchPageOf([]) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.input({ key: 'search', text: 'zzz' })
+  await clock.settle()
+  expect(await ui.find({ type: 'Text', text: 'Nothing matches zzz.' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Fewer words, or drop a filter. Archived threads: add is:archived.' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Inbox search on mobile (no fields): no search field, the Inbox as before, and the way to search said', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  expect(await ui.find({ key: 'search' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Search: /einweave find <words>' })).toBeDefined()
+  expect(await ui.find({ key: 'h:forYou' })).toBeDefined()
+  await ui.unmount()
 })

@@ -15,7 +15,8 @@ import {
   applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
-  type InboxRow, type Seg, type ThreadLayout, type Tone,
+  applySuggestion, NO_SEARCH, SEARCH_DEBOUNCE_MS, searchAnswer,
+  type InboxRow, type SearchHit, type SearchState, type Seg, type ThreadLayout, type Tone,
 } from './model'
 import type { Line } from './text'
 import { hyperlinks } from './links'
@@ -42,6 +43,8 @@ const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shap
 const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
+/** The Inbox search (board Search): the query, the current answer, and which edit it answers. */
+const search = atom({ plugin: 'einweave', key: 'search' } as const, NO_SEARCH as SearchState, { shape: 'search-1' })
 /** Each thread tab's own window over its posts, once the person moved it, and the posts opened past the cap. */
 const scrolls = atom({ plugin: 'einweave', key: 'scrolls' } as const, {} as Record<string, ThreadScroll>, { shape: 'scrolls-1' })
 /** A record's dim meta under the pointer: a shade lighter, its only background the pane's. */
@@ -251,6 +254,44 @@ async function showThread($: EngineInterface, id: string, title: string): Promis
     await update($, paneUp, () => true)
   }
   await viewThread($, id, title)
+}
+
+/**
+ * Run the Inbox search for the query as it is now (RFC-031): `/search` over the UI socket, else
+ * `ui_search`. `more` appends the next page. An answer for an edit that is no longer the newest is
+ * dropped: typing on while a request is out never draws a stale page.
+ */
+async function runSearch($: EngineInterface, more = false): Promise<void> {
+  const st = await read($, search)
+  const q = st.q.trim()
+  if (!q) return
+  const seq = st.seq
+  const cursor = more ? st.next : null
+  if (more && !cursor) return
+  await update($, search, x => ({ ...x, loading: true }))
+  const query: Record<string, string> = { q, type: st.type, sort: st.sort, ...(cursor ? { cursor } : {}) }
+  let got: ReturnType<typeof searchAnswer>
+  try {
+    const r = await uiRead($, '/search', query, 'ui_search', { query: q, type: st.type, sort: st.sort, ...(cursor ? { cursor } : {}) })
+    got = r.isError ? { rows: [], total: null, next: null, refused: null, error: textOf(r) || 'search failed' } : searchAnswer(textOf(r))
+  } catch (err) {
+    got = { rows: [], total: null, next: null, refused: null, error: String(err).slice(0, 200) }
+  }
+  await update($, search, x => (x.seq !== seq ? x : { ...x, ...got, rows: more ? [...x.rows, ...got.rows] : got.rows, loading: false }))
+}
+
+/** A change to the query, type or sort: a new edit; the search runs after a pause (or at once). */
+async function editSearch($: EngineInterface, change: Partial<Pick<SearchState, 'q' | 'type' | 'sort'>>, now = false): Promise<void> {
+  let seq = 0
+  await update($, search, x => {
+    seq = x.seq + 1
+    const next = { ...x, ...change, seq }
+    // Cleared: back to the Inbox, nothing kept.
+    return next.q.trim() ? { ...next, loading: true } : { ...NO_SEARCH, type: next.type, sort: next.sort, seq }
+  })
+  if (!(await read($, search)).q.trim()) return
+  if (now) return void (await runSearch($))
+  $.clock.after(SEARCH_DEBOUNCE_MS, () => void read($, search).then(x => (x.seq === seq ? runSearch($) : undefined)))
 }
 
 /** Read the Channels tab with `ui_channels`: GET only, nothing marked. */
@@ -620,6 +661,7 @@ export const register: Register = on => {
     const showChannels = () => void update($, tabs, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
     const showOpen = (o: OpenTab) => () => void update($, tabs, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id)))
     const ch = await read($, channels)
+    const st = await read($, search)
 
     // Escape hands the keyboard back without a ui.focus: the record stays, drawn as where the keyboard was.
     const f = await read($, focused)
@@ -653,7 +695,7 @@ export const register: Register = on => {
      * record's own text is semibold; bold is the pointer's and the keyboard's. Bold at rest leaves the
      * hover nothing to change (Channels drew `#name` 600 and its hover showed nothing).
      */
-    const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; acts: Act[] }) => {
+    const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; meta2?: Seg[]; acts: Act[] }) => {
       if (desk) return deskRecord(r)
       drawn.push(`mark:${r.id}`)
       const hot = keys && f === r.id
@@ -663,6 +705,7 @@ export const register: Register = on => {
         footOn = true
       }
       const title = r.title ?? [{ text: r.label, weight: 'semibold' as const }]
+      const metaLines = [r.meta, r.meta2].filter((m): m is Seg[] => !!m?.length)
       return (
         <Box key={`rec:${r.id}`} flexDirection="column">
           <Box flexDirection="row" height={1} overflow="hidden">
@@ -683,28 +726,28 @@ export const register: Register = on => {
                 : runs(`t:${r.id}`, r.dim ? title.map(g => ({ text: g.text, weight: g.weight })) : title)}
             </Button>
           </Box>
-          {r.meta ? (
-            <Box flexDirection="row" height={1} overflow="hidden">
+          {metaLines.map((segs, line) => (
+            <Box key={`meta${line}:${r.id}`} flexDirection="row" height={1} overflow="hidden">
               <Text>  </Text>
-              {r.meta.map((g, n) =>
+              {segs.map((g, n) =>
                 g.tone === 'dim' && hot ? (
-                  <Text key={`m:${r.id}:${n}`} weight={g.weight} color={META_LIT}>
+                  <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} color={META_LIT}>
                     {g.text}
                   </Text>
                 ) : g.tone === 'dim' ? (
-                  <Text key={`m:${r.id}:${n}`} weight={g.weight} dimColor hover={{ dimColor: false, color: META_LIT }}>
+                  <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} dimColor hover={{ dimColor: false, color: META_LIT }}>
                     {g.text}
                   </Text>
                 ) : (
-                  <Text key={`m:${r.id}:${n}`} {...paint(g.tone)} weight={g.weight}>
+                  <Text key={`m${line}:${r.id}:${n}`} {...paint(g.tone)} weight={g.weight}>
                     {g.text}
                   </Text>
                 ),
               )}
             </Box>
-          ) : null}
+          ))}
           {r.acts.length ? (
-            <Box position="absolute" top={r.meta ? 1 : 0} right={0} flexDirection="row" display="none" hover={{ display: 'flex' }}>
+            <Box position="absolute" top={metaLines.length} right={0} flexDirection="row" display="none" hover={{ display: 'flex' }}>
               {r.acts.map(a => (
                 <Box key={`act:${a.key}:${r.id}`} flexDirection="row">
                   {/* A space as text, not a gap: columnGap's cells let the record show through. */}
@@ -725,6 +768,7 @@ export const register: Register = on => {
         <Box key={`rec:${r.id}`} flexDirection="column">
           <Markdown key={`open:${r.id}`} text={`[${mdText(r.label)}](${href})`} dimColor={r.dim} pressableLinks={[href]} onLinkPress={() => r.onOpen()} />
           {r.meta ? <Box flexDirection="row">{runs(`m:${r.id}`, r.meta)}</Box> : null}
+          {r.meta2 ? <Box flexDirection="row">{runs(`m2:${r.id}`, r.meta2)}</Box> : null}
         </Box>
       )
     }
@@ -846,20 +890,148 @@ export const register: Register = on => {
       </Box>
     )
 
+    /** A snippet as a record's line: the hits bright and bold, the rest dim (board Search). */
+    const snippetSegs = (h: SearchHit): Seg[] =>
+      h.snippet_parts.map(p => (p.hit ? { text: p.text, weight: 'bold' as const } : { text: p.text, tone: 'dim' as const }))
+    const heldHere = (id: string) => s.holds.some(h => h.threadId === id)
+    const releaseAct = (id: string): Act => ({ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: id }) })
+    const dot = { text: ' · ', tone: 'dim' as const }
+    const dim = (text: string) => ({ text, tone: 'dim' as const })
+    /** Where a thread matched, as the board says it: title, a reply count, the conclusion, its fields. */
+    const whereText = (h: SearchHit) =>
+      h.matched_in === 'message' ? (h.matching_replies === 1 ? '1 reply matches' : `${h.matching_replies ?? 0} replies match`) : h.matched_in ?? ''
+    const threadHit = (h: SearchHit) => {
+      const title = h.title ?? h.thread_id
+      const age = quietFor(h.last_activity_at ?? null, now).age
+      const meta2 = [whereText(h), h.kind ?? '', h.status ?? '', heldHere(h.thread_id) ? 'held by you' : '', age ? `${age} ago` : ''].filter(Boolean)
+      return record({
+        id: h.thread_id,
+        label: title,
+        title: [{ text: `#${h.channel ?? ''}`, tone: 'brand' }, { text: ' ' }, { text: title, weight: 'semibold' }],
+        onOpen: () => void viewThread($, h.thread_id, title),
+        meta: snippetSegs(h),
+        meta2: meta2.flatMap((t, n) => (n ? [dot, dim(t)] : [dim(t)])),
+        acts: [heldHere(h.thread_id) ? releaseAct(h.thread_id) : takeAct(h.thread_id)],
+      })
+    }
+    const messageHit = (h: SearchHit) => {
+      const title = h.thread_title ?? h.thread_id
+      const age = quietFor(h.created_at ?? null, now).age
+      return record({
+        id: `msg-${h.message_id}`,
+        label: title,
+        title: [{ text: `#${h.channel ?? ''}`, tone: 'brand' }, { text: ' ' }, { text: title, weight: 'semibold' }],
+        onOpen: () => void viewThread($, h.thread_id, title),
+        meta: snippetSegs(h),
+        meta2: [h.sender ?? '', age ? `${age} ago` : ''].filter(Boolean).flatMap((t, n) => (n ? [dot, dim(t)] : [dim(t)])),
+        acts: [],
+      })
+    }
+    /** Board Search: Threads | Messages, the sort, then the rows, "Similar titles", More; or why nothing came. */
+    const searchBody = () => {
+      const pill = (key: string, label: string, shown: boolean, onPress: () => void) =>
+        shown ? (
+          <Button key={key} label={label} plain hover={{ inverse: false }} onPress={onPress}>
+            <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{` ${label} `}</Text>
+          </Button>
+        ) : (
+          <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
+        )
+      const n = st.total ? `${st.total.count}${st.total.capped ? '+' : ''}` : ''
+      const kinds = (
+        <Box key="search-kinds" flexDirection="row" columnGap={1}>
+          {pill('search-threads', st.type === 'threads' && n ? `Threads ${n}` : 'Threads', st.type === 'threads', () => void editSearch($, { type: 'threads' }, true))}
+          {pill('search-messages', st.type === 'messages' && n ? `Messages ${n}` : 'Messages', st.type === 'messages', () => void editSearch($, { type: 'messages' }, true))}
+          <Box flexGrow={1} />
+          <Text dimColor>{st.sort === 'newest' ? 'newest first ·' : 'best first ·'}</Text>
+          <Button
+            key="search-sort"
+            plain
+            dimColor
+            label={st.sort === 'newest' ? 'Best first' : 'Newest'}
+            onPress={() => void editSearch($, { sort: st.sort === 'newest' ? 'relevance' : 'newest' }, true)}
+          />
+        </Box>
+      )
+      if (st.refused) {
+        const r = st.refused
+        return (
+          <Box key="search-refused" flexDirection="column" rowGap={1}>
+            <Text color={PALETTE.amber}>{r.message}</Text>
+            {r.suggestions.length ? (
+              <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+                {r.suggestions.map(sg => (
+                  <Button key={`suggest:${sg}`} label={sg} onPress={() => void editSearch($, { q: applySuggestion(st.q, r.token, sg) }, true)} />
+                ))}
+              </Box>
+            ) : null}
+          </Box>
+        )
+      }
+      if (st.error) return <Text key="search-error" dimColor>{st.error}</Text>
+      if (!st.rows.length)
+        return (
+          <Box key="search-none" flexDirection="column" rowGap={1}>
+            {kinds}
+            {st.loading ? (
+              <Text dimColor>Searching…</Text>
+            ) : (
+              <Box flexDirection="column">
+                <Text>{`Nothing matches ${st.q.trim()}.`}</Text>
+                <Text dimColor>Fewer words, or drop a filter. Archived threads: add is:archived.</Text>
+              </Box>
+            )}
+          </Box>
+        )
+      const text = st.rows.filter(h => !h.similar_title)
+      const similar = st.rows.filter(h => h.similar_title)
+      return (
+        <Box key="search-rows" flexDirection="column" rowGap={1}>
+          {kinds}
+          {(st.type === 'messages' ? text.map(messageHit) : text.map(threadHit))}
+          {similar.length ? heading('h:similar', 'Similar titles', 'no word matched exactly') : null}
+          {similar.map(threadHit)}
+          {st.next ? <Button key="search-more" plain dimColor label={st.loading ? 'Loading…' : 'More'} onPress={() => void runSearch($, true)} /> : null}
+        </Box>
+      )
+    }
+
     let body
     // The thread tab scrolls its own posts (set there); every other tab leaves the window to the engine.
     let own = false
     win = null
     if (tab === 'inbox') {
+      // Board Search: the field on top; a query replaces the sections with its results, clearing it
+      // brings them back. No field on mobile (no Input there): `/einweave find` is the way.
+      const field = Input ? (
+        <Box key="search-field" flexDirection="column">
+          <Text dimColor>Search threads and messages</Text>
+          <Input
+            key="search"
+            value={st.q}
+            placeholder='words, "a phrase", in:#channel, from:@person, is:open'
+            submitLabel="search"
+            onInput={q => void editSearch($, { q })}
+            onSubmit={q => void editSearch($, { q }, true)}
+          />
+        </Box>
+      ) : null
+      const searching = !!Input && st.q.trim() !== ''
       body = !connected ? (
         <Text dimColor>Not connected: what waits shows once this session is.</Text>
-      ) : waiting === 0 ? (
-        <Text dimColor>Nothing waits for this session.</Text>
+      ) : searching ? (
+        <Box flexDirection="column" rowGap={1}>
+          {field}
+          {searchBody()}
+        </Box>
       ) : (
         <Box flexDirection="column" rowGap={1}>
+          {field}
+          {!Input ? <Text key="find-hint" dimColor>Search: /einweave find &lt;words&gt;</Text> : null}
+          {waiting === 0 ? <Text dimColor>Nothing waits for this session.</Text> : null}
           {box.forYou.length ? heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you') : null}
-          {folded('forYou', box.forYou, inboxRecord)}
-          {box.open.length ? heading('h:open', `Unowned ${openCount}`, 'nobody holds these · oldest first') : null}
+          {box.forYou.map(inboxRecord)}
+          {box.open.length ? heading('h:open', `Unowned ${openCount}`, 'nobody holds these · newest first') : null}
           {/* Board Unowned: whether the gateway routes these, brand when it does, amber while they wait for a take. */}
           {box.open.length && s.gateway ? (
             s.gateway.online ? (
@@ -868,8 +1040,8 @@ export const register: Register = on => {
               <Text key="gateway" color={PALETTE.amber} wrap="truncate-end">○ no gateway online · unheld work goes to sessions in scope, or waits for a take</Text>
             )
           ) : null}
-          {folded('open', box.open, inboxRecord)}
-          {s.waiting?.more ? <Text dimColor>More wait than shown: /einweave take lists them all.</Text> : null}
+          {box.open.map(inboxRecord)}
+          {s.waiting?.more ? <Text dimColor>More wait than shown: search, or /einweave take lists them all.</Text> : null}
           {box.open.length ? (
             <Box key="unowned-notes" flexDirection="column">
               <Text dimColor>{`Every session of ${s.session.agent ? `@${s.session.agent}` : 'this agent'} sees this list. The band stays for things aimed at you.`}</Text>

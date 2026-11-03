@@ -351,7 +351,7 @@ export interface InboxRow {
   meta: string
   /** `3h`: since the thread's last post; null when the server sent no time. */
   age: string | null
-  /** Quiet longer than OLD_MS: drawn under the "Older" fold. */
+  /** Quiet longer than OLD_MS (the channel tab's "Older" fold; the Inbox has none). */
   old: boolean
   /** Quiet STALE_MS or longer: its age is drawn amber. */
   stale: boolean
@@ -379,7 +379,7 @@ export function quietFor(iso: string | null | undefined, now: number): { age: st
 
 /**
  * The Inbox tab: For you (addressed, or taken part in) and Open (new posts in a followed channel),
- * in the snapshot's order -- For you newest first, Open quiet longest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
+ * in the snapshot's order -- each newest first, sorted where the rows are cut (ui/ui-state.ts toWaiting).
  */
 export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: InboxRow[]; open: InboxRow[] } {
   const rows = waiting?.top ?? []
@@ -669,17 +669,68 @@ export function channelRows(threads: ChannelThread[]): { rows: (ChannelThread & 
   return { rows: ordered.slice(0, CHANNEL_CAP), more: Math.max(0, ordered.length - CHANNEL_CAP) }
 }
 
-/** One search hit as the plugin's `/search` route answers it (server.ts `searchPage`). */
+/** One search hit as the plugin's `/search` route answers it (server.ts `searchPage`): a thread row, or a message row (`message_id` + `thread_title`). */
 export type SearchHit = {
   thread_id: string
-  title: string | null
+  title?: string | null
+  thread_title?: string | null
+  message_id?: string | null
   channel: string | null
   kind: string | null
   status: string | null
+  sender?: string | null
+  created_at?: string
+  last_activity_at?: string
+  matched_in?: string | null
   similar_title?: boolean
   matching_replies?: number
   snippet_parts: { text: string; hit: boolean }[]
 }
+
+export type SearchType = 'threads' | 'messages'
+export type SearchSort = 'relevance' | 'newest'
+export type SearchRefused = { code: string; token: string | null; suggestions: string[]; message: string }
+
+/**
+ * The Inbox search (RFC-031, board Search): what is typed, which answer is current, and what it said.
+ * `seq` counts edits: an answer for an older `seq` is dropped, so a slow reply never draws over a newer
+ * query. `rows` hold every page loaded for this query (More appends); `next` the server's cursor.
+ */
+export interface SearchState {
+  q: string
+  type: SearchType
+  sort: SearchSort
+  seq: number
+  loading: boolean
+  rows: SearchHit[]
+  total: { count: number; capped: boolean } | null
+  next: string | null
+  refused: SearchRefused | null
+  error: string | null
+}
+export const NO_SEARCH: SearchState = { q: '', type: 'threads', sort: 'relevance', seq: 0, loading: false, rows: [], total: null, next: null, refused: null, error: null }
+
+/** The `/search` route's answer (or the `ui_search` tool's) as state: a page, a refusal, or the error text it was. */
+export function searchAnswer(raw: string): Pick<SearchState, 'rows' | 'total' | 'next' | 'refused' | 'error'> {
+  const none = { rows: [], total: null, next: null, refused: null }
+  let page: { refused?: SearchRefused; results?: SearchHit[]; total?: { count: number; capped: boolean }; next?: string | null }
+  try {
+    page = JSON.parse(raw)
+  } catch {
+    return { ...none, error: raw.trim() || 'search answered nothing' }
+  }
+  if (page.refused) return { ...none, refused: page.refused, error: null }
+  return { rows: page.results ?? [], total: page.total ?? null, next: page.next ?? null, refused: null, error: null }
+}
+
+/** A suggestion pressed (`in:#ops` for the refused `in:#opz`): the query with that token replaced, or the suggestion added. */
+export function applySuggestion(q: string, token: string | null, suggestion: string): string {
+  if (token && q.includes(token)) return q.replace(token, suggestion)
+  return `${q.trim()} ${suggestion}`.trim()
+}
+
+/** Seconds of quiet before a typed query is sent: a pause, not every key. */
+export const SEARCH_DEBOUNCE_MS = 250
 
 /**
  * `/einweave find <words>`: the `/search` page (RFC-031) as text: one line per thread with where it

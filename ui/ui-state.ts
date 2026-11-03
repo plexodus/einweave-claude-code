@@ -170,9 +170,9 @@ export const UI_WAITING_PAGES = 4;
 
 /**
  * needSomeone's raw rows, shaped down to what the mod draws: held ones dropped, For you (addressed,
- * taken part in) newest first -- what needs the person now -- before Open (the channel tier) quiet
- * longest first (board Unowned "oldest first"); a row without a time last in each. Sorted BEFORE the
- * cut, so the cut drops the oldest For you and the newest Open.
+ * taken part in) before Open (the channel tier), each newest first (Jörgen 2026-11-03: newest first,
+ * scroll and search, no "Older" fold); a row without a time last in each. Sorted BEFORE the cut, so
+ * the cut drops the oldest of each, which the Inbox search still finds.
  */
 export function toWaiting(r: {
   rows: ReadonlyArray<{ thread: { id: string; title: string; lastActivityAt?: string }; channel: { name: string }; why: UiWaitingItem["why"]; hold: { state: UiWaitingItem["hold"] } }>;
@@ -190,7 +190,7 @@ export function toWaiting(r: {
       if (a.tier !== b.tier) return a.tier - b.tier;
       if (a.t === b.t) return 0;
       if (a.t === Number.POSITIVE_INFINITY || b.t === Number.POSITIVE_INFINITY) return a.t === Number.POSITIVE_INFINITY ? 1 : -1;
-      return (a.t < b.t ? -1 : 1) * (a.tier === 0 ? -1 : 1);
+      return a.t < b.t ? 1 : -1;
     });
   return {
     forYou: r.counts?.forYou ?? null,
