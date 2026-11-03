@@ -758,6 +758,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(label).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: [' Older ask '] }] })
       // At rest a dim `× `: the shown pill's width, so the tab does not grow when it is shown.
       expect(close).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: ['× '] }] })
+      // The tab's Box joins the group too (it sets it off; a Text inside a Button does not, live 2026-11-03). The
+      // kit reports no Box's or Button's hover, so that half is checked live, not here.
       // The fixed tabs keep the engine's own pointer: nothing beside them to light.
       expect((await ui.find({ key: 'tab:held' }))?.children).toEqual([])
     } else {

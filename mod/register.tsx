@@ -823,11 +823,12 @@ export const register: Register = on => {
           const label = tabLabel(o.title)
           const shown = tab === o.id
           // A tab and its × are one thing: the pointer on either lights both, as the pointer draws a tab
-          // (inverse, full strength), so the × reads as part of the tab (Jörgen 2026-11-03). A scope, not the
-          // keyed Box: a scope needs no key above it. A desktop draws no hover: nothing to group.
+          // (inverse, full strength), so the × reads as part of the tab (Jörgen 2026-11-03). The tab's Box joins the
+          // group too: a Text inside a Button lights with it but does not set it off (seen live 2026-11-03: the
+          // label lit, the × not), and the Box is the whole tab under the pointer. A desktop draws no hover.
           const lit = desk ? undefined : tabLit(o.id)
           return (
-            <Box key={`tabbox:${o.id}`} flexDirection="row">
+            <Box key={`tabbox:${o.id}`} flexDirection="row" {...(lit ? { hover: { scope: lit.scope } } : {})}>
               {tabButton(`tab:${o.id}`, label, o.id, showOpen(o), lit)}
               {/* The shown tab's × sits inside its pill, drawn as the pill (Jörgen 2026-10-31); the rest dim. A desktop
                   draws no fill, so there it stays dim: full strength is the shown tab's and the one thing to do.
