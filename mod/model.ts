@@ -567,9 +567,10 @@ export const tabWidth = (label: string, closable: boolean) => cellWidth(label) +
 
 /**
  * An opened tab's hover on the terminal, on its label and its × alike: one group per tab, so the pointer on
- * either draws both as the pointer draws a tab (inverse, full strength) and the × reads as the tab's own.
+ * either draws both as the pointer draws any tab not shown (inverse, still dim: the fixed tabs' grey) and the
+ * × reads as the tab's own. Dim stays: un-dimming lit the × bright beside a grey label (live 2026-11-03).
  */
-export const tabLit = (id: string) => ({ scope: `tab:${id}`, inverse: true, dimColor: false }) as const
+export const tabLit = (id: string) => ({ scope: `tab:${id}`, inverse: true }) as const
 
 /** Prepend an older page's replies (the root dropped: the tab has it) to what the tab shows. */
 export function withOlder(t: ThreadView, page: ThreadView): ThreadView {

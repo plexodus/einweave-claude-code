@@ -752,12 +752,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const close = await ui.find({ key: `close:${T_OLD}` })
     expect(label?.props).toMatchObject({ label: ' Older ask ', dimColor: true })
     if (surface === 'terminal') {
-      // One group per tab: the pointer on either lights both, drawn as the pointer draws a tab.
-      const lit = { scope: `tab:${T_OLD}`, inverse: true, dimColor: false }
+      // One group per tab: the pointer on either lights both, as the pointer draws a tab not shown (dim, inverse).
+      expect(close?.props).toMatchObject({ dimColor: true })
+      const lit = { scope: `tab:${T_OLD}`, inverse: true }
       // (The kit reports a Text's hover beside its props; a Button's it does not, so the hover is the Texts'.)
       expect(label).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: [' Older ask '] }] })
       // At rest a dim `× `: the shown pill's width, so the tab does not grow when it is shown.
       expect(close).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: ['× '] }] })
+      // Exactly that, both: un-dimmed, the × lit bright beside a grey label (live 2026-11-03).
+      expect([label?.children[0]?.hover, close?.children[0]?.hover]).toEqual([lit, lit])
       // The tab's Box joins the group too (it sets it off; a Text inside a Button does not, live 2026-11-03). The
       // kit reports no Box's or Button's hover, so that half is checked live, not here.
       // The fixed tabs keep the engine's own pointer: nothing beside them to light.

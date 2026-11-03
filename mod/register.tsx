@@ -823,7 +823,7 @@ export const register: Register = on => {
           const label = tabLabel(o.title)
           const shown = tab === o.id
           // A tab and its × are one thing: the pointer on either lights both, as the pointer draws a tab
-          // (inverse, full strength), so the × reads as part of the tab (Jörgen 2026-11-03). The tab's Box joins the
+          // (tabLit), so the × reads as part of the tab (Jörgen 2026-11-03). The tab's Box joins the
           // group too: a Text inside a Button lights with it but does not set it off (seen live 2026-11-03: the
           // label lit, the × not), and the Box is the whole tab under the pointer. A desktop draws no hover.
           const lit = desk ? undefined : tabLit(o.id)
@@ -837,7 +837,7 @@ export const register: Register = on => {
                 key={`close:${o.id}`}
                 label="×"
                 plain
-                {...(shown && !desk ? { hover: { inverse: false } } : lit ? {} : { dimColor: true })}
+                {...(shown && !desk ? { hover: { inverse: false } } : { dimColor: true })}
                 onPress={() => {
                   void update($, tabs, x => closeTab(x, o.id))
                   if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
