@@ -18,6 +18,7 @@ import {
   type InboxRow, type Seg, type ThreadLayout, type Tone,
 } from './model'
 import type { Line } from './text'
+import { hyperlinks } from './links'
 
 const SERVER = 'plugin:einweave:einweave'
 const PANE = 'einweave'
@@ -56,6 +57,30 @@ const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
 /** A run's Text props for its tone: an accent from the canvas, or the theme's dim. */
 const paint = (tone: Tone | undefined) => (tone === 'dim' ? { dimColor: true } : tone ? { color: PALETTE[tone] } : {})
+
+/**
+ * One of the pane's reads, as the MCP tool's result. Over the plugin's UI socket when the snapshot names one
+ * (`$.http.fetch` with `socketPath`, whole): the host cuts a tool result at its MODEL-facing output limit, and a long
+ * thread page came back as an error (88,741 chars, 2026-11-03). A refusal of the fetch itself (no socket any more,
+ * a policy) falls back to the MCP tool for that call, which keeps its size budget; an answer, even an error, stands.
+ * `ui_state` itself stays MCP: small, the call that tells the mod the socket's path, and the probe that the plugin process is up.
+ */
+async function uiRead($: EngineInterface, path: string, query: Record<string, number>, tool: string, args: Record<string, string | number>) {
+  const socketPath = (await read($, view)).snap?.uiSocket
+  if (socketPath) {
+    try {
+      const qs = Object.entries(query).map(([k, v]) => `${k}=${v}`).join('&')
+      const r = await $.http.fetch(`http://einweave${path}${qs ? `?${qs}` : ''}`, { socketPath })
+      if (r.ok) return { isError: false, content: [{ type: 'text' as const, text: r.text }] }
+      let error = ''
+      try {
+        error = String((JSON.parse(r.text) as { error?: unknown }).error ?? '')
+      } catch {}
+      return { isError: true, content: [{ type: 'text' as const, text: error || `${tool} failed (HTTP ${r.status})` }] }
+    } catch {}
+  }
+  return $.mcp.call(SERVER, tool, args)
+}
 
 /** Take a snapshot into the view; a drop that starts now redraws once its grace period has passed. */
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
@@ -156,7 +181,7 @@ async function loadThread($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...(m[id] ?? NO_THREAD), loading: true } }))
   let got: ThreadView
   try {
-    const r = await $.mcp.call(SERVER, 'ui_thread', { thread_id: id })
+    const r = await uiRead($, `/thread/${encodeURIComponent(id)}`, {}, 'ui_thread', { thread_id: id })
     got = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
   } catch (err) {
     got = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
@@ -176,7 +201,7 @@ async function loadOlder($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...m[id]!, loadingOlder: true } }))
   let page: ThreadView
   try {
-    const r = await $.mcp.call(SERVER, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
+    const r = await uiRead($, `/thread/${encodeURIComponent(id)}`, { before_seq: before, limit: OLDER_PAGE }, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
     page = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
   } catch (err) {
     page = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
@@ -208,7 +233,7 @@ async function loadChannels($: EngineInterface): Promise<void> {
   await update($, channels, c => ({ ...c, loading: true }))
   let got
   try {
-    const r = await $.mcp.call(SERVER, 'ui_channels', {})
+    const r = await uiRead($, '/channels', {}, 'ui_channels', {})
     got = r.isError ? { ...NO_CHANNELS, loading: false, error: textOf(r) || 'ui_channels failed' } : channelsView(textOf(r))
   } catch (err) {
     got = { ...NO_CHANNELS, loading: false, error: String(err).slice(0, 200) }
@@ -221,7 +246,7 @@ async function loadChannel($: EngineInterface, id: string): Promise<void> {
   await update($, channel, m => ({ ...m, [id]: { ...(m[id] ?? NO_CHANNEL), loading: true } }))
   let got: ChannelView
   try {
-    const r = await $.mcp.call(SERVER, 'ui_channel', { channel_id: id })
+    const r = await uiRead($, `/channel/${encodeURIComponent(id)}`, {}, 'ui_channel', { channel_id: id })
     got = r.isError ? { ...NO_CHANNEL, loading: false, error: textOf(r) || 'ui_channel failed' } : channelView(textOf(r))
   } catch (err) {
     got = { ...NO_CHANNEL, loading: false, error: String(err).slice(0, 200) }
@@ -253,6 +278,29 @@ async function tooOld($: EngineInterface): Promise<string | null> {
     }
   })()
   return engineAge
+}
+
+// Does this terminal draw OSC 8 links? Claude Code's own answer (links.ts), asked once per load: where
+// it is no, the kit's Link prints its URL after its text, uncounted, and every row overflowed.
+let linking: Promise<boolean> | undefined
+
+async function terminalLinks($: EngineInterface): Promise<boolean> {
+  linking ??= (async () => {
+    try {
+      const [setting, ...v] = await Promise.all([
+        $.settings.read({ key: 'hyperlinks' }).catch(() => undefined),
+        $.env.get('FORCE_HYPERLINK'), $.env.get('NETLIFY'), $.env.get('WT_SESSION'), $.env.get('CI'), $.env.get('TEAMCITY_VERSION'),
+        $.env.get('TERM_PROGRAM'), $.env.get('TERM_PROGRAM_VERSION'), $.env.get('VTE_VERSION'), $.env.get('TERM'),
+        $.env.get('TERMINAL_EMULATOR'), $.env.get('TMUX'), $.env.get('LC_TERMINAL'),
+      ])
+      const [FORCE_HYPERLINK, NETLIFY, WT_SESSION, CI, TEAMCITY_VERSION, TERM_PROGRAM, TERM_PROGRAM_VERSION, VTE_VERSION, TERM, TERMINAL_EMULATOR, TMUX, LC_TERMINAL] = v
+      return hyperlinks({ FORCE_HYPERLINK, NETLIFY, WT_SESSION, CI, TEAMCITY_VERSION, TERM_PROGRAM, TERM_PROGRAM_VERSION, VTE_VERSION, TERM, TERMINAL_EMULATOR, TMUX, LC_TERMINAL }, setting)
+    } catch {
+      // Unknown: URLs as text never overflow a row; a Link the kit cannot draw does.
+      return false
+    }
+  })()
+  return linking
 }
 
 const toastFirst = ($: EngineInterface) => (t: string) => $.ui.toast(t.split('\n')[0] || 'Done.')
@@ -962,7 +1010,8 @@ export const register: Register = on => {
       own = e.surface === 'terminal' && e.props.placement === 'dock'
       const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
       const sc = (await read($, scrolls))[id]
-      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older)
+      // A desktop draws links itself; a terminal only when it draws OSC 8.
+      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, desk || (await terminalLinks($)))
       // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
       // rule, the thread's own header (title, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))

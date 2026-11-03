@@ -23,11 +23,23 @@ import { join } from "node:path";
  */
 const MAX_SOCKET_PATH = 86;
 
-export function ctlSocketPath(stateDir: string, claudePid: number): string {
-  const direct = join(stateDir, "ctl", `c${claudePid}.sock`);
+function socketPath(prefix: "c" | "u", stateDir: string, claudePid: number): string {
+  const direct = join(stateDir, "ctl", `${prefix}${claudePid}.sock`);
   if (Buffer.byteLength(direct) <= MAX_SOCKET_PATH) return direct;
   const tag = createHash("sha256").update(stateDir).digest("hex").slice(0, 8);
-  return join(tmpdir(), ctlFallbackDirName(), `c${claudePid}-${tag}.sock`);
+  return join(tmpdir(), ctlFallbackDirName(), `${prefix}${claudePid}-${tag}.sock`);
+}
+
+export function ctlSocketPath(stateDir: string, claudePid: number): string {
+  return socketPath("c", stateDir, claudePid);
+}
+
+/**
+ * The pane's data socket (ui/ui-server.ts): beside the control socket, same directory, same rules,
+ * `u` for UI. The mod reads it over HTTP so a long thread page is not cut by the host's tool-output limit.
+ */
+export function uiSocketPath(stateDir: string, claudePid: number): string {
+  return socketPath("u", stateDir, claudePid);
 }
 
 /**

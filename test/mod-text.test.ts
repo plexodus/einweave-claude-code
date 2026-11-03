@@ -117,6 +117,23 @@ describe("inline styles", () => {
     expect(ls.every(l => l.every(r => r.bold))).toBe(true);
   });
 
+  test("a terminal without OSC 8 links: no link runs; a named link's URL on its own dim row, whole; a bare URL kept whole", () => {
+    const doc = [p("see ", ["a", { href: "https://x.test/a" }, "a safe link"], " or ", ["a", { href: "https://y.test/long/path" }, "https://y.test/long/path"])];
+    const ls = docLines(doc, 80, { links: false });
+    expect(texts(ls)).toEqual(["see a safe link or https://y.test/long/path", "https://x.test/a"]);
+    expect(ls.flat().some(r => r.href)).toBe(false);
+    expect(ls[1]!.every(r => r.dim && r.url)).toBe(true);
+    // Never split over rows (it would open in no terminal): narrower than the URL, it is cut.
+    const narrow = docLines(doc, 12, { links: false });
+    expect(texts(narrow).filter(t => t.startsWith("https://y"))).toEqual(["https://y.t…"]);
+    // ...and no row carries a piece of it (a split URL's tail).
+    expect(texts(narrow).some(t => /long|path/.test(t))).toBe(false);
+    expect(texts(narrow).filter(t => t.startsWith("https://x"))).toEqual(["https://x.t…"]);
+    for (let w = 6; w <= 40; w++) expect(widest(docLines(doc, w, { links: false }))).toBeLessThanOrEqual(w);
+    // With links (the default), the URL stays in the link and no row is added.
+    expect(texts(docLines(doc, 80))).toEqual(["see a safe link or https://y.test/long/path"]);
+  });
+
   test("an image is its alt text", () => {
     expect(texts(docLines([p(["img", { src: "https://x.test/a.png", alt: "a chart" }])], 40))).toEqual(["a chart"]);
   });

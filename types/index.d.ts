@@ -32,6 +32,8 @@ export interface UiSnapshot {
   gateway?: { online: boolean; label: string | null } | null
   version: string
   staleSince: string | null
+  /** The pane's data socket (HTTP over a Unix socket); null or absent: read over MCP. */
+  uiSocket?: string | null
 }
 
 /** What the mod draws from: the last snapshot and how it arrived. */

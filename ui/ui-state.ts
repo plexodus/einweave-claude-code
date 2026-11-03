@@ -52,6 +52,8 @@ export interface UiState {
   gateway: UiGateway | null;
   version: string;
   staleSince: string | null;
+  /** The pane's data socket (ui/ui-server.ts); null when it is not open: the mod reads over MCP. */
+  uiSocket: string | null;
 }
 
 export interface UiInputs {
@@ -76,6 +78,7 @@ export interface UiInputs {
   gateway: UiGateway | null;
   version: string;
   staleSince: string | null;
+  uiSocket?: string | null;
 }
 
 /** Which window has the session, for a person to find it; the close code and the tool advice stay in `status`. */
@@ -103,6 +106,7 @@ export function buildUiState(i: UiInputs): UiState {
     gateway: i.authenticated ? i.gateway : null,
     version: i.version,
     staleSince: i.staleSince,
+    uiSocket: i.uiSocket ?? null,
   };
 }
 

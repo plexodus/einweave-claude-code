@@ -7,10 +7,11 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readdirSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { ctlSocketPath } from "../delivery/ctl-path";
+import { ctlSocketPath, uiSocketPath } from "../delivery/ctl-path";
 import { CtlManager } from "../delivery/ctl-manager";
 import { openCtlServer, type CtlServerOptions } from "../delivery/ctl-server";
 import { MissedTracker } from "../delivery/missed";
+import { openUiServer } from "../ui/ui-server";
 
 const PID = 616161;
 type E = { id: string };
@@ -64,6 +65,34 @@ const until = async (pred: () => boolean, ms = 3000) => {
 };
 
 describe("CtlManager", () => {
+  test("the UI socket rides on the control socket: opened once it is ours, advertised, stopped with it, and re-opened alone if it is lost", async () => {
+    const t = setup();
+    const uiPath = uiSocketPath(t.dir, PID);
+    const changes: Array<string | null> = [];
+    const flag = { holds: true };
+    let m!: CtlManager<E>;
+    m = new CtlManager<E>({
+      options: (tk) => t.opts(tk),
+      retryDelaysMs: [10],
+      watchMs: 20,
+      holdsLock: () => flag.holds,
+      companion: () => openUiServer({ path: uiPath, routes: { state: async () => ({}), channels: async () => ({}), channel: async () => ({}), thread: async () => ({}) }, log: () => {} }).server,
+      onCompanion: () => void changes.push(m.companionPath()),
+    });
+    cleanups.push(() => m.close());
+    await m.ensure();
+    expect(m.companionPath()).toBe(uiPath);
+    expect(readdirSync(join(t.dir, "ctl")).sort()).toEqual([`c${PID}.sock`, `u${PID}.sock`]);
+    // Lost alone (a tmp cleaner): the lock holder's watch brings it back.
+    rmSync(uiPath);
+    expect(await until(() => changes.length >= 3 && m.companionPath() === uiPath)).toBe(true);
+    expect(changes).toEqual([uiPath, null, uiPath]);
+    // Stopped with the control socket.
+    m.close();
+    expect(m.companionPath()).toBeNull();
+    expect(readdirSync(join(t.dir, "ctl"))).toEqual([]);
+  });
+
   test("at most one open in flight: concurrent ensures open once, and leave one socket", async () => {
     const t = setup();
     const m = t.manager();

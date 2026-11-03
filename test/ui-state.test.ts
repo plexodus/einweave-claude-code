@@ -48,6 +48,13 @@ describe("buildUiState", () => {
     expect(s.gateway).toEqual({ online: true, label: "bridge-gw" });
   });
 
+  test("uiSocket: the pane's data socket path when open, null when not (the mod then reads over MCP)", () => {
+    expect(buildUiState(INPUTS).uiSocket).toBeNull();
+    expect(buildUiState({ ...INPUTS, uiSocket: "/s/ctl/u1.sock" }).uiSocket).toBe("/s/ctl/u1.sock");
+    // Not connected still names it: the socket is the session's, not the connection's.
+    expect(buildUiState({ ...INPUTS, authenticated: false, uiSocket: "/s/ctl/u1.sock" }).uiSocket).toBe("/s/ctl/u1.sock");
+  });
+
   test("a held thread whose title is not known yet (or has none) carries title null, in hold order", () => {
     const s = buildUiState({ ...INPUTS, holds: ["t2", "t1"] });
     expect(s.holds).toEqual([{ threadId: "t2", title: null }, { threadId: "t1", title: "Fix the build" }]);
