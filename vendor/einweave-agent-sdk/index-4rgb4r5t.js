@@ -292,12 +292,33 @@ function identityTokenClientOptions(id) {
 }
 // ../protocol/src/v2/doc.ts
 var DOC_V = 1;
+var LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+var IMG_PROTOCOLS = new Set(["https:"]);
+function protocolOf(u) {
+  if (typeof u !== "string")
+    return null;
+  try {
+    return new URL(u).protocol;
+  } catch {
+    return null;
+  }
+}
+function allowedLink(u) {
+  const p = protocolOf(u);
+  return p !== null && LINK_PROTOCOLS.has(p);
+}
+function allowedImage(u) {
+  const p = protocolOf(u);
+  return p !== null && IMG_PROTOCOLS.has(p);
+}
 var BLOCK = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "table", "thead", "tbody", "tr", "hr"]);
 function docText(doc, nameOf) {
   const walk = (nodes) => nodes.map(node).join("");
   const node = (n) => {
     if (typeof n === "string")
       return n;
+    if (!Array.isArray(n))
+      return "";
     const [tag, a, ...kids] = n;
     switch (tag) {
       case "br":
@@ -470,6 +491,28 @@ todo`
       ]
     ],
     text: "const a = 1;"
+  },
+  {
+    name: "unclosed fence",
+    content: "before\n```ts\nconst secret = 1;\nmore lines",
+    doc: [
+      [
+        "p",
+        0,
+        "before"
+      ],
+      [
+        "pre",
+        {
+          lang: "ts"
+        },
+        `const secret = 1;
+more lines`
+      ]
+    ],
+    text: `before
+const secret = 1;
+more lines`
   },
   {
     name: "table",
@@ -698,6 +741,8 @@ var DOC_FORWARD_CASES = [
 var DOC_V2 = DOC_V;
 var docText2 = docText;
 var docToRender2 = docToRender;
+var allowedLink2 = allowedLink;
+var allowedImage2 = allowedImage;
 var messageText2 = messageText;
 var DOC_CORPUS2 = DOC_CORPUS;
 var DOC_FORWARD_CASES2 = DOC_FORWARD_CASES;
@@ -2453,4 +2498,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, expandLink, threadUrl, messageUrl, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, expandLink, threadUrl, messageUrl, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };

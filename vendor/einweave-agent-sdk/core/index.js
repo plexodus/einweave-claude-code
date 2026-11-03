@@ -40,6 +40,8 @@ import {
   TransportError,
   WS_CLOSE_CODES,
   WS_CLOSE_REASONS,
+  allowedImage,
+  allowedLink,
   apiOrigin,
   assertNever,
   bodyRows,
@@ -105,7 +107,7 @@ import {
   userAgent,
   viewport,
   wsHtu
-} from "../index-p72pz35n.js";
+} from "../index-4rgb4r5t.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,
@@ -148,6 +150,8 @@ export {
   TransportError,
   WS_CLOSE_CODES,
   WS_CLOSE_REASONS,
+  allowedImage,
+  allowedLink,
   apiOrigin,
   assertNever,
   bodyRows,

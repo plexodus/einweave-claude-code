@@ -44,7 +44,7 @@ type Call = { tool: string; args: Record<string, unknown> }
  */
 function engine(
   on: Parameters<Parameters<typeof test>[1]>[1],
-  o: { engineVersion?: string | null; now?: number; polled?: UiSnapshot | null; polledRev?: number; connectAfterMs?: number; pushed?: string[]; pushes?: string[][]; stayOpen?: boolean; hang?: boolean; answer?: (c: Call) => unknown } = {},
+  o: { engineVersion?: string | null; env?: Record<string, string>; now?: number; polled?: UiSnapshot | null; polledRev?: number; connectAfterMs?: number; pushed?: string[]; pushes?: string[][]; stayOpen?: boolean; hang?: boolean; answer?: (c: Call) => unknown } = {},
 ) {
   const calls: Call[] = []
   const spawns: { env?: Record<string, string> }[] = []
@@ -58,6 +58,8 @@ function engine(
   })
   on('session.end', () => ({ sessionId: 's1' }))
   on('classic.SessionStart', () => ({}))
+  // The process environment the mod reads: a terminal with OSC 8 links unless the test names another.
+  on('env.get', (_$, e) => ({ value: (o.env ?? { TERM_PROGRAM: 'iTerm.app' })[e.name] }))
   // The engine's version: a current one unless the test names another; null, an engine without the call.
   on('session.version', () => {
     if (o.engineVersion === null) throw new Error('$.session.version is not a function')
@@ -577,6 +579,83 @@ test('Take on an Inbox row takes it by id; from an online holder it asks the per
   expect(toasts.at(-1)).toContain('now holds')
   await ui.unmount()
 })
+
+test('a snapshot with uiSocket: the thread tab reads over http.fetch on that socket (whole page), with NO mcp.call for ui_thread; a refusal falls back to MCP; an error body is shown', async ($, on) => {
+  const thread = {
+    thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' },
+    channel_id: 'c',
+    messages: [{ sender: 'Kevin', content: 'Read over the socket', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, root: true }],
+    has_older: false,
+    older_count: 0,
+  }
+  const fetched: { url: string; socketPath?: string }[] = []
+  let mode: 'ok' | 'refused' | 'error' = 'ok'
+  on('http.fetch', (_$, e) => {
+    fetched.push({ url: e.url, socketPath: e.init?.socketPath })
+    if (mode === 'refused') throw new Error('refused by policy')
+    if (mode === 'error') return { value: { status: 409, ok: false, headers: {}, text: JSON.stringify({ error: 'einweave not connected — run /einweave:connect first.' }) } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(thread) } }
+  })
+  const { calls, clock } = engine(on, { polled: { ...WAITING, uiSocket: '/tmp/ew/u1.sock' }, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify({ ...thread, messages: [{ ...thread.messages[0], content: 'Read over MCP' }] })) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  expect(fetched).toEqual([{ url: `http://einweave/thread/${T_OLD}`, socketPath: '/tmp/ew/u1.sock' }])
+  expect(calls.filter(c => c.tool === 'ui_thread')).toEqual([])
+  expect(await ui.find({ key: `ln:${T_OLD}:root:0` })).toMatchObject({ text: 'Read over the socket' })
+  // The fetch refused (no socket any more, a policy): this call alone goes over MCP.
+  mode = 'refused'
+  await ui.press({ key: `refresh:${T_OLD}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_OLD }])
+  expect(await ui.find({ key: `ln:${T_OLD}:root:0` })).toMatchObject({ text: 'Read over MCP' })
+  // An answer from the socket stands even when it is an error: its text, not a silent second read.
+  mode = 'error'
+  await ui.press({ key: `refresh:${T_OLD}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'ui_thread')).toHaveLength(1)
+  expect(await ui.find({ type: 'Text', text: /einweave not connected/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a snapshot with uiSocket: a person\'s actions (a /einweave command, a pane button) POST /tool/<name> on that socket, with NO mcp.call for them; a refusal falls back to MCP', async ($, on) => {
+  const posted: { url: string; method?: string; body?: string; socketPath?: string }[] = []
+  let refused = false
+  on('http.fetch', (_$, e) => {
+    if (!e.url.includes('/tool/')) return { value: { status: 404, ok: false, headers: {}, text: '{"error":"not found"}' } }
+    posted.push({ url: e.url, method: e.init?.method, body: e.init?.body, socketPath: e.init?.socketPath })
+    if (refused) throw new Error('refused by policy')
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ content: [{ type: 'text', text: 'released over the socket' }] }) } }
+  })
+  const { calls, clock } = engine(on, { polled: { ...WAITING, uiSocket: '/tmp/ew/u1.sock' }, answer: c => text(`${c.tool} ${JSON.stringify(c.args)}`) })
+  await start($, clock)
+  expect((await $.command.run({ command: 'einweave', args: 'release 2' })).text).toBe('released over the socket')
+  expect(posted).toEqual([{ url: 'http://einweave/tool/release', method: 'POST', body: '{"ref":"2"}', socketPath: '/tmp/ew/u1.sock' }])
+  expect(calls.filter(c => c.tool === 'release')).toEqual([])
+  refused = true
+  expect((await $.command.run({ command: 'einweave', args: 'release 3' })).text).toBe('release {"ref":"3"}')
+  expect(calls.filter(c => c.tool === 'release').map(c => c.args)).toEqual([{ ref: '3' }])
+})
+
+for (const [name, polled] of [['absent', WAITING], ['null', { ...WAITING, uiSocket: null }], ['junk', { ...WAITING, uiSocket: 42 as unknown as string }]] as const) {
+  test(`a snapshot whose uiSocket is ${name}: the thread tab reads through mcp.call, and http.fetch is never touched`, async ($, on) => {
+    const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [], has_older: false, older_count: 0 }
+    let fetches = 0
+    on('http.fetch', () => {
+      fetches++
+      throw new Error('must not be called')
+    })
+    const { calls, clock } = engine(on, { polled, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+    await start($, clock)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: `open:${T_OLD}` })
+    await clock.settle()
+    expect(calls.filter(c => c.tool === 'ui_thread').map(c => c.args)).toEqual([{ thread_id: T_OLD }])
+    expect(fetches).toBe(0)
+    await ui.unmount()
+  })
+}
 
 test('not connected, the pane shows only the Session tab and says why; a thread tab opened before comes back on connecting', async ($, on) => {
   const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [], has_older: false, older_count: 0 }
@@ -1135,9 +1214,10 @@ const THREAD_A = {
   channel_id: 'c',
   channel: 'ops',
   messages: [
-    { sender: 'Kevin', senderId: 'kevin', content: 'Can I take the NAS at **14:00**?', type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
+    // The server's doc, as ui_thread hands it over (RFC-034 D6): the mod draws it and parses nothing.
+    { sender: 'Kevin', senderId: 'kevin', content: 'Can I take the NAS at **14:00**?', doc: [['p', 0, 'Can I take the NAS at ', ['strong', 0, '14:00'], '?']], type: 'question', ts: '2026-10-30T08:00:00.000Z', seq: 1, own: false, new: false, root: true },
     { sender: 'Brian', content: LONG, type: 'text', ts: '2026-10-30T08:05:00.000Z', seq: 30, own: false, new: false },
-    { sender: 'Bellman', senderId: 'bellman', content: 'On it: see https://example.com/x', type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
+    { sender: 'Bellman', senderId: 'bellman', content: 'On it: see https://example.com/x', doc: [['p', 0, 'On it: see ', ['a', { href: 'https://example.com/x' }, 'https://example.com/x']]], type: 'text', ts: '2026-10-30T08:06:00.000Z', seq: 31, own: true, new: false },
     { sender: 'Kevin', content: 'thanks', type: 'text', ts: '2026-10-30T08:07:00.000Z', seq: 32, own: false, new: true },
     { sender: 'Kevin', content: 'one more', type: 'text', ts: '2026-10-30T08:08:00.000Z', seq: 33, own: false, new: true },
   ],
@@ -1179,6 +1259,10 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   // Post text is our own lines: bold run, link run, each line one row.
   expect(await ui.find({ type: 'Text', text: '14:00' })).toMatchObject({ props: { weight: 'bold' } })
   expect(await ui.find({ type: 'Text', text: 'https://example.com/x' })).toMatchObject({ props: { color: PALETTE.blue, underline: true } })
+  // A terminal that draws links needs no Option-click hint.
+  expect(await ui.find({ type: 'Text', text: /click a URL/ })).toBeUndefined()
+  // A link is the kit's Link on the terminal too (an OSC 8 link), not coloured text alone.
+  expect((await ui.findAll({ type: 'Link' })).map(l => (l.props as { href?: string }).href)).toContain('https://example.com/x')
   // The long post capped at 6 lines, a "more" row after them.
   expect((await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith(`ln:${T_OLD}:s30:`))).toHaveLength(6)
   expect(await ui.find({ key: `more:${T_OLD}:s30` })).toMatchObject({ props: { label: '▸ 4 more lines', dimColor: true } })
@@ -1265,7 +1349,12 @@ test('layout A: "more" opens a capped post in place; inline (or on a desktop) th
   expect(await inline.find({ key: `ln:${T_OLD}:root:0` })).toBeDefined()
   await inline.unmount()
   const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
-  expect(await desk.find({ key: `md:${T_OLD}:root` })).toMatchObject({ type: 'Markdown', props: { text: 'Can I take the NAS at **14:00**?' } })
+  // A desktop draws the same lines from the doc, never the kit's Markdown over `content` (RFC-034 D6); links are the kit's Link.
+  expect(await desk.find({ key: `md:${T_OLD}:root` })).toBeUndefined()
+  expect(await desk.find({ type: 'Markdown', text: /14:00/ })).toBeUndefined()
+  expect(await desk.find({ key: `ln:${T_OLD}:root:0` })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: '14:00' })).toMatchObject({ props: { weight: 'bold' } })
+  expect((await desk.findAll({ type: 'Link' })).map(l => (l.props as { href?: string }).href)).toContain('https://example.com/x')
   await desk.unmount()
 })
 
@@ -1307,6 +1396,25 @@ for (const engineVersion of ['2.1.296', null] as const) {
     }
   })
 }
+
+// Terminal.app (and any terminal not known to draw OSC 8): the kit's Link would print its URL after the
+// text, uncounted, and every row overflowed (seen 2026-11-03). There a link is plain text with its URL
+// after it, counted in the width, for the terminal's own URL detection.
+test('a terminal without OSC 8 links: no Link; the URL is part of the line, counted in the width', async ($, on) => {
+  const named = { ...THREAD_A, messages: THREAD_A.messages.map((m, i) => (i === 2 ? { ...m, doc: [['p', 0, 'On it: see ', ['a', { href: 'https://example.com/x' }, 'the PR']]] } : m)) }
+  const { clock } = engine(on, { env: { TERM_PROGRAM: 'Apple_Terminal' }, polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(named)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } } })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  // Terminal.app opens a URL on Option+click (Claude Code takes the plain and Cmd clicks): the footer says so.
+  expect(await ui.find({ type: 'Text', text: '⌥-click a URL to open it ·' })).toBeDefined()
+  const row = (await ui.findAll({ type: 'Box' })).find(b => String(b.key) === `ln:${T_OLD}:s31:0`)
+  expect(row).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'https://example.com/x' })).toMatchObject({ props: { dimColor: true } })
+  await ui.unmount()
+})
 
 test('on Claude Code 2.1.299, the minimum, the band and the pane draw as usual', async ($, on) => {
   const { clock } = engine(on, { engineVersion: '2.1.299' })

@@ -1,151 +1,274 @@
 /**
- * The Thread tab's post text (mod/text.ts): Markdown turned into styled lines at the pane's width, so
- * the pane knows every post's height to the row (decision 2026-10-31, option c). Each line is drawn
- * truncated, so the guarantee these pin is: no line is wider than the width asked for.
+ * The Thread tab's post text (mod/text.ts): the server's doc turned into styled lines at the pane's
+ * width, so the pane knows every post's height to the row (decision 2026-10-31, option c). Each line is
+ * drawn truncated, so the guarantee these pin is: no line is wider than the width asked for.
+ *
+ * RFC-034: G6 (every corpus doc draws its text, its `@` nodes and only those as mentions), G11 (an
+ * unknown tag draws its children; no doc → `content` as typed, never parsed), and a linear walk.
  */
 import { describe, test, expect } from "bun:test";
-import { cellWidth, renderPost, type Line } from "../mod/text";
+import { DOC_CORPUS } from "../vendor/einweave-agent-sdk/core/index.js";
+import { cellWidth, docLines, plainLines, type Line } from "../mod/text";
+import { prepareDoc } from "../doc-view";
 
 /** A line as plain text, styles dropped. */
 const plain = (l: Line) => l.map(r => r.text).join("");
 const texts = (ls: Line[]) => ls.map(plain);
 const widest = (ls: Line[]) => Math.max(0, ...ls.map(l => cellWidth(plain(l))));
+const p = (...k: unknown[]) => ["p", 0, ...k];
+/** The post's own text, the mod's bullets/bars/gutters as a space: what `docText` says the doc reads as. */
+const own = (ls: Line[]) =>
+  ls.map(l => l.map(r => (r.deco ? " " : r.text)).join("").replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
 
 describe("cellWidth", () => {
   test("ASCII is one cell, CJK and emoji two, combining marks none", () => {
     expect(cellWidth("abc")).toBe(3);
     expect(cellWidth("日本")).toBe(4);
     expect(cellWidth("ok 🔴")).toBe(5);
-    expect(cellWidth("é")).toBe(1);
+    expect(cellWidth("é")).toBe(1);
+  });
+});
+
+describe("G6: the corpus", () => {
+  test("every case draws its text, and every @ node (only those) as a mention, in order", () => {
+    expect(DOC_CORPUS.length).toBeGreaterThan(10);
+    for (const c of DOC_CORPUS) {
+      const ls = docLines(c.doc, 200);
+      expect({ name: c.name, text: own(ls) }).toEqual({ name: c.name, text: c.text });
+      const ats: string[] = [];
+      const find = (ns: readonly unknown[]) => ns.forEach(n => Array.isArray(n) && (n[0] === "@" ? ats.push(`@${n[1].h}`) : find(n.slice(2))));
+      find(c.doc);
+      expect({ name: c.name, mentions: ls.flat().filter(r => r.mention).map(r => r.text) }).toEqual({ name: c.name, mentions: ats });
+    }
+  });
+
+  test("the mentions case: code, link and quote text are not mentions", () => {
+    const c = DOC_CORPUS.find(x => x.name === "mentions")!;
+    const runs = docLines(c.doc, 200).flat();
+    expect(runs.filter(r => r.mention).length).toBe(1);
+    expect(runs.find(r => r.code)!.text).toBe("@aio");
+    expect(runs.find(r => r.href)!.text).toBe("@aio");
+  });
+});
+
+describe("G11: forward compatibility and no doc", () => {
+  test("a tag this mod does not know draws its children", () => {
+    expect(texts(docLines([p("before ", ["mark", 0, "kept"], " after")], 80))).toEqual(["before kept after"]);
+    expect(texts(docLines([["aside", 0, p("inside")]], 80))).toEqual(["inside"]);
+  });
+
+  test("garbage nodes are skipped, never thrown on", () => {
+    const junk = [null, 7, {}, [], [3, 0, "x"], p("ok", null, ["strong"], ["a", { href: 5 }, "t"])];
+    expect(texts(docLines(junk, 40))).toEqual(["okt"]);
+  });
+
+  test("plainLines draws content as typed: no Markdown parsed", () => {
+    const ls = plainLines("**x** [a](https://b.test) `c` @aio\n# not a heading", 80);
+    expect(texts(ls)).toEqual(["**x** [a](https://b.test) `c` @aio", "# not a heading"]);
+    expect(ls.flat().some(r => r.bold || r.href || r.code || r.mention)).toBe(false);
+  });
+
+  test("plainLines: a newline breaks, blank lines collapse to one, edges trimmed", () => {
+    expect(texts(plainLines("\n\none\ntwo\n\n\n\nthree\n\n", 40))).toEqual(["one", "two", "", "three"]);
   });
 });
 
 describe("paragraphs", () => {
   test("word-wraps at the width, never wider", () => {
-    const ls = renderPost("the quick brown fox jumps over the lazy dog", 12);
+    const ls = docLines([p("the quick brown fox jumps over the lazy dog")], 12);
     expect(texts(ls)).toEqual(["the quick", "brown fox", "jumps over", "the lazy dog"]);
     expect(widest(ls)).toBeLessThanOrEqual(12);
   });
 
   test("a word longer than the width is broken, not overflowed", () => {
-    const ls = renderPost("https://github.com/plexodus/einweave-claude-code/pull/55", 20);
+    const url = "https://github.com/plexodus/einweave-claude-code/pull/55";
+    const ls = docLines([p(["a", { href: url }, url])], 20);
     expect(widest(ls)).toBeLessThanOrEqual(20);
-    expect(texts(ls).join("")).toBe("https://github.com/plexodus/einweave-claude-code/pull/55");
+    expect(texts(ls).join("")).toBe(url);
+    expect(ls.flat().every(r => r.href === url)).toBe(true);
   });
 
-  test("a single newline is a line break; blank lines collapse to one; edges trimmed", () => {
-    expect(texts(renderPost("\n\none\ntwo\n\n\n\nthree\n\n", 40))).toEqual(["one", "two", "", "three"]);
+  test("br and a newline in the text break the line; paragraphs get one blank row between", () => {
+    expect(texts(docLines([p("one", ["br", 0], "two\nthree"), p("four")], 40))).toEqual(["one", "two", "three", "", "four"]);
   });
 
   test("wide characters wrap by cells", () => {
-    const ls = renderPost("日本語のテキスト", 6);
+    const ls = docLines([p("日本語のテキスト")], 6);
     expect(widest(ls)).toBeLessThanOrEqual(6);
     expect(texts(ls).join("")).toBe("日本語のテキスト");
   });
 });
 
 describe("inline styles", () => {
-  test("bold, italic and code lose their markers and keep their style", () => {
-    const [l] = renderPost("a **b** *c* `d` __e__ _f_", 80);
+  test("strong, em, s, code and links keep their style", () => {
+    const [l] = docLines([p("a ", ["strong", 0, "b"], " ", ["em", 0, "c"], " ", ["code", 0, "d"], " ", ["s", 0, "e"], " ", ["a", { href: "https://x.test" }, "f"])], 80);
     expect(plain(l!)).toBe("a b c d e f");
     const by = (t: string) => l!.find(r => r.text === t)!;
     expect(by("b").bold).toBe(true);
     expect(by("c").italic).toBe(true);
     expect(by("d").code).toBe(true);
-    expect(by("e").bold).toBe(true);
-    expect(by("f").italic).toBe(true);
-  });
-
-  test("markup inside code is literal", () => {
-    const [l] = renderPost("run `**not bold**` now", 80);
-    expect(plain(l!)).toBe("run **not bold** now");
-    expect(l!.find(r => r.code)!.text).toBe("**not bold**");
-  });
-
-  test("an unclosed marker stays as typed; snake_case is not italic", () => {
-    expect(plain(renderPost("2 ** 3 and a *b", 80)[0]!)).toBe("2 ** 3 and a *b");
-    const [l] = renderPost("set snake_case_name", 80);
-    expect(plain(l!)).toBe("set snake_case_name");
-    expect(l!.some(r => r.italic)).toBe(false);
-    // Closes cleanly before the space, so only the opening rule keeps it literal.
-    const [m] = renderPost("open file_name_ here", 80);
-    expect(plain(m!)).toBe("open file_name_ here");
-    expect(m!.some(r => r.italic)).toBe(false);
-  });
-
-  test("a backslash escapes markup", () => {
-    expect(plain(renderPost("\\*literal\\*", 80)[0]!)).toBe("*literal*");
-  });
-
-  test("[text](url) is a link on its text; a bare URL links itself", () => {
-    const [l] = renderPost("see [PR 55](https://x.test/55) or https://y.test/a.", 80);
-    expect(plain(l!)).toBe("see PR 55 or https://y.test/a.");
-    expect(l!.find(r => r.text === "PR 55")!.href).toBe("https://x.test/55");
-    expect(l!.find(r => r.text === "https://y.test/a")!.href).toBe("https://y.test/a");
+    expect(by("e").strike).toBe(true);
+    expect(by("f").href).toBe("https://x.test");
   });
 
   test("a style survives a wrap: both halves keep it", () => {
-    const ls = renderPost("**one two three four**", 9);
+    const ls = docLines([p(["strong", 0, "one two three four"])], 9);
     expect(texts(ls)).toEqual(["one two", "three", "four"]);
     expect(ls.every(l => l.every(r => r.bold))).toBe(true);
+  });
+
+  test("a terminal without OSC 8 links: no link runs; a named link's URL on its own dim row, whole; a bare URL kept whole", () => {
+    const doc = [p("see ", ["a", { href: "https://x.test/a" }, "a safe link"], " or ", ["a", { href: "https://y.test/long/path" }, "https://y.test/long/path"])];
+    const ls = docLines(doc, 80, { links: false });
+    expect(texts(ls)).toEqual(["see a safe link or https://y.test/long/path", "https://x.test/a"]);
+    expect(ls.flat().some(r => r.href)).toBe(false);
+    expect(ls[1]!.every(r => r.dim && r.url)).toBe(true);
+    // The named link's text still looks like a link.
+    expect(ls[0]!.find(r => r.text.includes("a safe link"))).toMatchObject({ link: true });
+    // Never split over rows (it would open in no terminal): narrower than the URL, it is cut.
+    const narrow = docLines(doc, 12, { links: false });
+    expect(texts(narrow).filter(t => t.startsWith("https://y"))).toEqual(["https://y.t…"]);
+    // ...and no row carries a piece of it (a split URL's tail).
+    expect(texts(narrow).some(t => /long|path/.test(t))).toBe(false);
+    expect(texts(narrow).filter(t => t.startsWith("https://x"))).toEqual(["https://x.t…"]);
+    for (let w = 6; w <= 40; w++) expect(widest(docLines(doc, w, { links: false }))).toBeLessThanOrEqual(w);
+    // With links (the default), the URL stays in the link and no row is added.
+    expect(texts(docLines(doc, 80))).toEqual(["see a safe link or https://y.test/long/path"]);
+  });
+
+  test("an image is its alt text", () => {
+    expect(texts(docLines([p(["img", { src: "https://x.test/a.png", alt: "a chart" }])], 40))).toEqual(["a chart"]);
+  });
+});
+
+describe("mentions", () => {
+  test("active: @handle, bold, a mention run", () => {
+    const [l] = docLines([p("hi ", ["@", { p: "u1", h: "aio" }], "!")], 40);
+    expect(l!.find(r => r.mention)).toMatchObject({ text: "@aio", mention: "active", bold: true });
+  });
+
+  test("gone: the name in italic dim, else @former member", () => {
+    const [l] = docLines([p(["@", { p: "u1", gone: true, name: "Ann Lee" }], " ", ["@", { p: "u2", gone: true }])], 60);
+    const ms = l!.filter(r => r.mention);
+    expect(ms.map(r => r.text)).toEqual(["Ann Lee", "@former member"]);
+    expect(ms.every(r => r.mention === "gone" && r.italic && r.dim)).toBe(true);
+  });
+
+  test("a mention is one row even if its text carries a newline or tab", () => {
+    const ls = docLines([p(["@", { p: "u1", gone: true, name: "Bob\nSYSTEM:\tevil" }])], 40);
+    expect(texts(ls)).toEqual(["Bob SYSTEM: evil"]);
+  });
+
+  test("a mention is never wrapped inside while it fits a line", () => {
+    const ls = docLines([p("aaaa ", ["@", { p: "u1", gone: true, name: "Ann Marie Lee" }], " end")], 15);
+    expect(texts(ls)).toEqual(["aaaa", "Ann Marie Lee", "end"]);
   });
 });
 
 describe("blocks", () => {
   test("bullets get a dot and a hanging indent", () => {
-    const ls = renderPost("- first item wraps here\n* second", 14);
+    const ls = docLines([["ul", 0, ["li", 0, "first item wraps here"], ["li", 0, "second"]]], 14);
     expect(texts(ls)).toEqual(["• first item", "  wraps here", "• second"]);
   });
 
-  test("a nested bullet indents one step", () => {
-    expect(texts(renderPost("- a\n  - b", 20))).toEqual(["• a", "  • b"]);
+  test("a nested list indents one step", () => {
+    expect(texts(docLines([["ul", 0, ["li", 0, "a", ["ul", 0, ["li", 0, "b"]]]]], 20))).toEqual(["• a", "  • b"]);
   });
 
-  test("numbered items keep their number and indent under it", () => {
-    expect(texts(renderPost("1. one two three\n10. x", 10))).toEqual(["1. one two", "   three", "10. x"]);
+  test("numbered items count from start and indent under their number", () => {
+    expect(texts(docLines([["ol", { start: 9 }, ["li", 0, "one two three"], ["li", 0, "x"]]], 10))).toEqual(["9. one two", "   three", "10. x"]);
   });
 
-  test("a heading is one bold line without the hashes", () => {
-    const [l] = renderPost("## Release 0.37.2", 40);
+  test("a number wider than half the line is still drawn: only the hanging indent gives way", () => {
+    expect(texts(docLines([["ol", { start: 100 }, ["li", 0, "item"]]], 9))).toEqual(["100. item"]);
+    expect(texts(docLines([["ol", { start: 123456789012 }, ["li", 0, "item"]]], 20))).toEqual(["123456789012. item"]);
+  });
+
+  test("a task list draws its boxes; a loose item's paragraph stays on the mark's row", () => {
+    const doc = [["ul", 0, ["li", { checked: true }, p("done")], ["li", { checked: false }, p("todo")]]];
+    expect(texts(docLines(doc, 20))).toEqual(["• ☑ done", "• ☐ todo"]);
+  });
+
+  test("a heading is bold", () => {
+    const [l] = docLines([["h2", 0, "Release 0.37.2"]], 40);
     expect(plain(l!)).toBe("Release 0.37.2");
     expect(l!.every(r => r.bold)).toBe(true);
   });
 
-  test("a quote is prefixed and dim, on every wrapped line", () => {
-    const ls = renderPost("> quoted words that wrap", 12);
-    expect(texts(ls)).toEqual(["▎ quoted", "▎ words that", "▎ wrap"]);
+  test("a quote is barred and dim on every row; its paragraphs are split by a bar", () => {
+    const ls = docLines([["blockquote", 0, p("quoted words that wrap"), p("two")]], 12);
+    expect(texts(ls)).toEqual(["▎ quoted", "▎ words that", "▎ wrap", "▎", "▎ two"]);
     expect(ls.every(l => l.every(r => r.dim))).toBe(true);
   });
 
-  test("a code block: gutter, no inline parsing, hard-wrapped with a continuation mark", () => {
-    const ls = renderPost("```ts\nconst a = **b** // long line here\n```", 20);
+  test("a nested quote adds a bar", () => {
+    expect(texts(docLines([["blockquote", 0, ["blockquote", 0, p("deep")]]], 20))).toEqual(["▎ ▎ deep"]);
+  });
+
+  test("a code block: gutter, text as stored, hard-wrapped with a continuation mark", () => {
+    const ls = docLines([["pre", { lang: "ts" }, "const a = **b** // long line here\n"]], 20);
     expect(texts(ls)).toEqual(["│ const a = **b** /↪", "│ / long line here"]);
     expect(widest(ls)).toBeLessThanOrEqual(20);
     expect(ls.every(l => l.every(r => r.code))).toBe(true);
   });
 
-  test("an unclosed fence runs to the end", () => {
-    expect(texts(renderPost("```\nx\ny", 20))).toEqual(["│ x", "│ y"]);
+  test("a table: one row per line, cells split by a bar, the header bold, cut to the width", () => {
+    const doc = [["table", 0, ["thead", 0, ["tr", 0, ["th", 0, "a"], ["th", 0, "b"]]], ["tbody", 0, ["tr", 0, ["td", 0, "1"], ["td", 0, "a long cell"]]]]];
+    const ls = docLines(doc, 10);
+    expect(texts(ls)).toEqual(["a │ b", "1 │ a lon…"]);
+    expect(ls[0]!.filter(r => !r.deco).every(r => r.bold)).toBe(true);
   });
 
-  test("a table falls back to its raw rows, cut to the width", () => {
-    const ls = renderPost("| a | b |\n|---|---|\n| 1 | 2 |", 40);
-    expect(texts(ls)).toEqual(["| a | b |", "|---|---|", "| 1 | 2 |"]);
+  test("tabs never reach a row (a terminal draws one as up to 8 cells, we count 1): code expands them, a table cell collapses them", () => {
+    const ls = docLines([["pre", 0, "\t\tx := 1\n"], ["table", 0, ["tbody", 0, ["tr", 0, ["td", 0, "a\tb"]]]]], 40);
+    expect(texts(ls)).toEqual(["│         x := 1", "", "a b"]);
+  });
+
+  test("a rule fills the width", () => {
+    expect(texts(docLines([p("x"), ["hr", 0]], 6))).toEqual(["x", "", "──────"]);
   });
 });
 
 describe("the width guarantee", () => {
-  test("holds for every width on a mixed post", () => {
-    const post = [
-      "Plugin **0.37.2** released. Run `/plugin` → Installed → einweave → Update now.",
-      "- Fix (#55): sibling windows no longer share a session key",
-      "- details: https://github.com/plexodus/einweave-claude-code/pull/55",
-      "> quoted 日本語 text 🔴 with emoji",
-      "```",
-      "claude --dangerously-load-development-channels plugin:einweave@einweave-marketplace",
-      "```",
-      "1. numbered [link text](https://x.test) and _italic words_",
-    ].join("\n");
-    for (let w = 8; w <= 60; w++) expect(widest(renderPost(post, w))).toBeLessThanOrEqual(w);
+  test("holds for every width, over the whole corpus and deep nesting", () => {
+    let deep: unknown = p("deep words ", ["@", { p: "u", h: "someone" }]);
+    for (let i = 0; i < 32; i++) deep = ["blockquote", 0, ["ul", 0, ["li", 0, deep]]];
+    const docs = [...DOC_CORPUS.map(c => c.doc as readonly unknown[]), [deep]];
+    for (let w = 6; w <= 60; w++) for (const d of docs) expect(widest(docLines(d, w))).toBeLessThanOrEqual(w);
+  });
+});
+
+describe("linear", () => {
+  const cpu = (f: () => void) => {
+    const t = process.cpuUsage();
+    f();
+    const d = process.cpuUsage(t);
+    return (d.user + d.system) / 1000;
+  };
+  test("64 KB pathological docs draw in well under 250 ms each", () => {
+    let nest: unknown = p("x");
+    for (let i = 0; i < 32; i++) nest = ["blockquote", 0, nest];
+    const docs: (readonly unknown[])[] = [
+      [p("x".repeat(65536))],
+      [p("[a](".repeat(16384))],
+      [["pre", 0, "y".repeat(65536)]],
+      [["ul", 0, ...Array.from({ length: 10000 }, () => ["li", 0, "item"])]],
+      [p(...Array.from({ length: 8000 }, () => ["strong", 0, "b "]))],
+      [nest],
+    ];
+    for (const d of docs) expect(cpu(() => docLines(d, 60))).toBeLessThan(250);
+  });
+
+  test("the server's largest doc (512 KB) goes through doc-view and the mod in well under 250 ms each", () => {
+    const docs: unknown[][] = [
+      [p(..."w ".repeat(131072).split(" "))],
+      [p(["a", { href: "javascript:x" }, ..."w".repeat(262144).split("")])],
+      [["pre", 0, "y\t".repeat(131072)]],
+    ];
+    for (const doc of docs) {
+      let ready: unknown[] | null = null;
+      expect(cpu(() => (ready = prepareDoc({ content: "c", docV: 1, doc })))).toBeLessThan(250);
+      expect(cpu(() => docLines(ready!, 60))).toBeLessThan(250);
+    }
   });
 });

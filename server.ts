@@ -44,6 +44,7 @@ const PROCESS_STARTED_AT = new Date().toISOString();
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync, mkdirSync, chmodSync, existsSync } from "fs";
 import { homedir, hostname, tmpdir } from "os";
@@ -69,13 +70,15 @@ import { forYouBox } from "./delivery/for-you";
 import { buildUiState, mergeRefresh, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiGateway, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
-import { ctlSocketPath } from "./delivery/ctl-path";
+import { ctlSocketPath, uiSocketPath } from "./delivery/ctl-path";
+import { openUiServer, UiHttpError, type UiRoutes } from "./ui/ui-server";
 import { legacyEnvProblem } from "./legacy-env";
 import { ReturnedAcks } from "./delivery/returned-acks";
 import type { NoticeEntry } from "./delivery/notice";
 import { deliveryState } from "./delivery/state";
 import { localIso } from "./local-time";
 import { sanitizeChannelParams, stripControlChars } from "./control-chars";
+import { prepareDoc } from "./doc-view";
 import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type FeedTap } from "./feed-tap";
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
@@ -89,6 +92,10 @@ function cleanOrNull(v: unknown): string | null {
 
 /** ui_thread shows this many replies, the NEWEST: the pane is a glance, the web app the full read. */
 const UI_THREAD_LIMIT = 100;
+// Claude Code refuses a tool result over MAX_MCP_OUTPUT_TOKENS (25,000 by default, by its own estimate,
+// and a server flag can lower it): a thread page of 88,741 chars came back as an error (2026-11-03). The
+// pane's page keeps under this many chars of JSON, newest replies first; what does not fit is older.
+const UI_THREAD_BUDGET = 40_000;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -1341,6 +1348,30 @@ async function holdsLiveLock(): Promise<boolean> {
   }
 }
 
+/**
+ * The tools a PERSON starts from the pane (its buttons and `/einweave` commands): the only ones the UI
+ * socket runs. A person's action, not a model's call: it answers whole, past the model's tool-output limit
+ * and its tool hooks. Any other name is refused (403): the socket is not a way to run every tool.
+ */
+const PERSON_TOOLS = new Set(["connect", "take", "release", "handover", "scope", "set_session_label", "status", "disconnect", "logout", "list_threads"]);
+
+/** The UI socket's routes: the same reads as the `ui_*` tools, whole (no budget), gated as they are; and a person's actions. */
+const uiRoutes: UiRoutes = {
+  state: () => uiState(),
+  tool: async (name, args) => {
+    if (!PERSON_TOOLS.has(name)) throw new UiHttpError(403, `${name} is not run from the pane`);
+    return runTool(name, args);
+  },
+  channels: async () => (uiGate(), await uiChannels()),
+  channel: async (id) => (uiGate(), await uiChannel(id)),
+  thread: async (id, page) => (uiGate(), await uiThread(id, { before_seq: page.beforeSeq, limit: page.limit })),
+};
+/** requireBridge() as an HTTP refusal: its text says why (not configured, not connected). */
+function uiGate(): void {
+  const gate = requireBridge();
+  if (gate) throw new UiHttpError(409, gate.content[0]!.text);
+}
+
 function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<PendingEntry> {
   return {
     path: ctlSocketPath(STATE_DIR, claudePid),
@@ -2331,7 +2362,7 @@ async function requireHolder(): Promise<{ content: { type: "text"; text: string 
  */
 const READ_DELIVERIES_BUDGET_BYTES = 40_000;
 
-async function readDeliveries(args: Record<string, unknown>) {
+async function readDeliveries(args: Record<string, unknown>): Promise<CallToolResult> {
   const gate = requireBridge();
   if (gate) return gate;
   const notHolder = await requireHolder();
@@ -3068,6 +3099,121 @@ const workDeps: WorkDeps = {
   },
 };
 
+/**
+ * The pane's four reads as plain view objects, shared by the `ui_*` MCP tools (the fallback) and the
+ * UI socket (ui/ui-server.ts, which serves them whole). The MCP wrapper gates on requireBridge() and
+ * wraps the result as a tool output; the socket does the same gate as an HTTP 409.
+ */
+async function uiState() {
+  if (authenticated && (uiWaiting === null || uiGateway === null)) await refreshWaiting();
+  refreshUi();
+  const cur = uiWatch.current()!;
+  return { rev: cur.rev, ...cur.state };
+}
+
+/**
+ * One thread page. `budget` (the MCP path only) keeps the page under Claude Code's tool-output limit: the
+ * newest replies that fit, the rest counted as older, a post too big alone cut. Without it (the socket)
+ * the page comes whole -- every reply, each with its doc -- and `content` is still only set without a doc.
+ */
+async function uiThread(threadIdArg: string, args: { before_seq?: unknown; limit?: unknown }, o: { budget?: number } = {}) {
+  const threadId = threadIdArg.trim();
+  if (!threadId) throw new Error("thread_id is required.");
+  // A person looking is not the model reading: markRead false, and NO confirmReturned -- an ack here
+  // would tell the server the model has these entries and end their missed-tracking (silent loss).
+  // The newest page (backward from the top), not the first: the open question is at the end of a long thread.
+  // `before_seq` pages back from there: the pane's Load older.
+  const beforeSeq = Number.isSafeInteger(args.before_seq) && (args.before_seq as number) >= 0 ? (args.before_seq as number) : Number.MAX_SAFE_INTEGER;
+  const limit = Number.isSafeInteger(args.limit) ? Math.min(Math.max(args.limit as number, 1), UI_THREAD_LIMIT) : UI_THREAD_LIMIT;
+  const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq, limit, markRead: false, include: "doc" }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
+  if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
+  // New = above this agent's read position: it stays new until it reaches Claude. Own = this agent sent it.
+  const readSeq = typeof data.thread?.readSeq === "number" ? data.thread.readSeq : null;
+  // The pane draws all of this: a control character in any of it refuses the whole pane (and styles the terminal).
+  const shape = (m: any, root: boolean) => ({
+    sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId),
+    // The doc ready to draw (RFC-034 D6, doc-view.ts); null = draw `content` as plain text. Never both:
+    // the MCP page has a size budget and the mod reads `content` only without a doc.
+    ...((doc) => (doc ? { content: "", doc } : { content: stripControlChars(String(m.content ?? "")), doc: null }))(prepareDoc(m)),
+    type: m.type ?? "text",
+    ts: m.createdAt,
+    seq: m.seq == null ? null : Number(m.seq),
+    // The pane colours each sender by this: an id, so a rename keeps the colour (as the web does).
+    senderId: cleanOrNull(m.agentId ?? m.userId),
+    own: !!agentId && m.agentId === agentId,
+    new: !(agentId && m.agentId === agentId) && readSeq !== null && m.seq != null && Number(m.seq) > readSeq,
+    ...(root ? { root: true } : {}),
+  });
+  const channelId = data.thread?.channelId ?? data.parent?.channelId ?? null;
+  // The tab's header names the channel: the map is cached, fetched only for a channel it lacks.
+  if (channelId && !channelNameOf(channelId)) await ensureChannelMap().catch(() => {});
+  // A post too big for the page on its own: its text, cut, plain, and where to read it whole.
+  const budget = o.budget;
+  const sized = (s: ReturnType<typeof shape>, m: any) => {
+    if (budget === undefined || JSON.stringify(s).length <= budget / 4) return s;
+    const text = [...stripControlChars(String(m.content ?? ""))].slice(0, budget / 8).join("");
+    return { ...s, doc: null, content: `${text}\n… too long for the pane: open it on the web.` };
+  };
+  const root = data.parent ? [sized(shape(data.parent, true), data.parent)] : [];
+  const replies: any[] = data.replies ?? [];
+  // The root always; then replies newest first while they fit the budget (all of them without one). Those left out count as older.
+  let used = JSON.stringify(root).length + 1000;
+  const kept: ReturnType<typeof shape>[] = [];
+  for (let i = replies.length - 1; i >= 0; i--) {
+    const s = sized(shape(replies[i], false), replies[i]);
+    const n = JSON.stringify(s).length + 1;
+    if (budget !== undefined && kept.length && used + n > budget) break;
+    kept.unshift(s);
+    used += n;
+  }
+  const dropped = replies.length - kept.length;
+  const view = {
+    thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
+    channel_id: channelId,
+    channel: (channelId && cleanOrNull(channelNameOf(channelId))) || null,
+    messages: [...root, ...kept],
+    // Replies older than those shown, and how many (null from a server that does not count them).
+    has_older: data.hasOlder === true || dropped > 0,
+    older_count: typeof data.olderCount === "number" ? data.olderCount + dropped : data.hasOlder === true ? null : dropped,
+  };
+  return view;
+}
+
+async function uiChannels() {
+  // A person looking: GET only, nothing marked. Membership comes from /api/me/channels (mine = in or
+  // following), names from the channel list. Counts the server did not send stay ABSENT, never 0.
+  const [list, mine] = await Promise.all([
+    sdkApi((api) => api.channels.list()),
+    sdkApi((api) => api.me.channels(), "This einweave server is too old for the Channels tab (no /api/me/channels): ask its admin to update it."),
+  ]);
+  const names = new Map(list.channels.map((c) => [c.id, c.name]));
+  const channels = mine.channels.map((r) => ({
+    id: r.channelId,
+    name: stripControlChars(names.get(r.channelId) ?? r.channelId),
+    role: r.role ?? null,
+    following: r.following === true,
+    ...(r.threads ? { threads: r.threads } : {}),
+  }));
+  return { agent: cleanOrNull(agentHandle || agentName || null), channels };
+}
+
+async function uiChannel(channelIdArg: string) {
+  const channelId = channelIdArg.trim();
+  if (!channelId) throw new Error("channel_id is required.");
+  const data = await sdkApi((api) => api.threads.list({ channel: channelId }), `Channel ${channelId} not found, or not visible to this agent.`);
+  const threads = data.threads.map((t) => ({
+    id: t.id,
+    title: stripControlChars(String(t.title ?? "")),
+    status: t.status ?? null,
+    kind: t.kind ?? null,
+    lastActivityAt: t.lastActivityAt ?? null,
+    ...(t.hold
+      ? { hold: { state: t.hold.state, holder: t.hold.holder ? { id: t.hold.holder.id, label: cleanOrNull(t.hold.holder.label), online: t.hold.holder.online, parked: t.hold.holder.parked } : null } }
+      : {}),
+  }));
+  return { channel_id: channelId, threads };
+}
+
 function uiSnapshot() {
   // The pane names the scope's channels; a name the map lacks is fetched (rate-limited) for the next rebuild.
   if (serverScope?.channelIds.some((id) => !channelNameOf(id))) void ensureChannelMap().catch(() => {});
@@ -3088,6 +3234,7 @@ function uiSnapshot() {
     gateway: uiGateway,
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
+    uiSocket: ctlMgr?.companionPath() ?? null,
   });
 }
 
@@ -3190,9 +3337,17 @@ function describeSendHold(hold: any, threadId: unknown): string {
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // The first tool call proves the host has finished its handshake: channel pushes may flow.
   openHostGate();
-  const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+  return runTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
+});
+
+/**
+ * One tool, by name: what an MCP call runs, and what the pane's socket runs for the actions a person
+ * starts (ui/ui-server.ts `POST /tool/:name`, PERSON_TOOLS). Same code, same answers; only the path in
+ * differs, so a person's action is not bound by the model's tool-output limit or its tool hooks.
+ */
+async function runTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   try {
-    switch (req.params.name) {
+    switch (name) {
       case "reply": {
         { const gate = requireBridge(); if (gate) return gate; }
         const channelId = args.channel_id as string;
@@ -4115,7 +4270,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "list_items":
       case "item_schema": {
         { const gate = requireBridge(); if (gate) return gate; }
-        return { content: [{ type: "text", text: await callWorkTool(req.params.name, args, workDeps) }] };
+        return { content: [{ type: "text", text: await callWorkTool(name, args, workDeps) }] };
       }
 
       case "set_session_label": {
@@ -4276,90 +4431,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
       case "ui_state": {
         // Not gated, like status: the mod draws "disconnected" from it too.
-        if (authenticated && (uiWaiting === null || uiGateway === null)) await refreshWaiting();
-        refreshUi();
-        const cur = uiWatch.current()!;
-        const structured = { rev: cur.rev, ...cur.state };
+        const structured = await uiState();
         return { content: [{ type: "text", text: JSON.stringify(structured) }], structuredContent: structured };
       }
 
       case "ui_thread": {
         { const gate = requireBridge(); if (gate) return gate; }
-        const threadId = typeof args.thread_id === "string" ? args.thread_id.trim() : "";
-        if (!threadId) throw new Error("thread_id is required.");
-        // A person looking is not the model reading: markRead false, and NO confirmReturned -- an ack here
-        // would tell the server the model has these entries and end their missed-tracking (silent loss).
-        // The newest page (backward from the top), not the first: the open question is at the end of a long thread.
-        // `before_seq` pages back from there: the pane's Load older.
-        const beforeSeq = Number.isSafeInteger(args.before_seq) && (args.before_seq as number) >= 0 ? (args.before_seq as number) : Number.MAX_SAFE_INTEGER;
-        const limit = Number.isSafeInteger(args.limit) ? Math.min(Math.max(args.limit as number, 1), UI_THREAD_LIMIT) : UI_THREAD_LIMIT;
-        const data = (await sdkApi((api) => api.threads.read(threadId, { beforeSeq, limit, markRead: false }), `Thread ${threadId} not found, or not visible to this agent.`)) as any;
-        if (!data?.thread && !data?.parent) throw new Error(`No thread with id ${threadId}.`);
-        // New = above this agent's read position: it stays new until it reaches Claude. Own = this agent sent it.
-        const readSeq = typeof data.thread?.readSeq === "number" ? data.thread.readSeq : null;
-        // The pane draws all of this: a control character in any of it refuses the whole pane (and styles the terminal).
-        const shape = (m: any, root: boolean) => ({
-          sender: cleanOrNull(m.senderName ?? m.agentName ?? m.agentId),
-          content: stripControlChars(String(m.content ?? "")),
-          type: m.type ?? "text",
-          ts: m.createdAt,
-          seq: m.seq == null ? null : Number(m.seq),
-          // The pane colours each sender by this: an id, so a rename keeps the colour (as the web does).
-          senderId: cleanOrNull(m.agentId ?? m.userId),
-          own: !!agentId && m.agentId === agentId,
-          new: !(agentId && m.agentId === agentId) && readSeq !== null && m.seq != null && Number(m.seq) > readSeq,
-          ...(root ? { root: true } : {}),
-        });
-        const channelId = data.thread?.channelId ?? data.parent?.channelId ?? null;
-        // The tab's header names the channel: the map is cached, fetched only for a channel it lacks.
-        if (channelId && !channelNameOf(channelId)) await ensureChannelMap().catch(() => {});
-        const view = {
-          thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
-          channel_id: channelId,
-          channel: (channelId && cleanOrNull(channelNameOf(channelId))) || null,
-          messages: [...(data.parent ? [shape(data.parent, true)] : []), ...(data.replies ?? []).map((m: any) => shape(m, false))],
-          // Replies older than those shown, and how many (null from a server that does not count them).
-          has_older: data.hasOlder === true,
-          older_count: typeof data.olderCount === "number" ? data.olderCount : null,
-        };
+        // The MCP result is a MODEL-facing tool output, which Claude Code cuts at its own limit: this path keeps the page under a budget.
+        const view = await uiThread(typeof args.thread_id === "string" ? args.thread_id : "", args, { budget: UI_THREAD_BUDGET });
         return { content: [{ type: "text", text: JSON.stringify(view) }] };
       }
 
       case "ui_channels": {
         { const gate = requireBridge(); if (gate) return gate; }
-        // A person looking: GET only, nothing marked. Membership comes from /api/me/channels (mine = in or
-        // following), names from the channel list. Counts the server did not send stay ABSENT, never 0.
-        const [list, mine] = await Promise.all([
-          sdkApi((api) => api.channels.list()),
-          sdkApi((api) => api.me.channels(), "This einweave server is too old for the Channels tab (no /api/me/channels): ask its admin to update it."),
-        ]);
-        const names = new Map(list.channels.map((c) => [c.id, c.name]));
-        const channels = mine.channels.map((r) => ({
-          id: r.channelId,
-          name: stripControlChars(names.get(r.channelId) ?? r.channelId),
-          role: r.role ?? null,
-          following: r.following === true,
-          ...(r.threads ? { threads: r.threads } : {}),
-        }));
-        return { content: [{ type: "text", text: JSON.stringify({ agent: cleanOrNull(agentHandle || agentName || null), channels }) }] };
+        return { content: [{ type: "text", text: JSON.stringify(await uiChannels()) }] };
       }
 
       case "ui_channel": {
         { const gate = requireBridge(); if (gate) return gate; }
-        const channelId = typeof args.channel_id === "string" ? args.channel_id.trim() : "";
-        if (!channelId) throw new Error("channel_id is required.");
-        const data = await sdkApi((api) => api.threads.list({ channel: channelId }), `Channel ${channelId} not found, or not visible to this agent.`);
-        const threads = data.threads.map((t) => ({
-          id: t.id,
-          title: stripControlChars(String(t.title ?? "")),
-          status: t.status ?? null,
-          kind: t.kind ?? null,
-          lastActivityAt: t.lastActivityAt ?? null,
-          ...(t.hold
-            ? { hold: { state: t.hold.state, holder: t.hold.holder ? { id: t.hold.holder.id, label: cleanOrNull(t.hold.holder.label), online: t.hold.holder.online, parked: t.hold.holder.parked } : null } }
-            : {}),
-        }));
-        return { content: [{ type: "text", text: JSON.stringify({ channel_id: channelId, threads }) }] };
+        return { content: [{ type: "text", text: JSON.stringify(await uiChannel(typeof args.channel_id === "string" ? args.channel_id : "")) }] };
       }
 
       case "status": {
@@ -4400,7 +4490,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       default:
         return {
           content: [
-            { type: "text", text: `unknown tool: ${req.params.name}` },
+            { type: "text", text: `unknown tool: ${name}` },
           ],
           isError: true,
         };
@@ -4408,11 +4498,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
-      content: [{ type: "text", text: `${req.params.name} failed: ${msg}` }],
+      content: [{ type: "text", text: `${name} failed: ${msg}` }],
       isError: true,
     };
   }
-});
+}
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
@@ -4546,7 +4636,15 @@ async function startCtl(claudePid: number): Promise<void> {
   // and the 0.30.0 fallback directory, once nothing live is in it.
   sweepCtlDirs([join(STATE_DIR, "ctl"), dirname(ctlSocketPath(STATE_DIR, claudePid))], pidAlive);
   removeLegacyCtlDir(tmpdir(), pidAlive);
-  const mgr = new CtlManager<PendingEntry>({ options: (takeover) => ctlOptions(claudePid, takeover), retryDelaysMs: CTL_RETRY_DELAYS_MS, holdsLock: holdsLiveLock, ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}) });
+  const mgr = new CtlManager<PendingEntry>({
+    options: (takeover) => ctlOptions(claudePid, takeover),
+    retryDelaysMs: CTL_RETRY_DELAYS_MS,
+    holdsLock: holdsLiveLock,
+    // The pane's data socket follows the control socket (ctl-manager.ts); the snapshot carries its path.
+    companion: () => openUiServer({ path: uiSocketPath(STATE_DIR, claudePid), routes: uiRoutes, log: (line) => process.stderr.write(line + "\n") }).server,
+    onCompanion: refreshUi,
+    ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}),
+  });
   ctlMgr = mgr;
   await mgr.ensure();
   if (shuttingDown) mgr.close();

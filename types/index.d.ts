@@ -32,6 +32,8 @@ export interface UiSnapshot {
   gateway?: { online: boolean; label: string | null } | null
   version: string
   staleSince: string | null
+  /** The pane's data socket (HTTP over a Unix socket); null or absent: read over MCP. */
+  uiSocket?: string | null
 }
 
 /** What the mod draws from: the last snapshot and how it arrived. */
@@ -64,6 +66,11 @@ export interface PaneTabs {
 export interface ThreadMessage {
   sender: string | null
   content: string
+  /**
+   * The server's doc for it, ready to draw (RFC-034 D6): decided, URL-checked, cleaned and its mentions
+   * resolved by the plugin (doc-view.ts). Absent or null: draw `content` as plain text, never parsed.
+   */
+  doc?: readonly unknown[] | null
   type: string
   ts: string | null
   /** Its place in the channel, for Load older's cursor; absent from an older plugin. */

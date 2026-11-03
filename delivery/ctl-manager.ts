@@ -17,6 +17,11 @@
  * - the lock holder RECLAIMS: when it finds the path no longer its own (a non-holder renamed
  *   over it, or the file vanished) it re-opens with takeover, and it looks on its own — an
  *   unref'd interval while it holds the lock, not only when `status` is asked.
+ *
+ * A COMPANION (the pane's data socket, ui/ui-server.ts) rides on the same decision: it is opened only
+ * once this process serves the control socket, so it has the same takeover semantics for free, and it
+ * is stopped wherever the control socket is (lost, replaced, closed). Its own loss alone re-opens it.
+ * It never fails the session: no companion, the pane reads over MCP.
  */
 import { openCtlServer, type CtlServer, type CtlFailure, type CtlServerOptions } from "./ctl-server";
 
@@ -33,10 +38,22 @@ export interface CtlManagerDeps<E extends { id: string }> {
   holdsLock(): boolean | Promise<boolean>;
   /** How often the lock holder re-checks that it still owns the path (default 30 s). */
   watchMs?: number;
+  /** Opens the companion once the control socket is ours. Returns null when it cannot (logged by the opener). */
+  companion?(): CtlCompanion | null;
+  /** The companion opened or went away: whatever advertises its path must be told. */
+  onCompanion?(): void;
+}
+
+/** A second socket that lives and dies with the control socket. */
+export interface CtlCompanion {
+  path: string;
+  ownership(): "ours" | "replaced" | "gone";
+  stop(): void;
 }
 
 export class CtlManager<E extends { id: string }> {
   private server: CtlServer | null = null;
+  private companion: CtlCompanion | null = null;
   private failure: CtlFailure | null = null;
   private closed = false;
   private lastLog: string | null = null;
@@ -51,6 +68,11 @@ export class CtlManager<E extends { id: string }> {
   current(): CtlServer | null {
     this.verify();
     return this.server;
+  }
+
+  /** The companion's path while this process really serves it, else null. Reads state; never verifies. */
+  companionPath(): string | null {
+    return this.companion?.path ?? null;
   }
 
   /** How many times this process found the path no longer its own and took it back (a flap shows here). */
@@ -100,7 +122,10 @@ export class CtlManager<E extends { id: string }> {
     this.watch = setInterval(() => {
       void (async () => {
         if (this.closed || !(await this.d.holdsLock())) return; // a copy that does not hold the lock never reclaims
-        if (this.server) this.verify(); // a lost path queues the reclaim itself
+        if (this.server) {
+          this.verify(); // a lost path queues the reclaim itself
+          if (this.server && !this.companion) await this.ensure(); // the companion alone failed or was lost
+        }
         // Nothing served while we hold the lock: try again whatever the failure was. A directory a
         // tmp cleaner removed, a transient rename error, an unsafe directory someone fixed — none of
         // them announces itself, and the hooks need this socket. Repeated identical failures are
@@ -117,15 +142,25 @@ export class CtlManager<E extends { id: string }> {
     this.watch = null;
     this.server?.stop();
     this.server = null;
+    this.dropCompanion();
+  }
+
+  private dropCompanion(): void {
+    if (!this.companion) return;
+    this.companion.stop();
+    this.companion = null;
+    this.d.onCompanion?.();
   }
 
   private verify(): void {
+    if (this.companion && this.companion.ownership() !== "ours") this.dropCompanion();
     if (!this.server) return;
     const owner = this.server.ownership();
     if (owner === "ours") return;
     const path = this.server.path;
     this.server.stop();
     this.server = null;
+    this.dropCompanion();
     this.failure =
       owner === "replaced"
         ? { kind: "served-elsewhere", detail: path }
@@ -145,7 +180,7 @@ export class CtlManager<E extends { id: string }> {
   private async open(assumeHolder: boolean): Promise<void> {
     if (this.closed) return;
     this.verify();
-    if (this.server) return;
+    if (this.server) return this.openCompanion();
     const takeover = assumeHolder || (await this.d.holdsLock());
     const opts = this.d.options(takeover);
     // One line per distinct message: an open that keeps failing the same way is logged once.
@@ -163,5 +198,16 @@ export class CtlManager<E extends { id: string }> {
     }
     this.server = res.server;
     this.failure = res.failure ?? null;
+    this.openCompanion();
+  }
+
+  private openCompanion(): void {
+    if (!this.server || this.companion || this.closed || !this.d.companion) return;
+    try {
+      this.companion = this.d.companion();
+    } catch {
+      this.companion = null;
+    }
+    if (this.companion) this.d.onCompanion?.();
   }
 }

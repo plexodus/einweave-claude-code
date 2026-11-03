@@ -318,14 +318,14 @@ function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
 
 /**
  * Remove control sockets of Claude processes that are gone, and temp sockets of plugin
- * processes that died mid-bind. Only `c<pid>.sock` / `c<pid>-<tag>.sock` (dead Claude pid)
+ * processes that died mid-bind. Only `c<pid>.sock` / `c<pid>-<tag>.sock` and the UI server's `u…` forms (dead Claude pid)
  * and their `.tmp-<pid>-<rand>` forms (dead plugin pid) in that directory. Never throws.
  */
 export function sweepStaleCtlSockets(dir: string, pidAlive: (pid: number) => boolean): number {
   let removed = 0;
   try {
     for (const name of readdirSync(dir)) {
-      const m = /^c(\d+)(?:-[0-9a-f]{8,12})?\.sock(?:\.tmp-(\d+)-[0-9a-f]{1,4})?$/.exec(name);
+      const m = /^[cu](\d+)(?:-[0-9a-f]{8,12})?\.sock(?:\.tmp-(\d+)-[0-9a-f]{1,4})?$/.exec(name);
       // A temp name is judged by the PLUGIN process that bound it; a socket by Claude's pid.
       if (!m || pidAlive(Number(m[2] ?? m[1]))) continue;
       try {

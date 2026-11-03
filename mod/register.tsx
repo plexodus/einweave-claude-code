@@ -18,6 +18,7 @@ import {
   type InboxRow, type Seg, type ThreadLayout, type Tone,
 } from './model'
 import type { Line } from './text'
+import { hyperlinks } from './links'
 
 const SERVER = 'plugin:einweave:einweave'
 const PANE = 'einweave'
@@ -57,11 +58,59 @@ const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 /** A run's Text props for its tone: an accent from the canvas, or the theme's dim. */
 const paint = (tone: Tone | undefined) => (tone === 'dim' ? { dimColor: true } : tone ? { color: PALETTE[tone] } : {})
 
+/**
+ * One of the pane's reads, as the MCP tool's result. Over the plugin's UI socket when the snapshot names one
+ * (`$.http.fetch` with `socketPath`, whole): the host cuts a tool result at its MODEL-facing output limit, and a long
+ * thread page came back as an error (88,741 chars, 2026-11-03). A refusal of the fetch itself (no socket any more,
+ * a policy) falls back to the MCP tool for that call, which keeps its size budget; an answer, even an error, stands.
+ * `ui_state` goes over MCP until a snapshot has named the socket (that read is how the mod learns its path).
+ */
+async function uiRead($: EngineInterface, path: string, query: Record<string, number>, tool: string, args: Record<string, string | number>, server = SERVER) {
+  const socketPath = (await read($, view)).snap?.uiSocket
+  if (socketPath) {
+    try {
+      const qs = Object.entries(query).map(([k, v]) => `${k}=${v}`).join('&')
+      const r = await $.http.fetch(`http://einweave${path}${qs ? `?${qs}` : ''}`, { socketPath })
+      if (r.ok) return { isError: false, content: [{ type: 'text' as const, text: r.text }] }
+      let error = ''
+      try {
+        error = String((JSON.parse(r.text) as { error?: unknown }).error ?? '')
+      } catch {}
+      return { isError: true, content: [{ type: 'text' as const, text: error || `${tool} failed (HTTP ${r.status})` }] }
+    } catch {}
+  }
+  return $.mcp.call(server, tool, args)
+}
+
+/**
+ * A person's action (Take, Release, Connect, a `/einweave` command): the plugin's tool of that name, run over
+ * the UI socket when the snapshot names one (`POST /tool/:name`, the same code as the MCP tool), so the
+ * person's own action is not a model's tool call: not bound by its output limit nor seen by its tool hooks.
+ * A refusal of the fetch itself falls back to the MCP tool; an answer, even an error, stands.
+ */
+async function uiTool($: EngineInterface, tool: string, args: Record<string, unknown>) {
+  const socketPath = (await read($, view)).snap?.uiSocket
+  if (socketPath) {
+    try {
+      const r = await $.http.fetch(`http://einweave/tool/${encodeURIComponent(tool)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args), socketPath })
+      let body: { content?: unknown; isError?: unknown; error?: unknown } = {}
+      try {
+        body = JSON.parse(r.text) as typeof body
+      } catch {}
+      if (r.ok && Array.isArray(body.content)) return { isError: body.isError === true, content: body.content as { type: 'text'; text: string }[] }
+      return { isError: true, content: [{ type: 'text' as const, text: String(body.error ?? '') || `${tool} failed (HTTP ${r.status})` }] }
+    } catch {}
+  }
+  return $.mcp.call(SERVER, tool, args)
+}
+
 /** Take a snapshot into the view; a drop that starts now redraws once its grace period has passed. */
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
   const now = await $.clock.now()
   const wasDown = (await read($, view)).downSince !== null
-  await update($, view, v => ({ ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
+  // While the relay is live it is the truth (the plugin pushes every change on it): a poll's answer, however
+  // late it lands, never overwrites it. A restarted plugin's relay counts from rev 1 under a higher polled rev.
+  await update($, view, v => (live === undefined && v.live ? v : { ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
   if (!wasDown && got.snap.connection.state === 'disconnected') $.clock.after(BAND_GRACE_MS + 50, () => void update($, view, v => ({ ...v })))
 }
 
@@ -71,7 +120,7 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
     // The first draw runs while the server is still starting: wait for it, or the read fails and says "not answering".
     const c = await $.mcp.connect('einweave')
     if (!c.isConnected) return void (await update($, view, v => ({ ...v, error: c.message })))
-    const r = await $.mcp.call(c.server, 'ui_state', {})
+    const r = await uiRead($, '/state', {}, 'ui_state', {}, c.server)
     const got = r.isError ? null : fromTool(r)
     if (got) await take($, got, restart)
     else await update($, view, v => ({ ...v, error: r.isError ? textOf(r) || 'ui_state failed' : 'ui_state answered no snapshot' }))
@@ -81,7 +130,7 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
 }
 
 async function connect($: EngineInterface): Promise<string> {
-  const r = await $.mcp.call(SERVER, 'connect', {})
+  const r = await uiTool($, 'connect', {})
   let text = textOf(r)
   await poll($)
   if ((await read($, view)).snap?.connection.state === 'standby') {
@@ -89,7 +138,7 @@ async function connect($: EngineInterface): Promise<string> {
     try {
       answer = await $.ui.ask('Another window has this einweave session. Take it over here?', ['Take it over', 'Leave it'])
     } catch {}
-    if (answer === 'Take it over') text = textOf(await $.mcp.call(SERVER, 'connect', { takeover: 'lock' }))
+    if (answer === 'Take it over') text = textOf(await uiTool($, 'connect', { takeover: 'lock' }))
   }
   return text.startsWith('connecting') ? settled($) : text
 }
@@ -110,7 +159,7 @@ async function togglePane($: EngineInterface): Promise<{ isPlaced: boolean } | n
 
 /** Take this session back from the window that took it over: the person pressed for it, so no question. */
 async function takeBack($: EngineInterface): Promise<string> {
-  const text = textOf(await $.mcp.call(SERVER, 'connect', { takeover: 'lock' }))
+  const text = textOf(await uiTool($, 'connect', { takeover: 'lock' }))
   return text.startsWith('connecting') ? settled($) : text
 }
 
@@ -135,7 +184,7 @@ async function settled($: EngineInterface): Promise<string> {
  * the person, and only on their yes take it with confirm (by id: a number cannot carry a confirmation).
  */
 async function takeThread($: EngineInterface, ref: string): Promise<string> {
-  const first = textOf(await $.mcp.call(SERVER, 'take', { ref }))
+  const first = textOf(await uiTool($, 'take', { ref }))
   const o = takeOutcome(first)
   if (o.kind !== 'ask') {
     await poll($)
@@ -146,7 +195,7 @@ async function takeThread($: EngineInterface, ref: string): Promise<string> {
     answer = await $.ui.ask(o.question, ['Take it', 'Leave it'])
   } catch {}
   if (answer !== 'Take it') return 'Nothing was taken.'
-  const text = textOf(await $.mcp.call(SERVER, 'take', { ref: o.id, confirm: true }))
+  const text = textOf(await uiTool($, 'take', { ref: o.id, confirm: true }))
   await poll($)
   return text
 }
@@ -156,7 +205,7 @@ async function loadThread($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...(m[id] ?? NO_THREAD), loading: true } }))
   let got: ThreadView
   try {
-    const r = await $.mcp.call(SERVER, 'ui_thread', { thread_id: id })
+    const r = await uiRead($, `/thread/${encodeURIComponent(id)}`, {}, 'ui_thread', { thread_id: id })
     got = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
   } catch (err) {
     got = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
@@ -176,7 +225,7 @@ async function loadOlder($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...m[id]!, loadingOlder: true } }))
   let page: ThreadView
   try {
-    const r = await $.mcp.call(SERVER, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
+    const r = await uiRead($, `/thread/${encodeURIComponent(id)}`, { before_seq: before, limit: OLDER_PAGE }, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
     page = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
   } catch (err) {
     page = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
@@ -208,7 +257,7 @@ async function loadChannels($: EngineInterface): Promise<void> {
   await update($, channels, c => ({ ...c, loading: true }))
   let got
   try {
-    const r = await $.mcp.call(SERVER, 'ui_channels', {})
+    const r = await uiRead($, '/channels', {}, 'ui_channels', {})
     got = r.isError ? { ...NO_CHANNELS, loading: false, error: textOf(r) || 'ui_channels failed' } : channelsView(textOf(r))
   } catch (err) {
     got = { ...NO_CHANNELS, loading: false, error: String(err).slice(0, 200) }
@@ -221,7 +270,7 @@ async function loadChannel($: EngineInterface, id: string): Promise<void> {
   await update($, channel, m => ({ ...m, [id]: { ...(m[id] ?? NO_CHANNEL), loading: true } }))
   let got: ChannelView
   try {
-    const r = await $.mcp.call(SERVER, 'ui_channel', { channel_id: id })
+    const r = await uiRead($, `/channel/${encodeURIComponent(id)}`, {}, 'ui_channel', { channel_id: id })
     got = r.isError ? { ...NO_CHANNEL, loading: false, error: textOf(r) || 'ui_channel failed' } : channelView(textOf(r))
   } catch (err) {
     got = { ...NO_CHANNEL, loading: false, error: String(err).slice(0, 200) }
@@ -253,6 +302,33 @@ async function tooOld($: EngineInterface): Promise<string | null> {
     }
   })()
   return engineAge
+}
+
+// Does this terminal draw OSC 8 links? Claude Code's own answer (links.ts), asked once per load: where
+// it is no, the kit's Link prints its URL after its text, uncounted, and every row overflowed.
+let linking: Promise<boolean> | undefined
+// Terminal.app: no OSC 8, and Claude Code's mouse capture takes a plain or Cmd click; Option+click reaches
+// Terminal.app itself, which opens the URL under it (measured 2026-11-03). The thread tab says so there.
+let appleTerminal: Promise<boolean> | undefined
+const isAppleTerminal = ($: EngineInterface) => (appleTerminal ??= $.env.get('TERM_PROGRAM').then(v => v === 'Apple_Terminal', () => false))
+
+async function terminalLinks($: EngineInterface): Promise<boolean> {
+  linking ??= (async () => {
+    try {
+      const [setting, ...v] = await Promise.all([
+        $.settings.read({ key: 'hyperlinks' }).catch(() => undefined),
+        $.env.get('FORCE_HYPERLINK'), $.env.get('NETLIFY'), $.env.get('WT_SESSION'), $.env.get('CI'), $.env.get('TEAMCITY_VERSION'),
+        $.env.get('TERM_PROGRAM'), $.env.get('TERM_PROGRAM_VERSION'), $.env.get('VTE_VERSION'), $.env.get('TERM'),
+        $.env.get('TERMINAL_EMULATOR'), $.env.get('TMUX'), $.env.get('LC_TERMINAL'),
+      ])
+      const [FORCE_HYPERLINK, NETLIFY, WT_SESSION, CI, TEAMCITY_VERSION, TERM_PROGRAM, TERM_PROGRAM_VERSION, VTE_VERSION, TERM, TERMINAL_EMULATOR, TMUX, LC_TERMINAL] = v
+      return hyperlinks({ FORCE_HYPERLINK, NETLIFY, WT_SESSION, CI, TEAMCITY_VERSION, TERM_PROGRAM, TERM_PROGRAM_VERSION, VTE_VERSION, TERM, TERMINAL_EMULATOR, TMUX, LC_TERMINAL }, setting)
+    } catch {
+      // Unknown: URLs as text never overflow a row; a Link the kit cannot draw does.
+      return false
+    }
+  })()
+  return linking
 }
 
 const toastFirst = ($: EngineInterface) => (t: string) => $.ui.toast(t.split('\n')[0] || 'Done.')
@@ -371,18 +447,18 @@ export const register: Register = on => {
       case 'connect':
         return { text: await connect($) }
       case 'status': {
-        const r = await $.mcp.call(SERVER, 'status', {})
+        const r = await uiTool($, 'status', {})
         const text = textOf(r)
         return { text: action.full || r.isError ? text : statusSummary(text, (await read($, view)).snap?.waiting ?? null) }
       }
       case 'tool': {
-        const r = await $.mcp.call(SERVER, action.tool, action.args)
+        const r = await uiTool($, action.tool, action.args)
         return { text: textOf(r) || (r.isError ? `${action.tool} failed` : 'Done.') }
       }
       case 'take':
         return { text: await takeThread($, action.ref) }
       case 'find': {
-        const r = await $.mcp.call(SERVER, 'list_threads', { takeable: true, limit: 50 })
+        const r = await uiTool($, 'list_threads', { takeable: true, limit: 50 })
         return { text: r.isError ? textOf(r) || 'list_threads failed' : findInList(textOf(r), action.words) }
       }
     }
@@ -492,7 +568,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text, Button, Markdown } = els
+    const { Box, Text, Button, Markdown, Link } = els
     const old = await tooOld($)
     if (old) {
       const [need, fix] = oldWords(old)
@@ -515,7 +591,7 @@ export const register: Register = on => {
     const t = await read($, tabs)
     const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     const act = (tool: string, args: Record<string, unknown>) => () =>
-      void $.mcp.call(SERVER, tool, args).then(
+      void uiTool($, tool, args).then(
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
         err => $.ui.toast(`${tool} failed: ${String(err).slice(0, 120)}`),
       )
@@ -962,7 +1038,10 @@ export const register: Register = on => {
       own = e.surface === 'terminal' && e.props.placement === 'dock'
       const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
       const sc = (await read($, scrolls))[id]
-      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older)
+      // A desktop draws links itself; a terminal only when it draws OSC 8.
+      const links = desk || (await terminalLinks($))
+      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, links)
+      const optionClick = !links && (await isAppleTerminal($))
       // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
       // rule, the thread's own header (title, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
@@ -992,12 +1071,14 @@ export const register: Register = on => {
                 <Text
                   key={`${key}:${n}`}
                   wrap="truncate-end"
-                  {...(r.href ? { color: PALETTE.blue, underline: true } : r.dim ? { dimColor: true } : {})}
+                  {...(r.href || r.link ? { color: PALETTE.blue, underline: true } : r.mention === 'active' ? { color: PALETTE.brand } : r.dim ? { dimColor: true } : {})}
                   {...(r.code ? { backgroundColor: RULE } : {})}
                   {...(r.bold ? { weight: 'bold' as const } : {})}
                   {...(r.italic ? { italic: true } : {})}
+                  {...(r.strike ? { strikethrough: true } : {})}
                 >
-                  {r.text}
+                  {/* The kit's Link: an OSC 8 link in a terminal, an anchor on a desktop. doc-view.ts checked the URL (G8). */}
+                  {r.href ? <Link href={r.href}>{r.text}</Link> : r.text}
                 </Text>
               ))
             : <Text> </Text>}
@@ -1020,7 +1101,9 @@ export const register: Register = on => {
               <Box flexGrow={1} />
               {m.new ? <Text color={PALETTE.brand} weight="bold">new</Text> : null}
             </Box>
-            {desk && !own ? <Markdown key={`md:${id}:${b.key}`} text={m.content} /> : b.lines.map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
+            {/* Every surface draws the server's doc as these lines (RFC-034 D6): no Markdown parsed here. A desktop
+                shows the whole post (its surface scrolls), so no cap there. */}
+            {(desk && !own ? b.all : b.lines).map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
             {b.more && !(desk && !own) ? (
               <Button key={`more:${id}:${b.key}`} plain dimColor label={`▸ ${b.more} more ${b.more === 1 ? 'line' : 'lines'}`} onPress={expand(b.key, b.more)} />
             ) : null}
@@ -1092,6 +1175,7 @@ export const register: Register = on => {
             {held ? null : <Text key="sep:refresh" dimColor>·</Text>}
             {held ? null : <Button key={`refresh:${id}`} plain label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
             <Box flexGrow={1} />
+            {optionClick ? <Text key="hint:links" dimColor>⌥-click a URL to open it ·</Text> : null}
             <Text dimColor>read-only</Text>
           </Box>
         </Box>

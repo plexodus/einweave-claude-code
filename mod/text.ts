@@ -1,13 +1,15 @@
 /**
- * A post's Markdown as styled lines at a given width, for the Thread tab (decision 2026-10-31, option c).
+ * A post as styled lines at a given width, for the Thread tab (decision 2026-10-31, option c).
  *
  * The pane scrolls its own rows under a pinned header, so it must know every post's height to the row;
  * the kit's Markdown draws but never reports one. Here we wrap ourselves, and each line is drawn
  * truncated, so a line is exactly one row even where a terminal measures a glyph wider than we do.
  *
- * A subset, by design: paragraphs (a newline is a break, as in chat), bold, italic, inline code, links,
- * bullets, numbered items, quotes, headings and fenced code. Tables come out as their raw rows; any
- * other syntax stays as typed. Free of the mods API: test/mod-text.test.ts covers it under `bun test`.
+ * The lines come from the SERVER's doc (RFC-034 D6): the mod parses no Markdown. `ui_thread` has
+ * already decided whether there is a doc to draw (`docToRender`, G11), applied the link/image rule (G8),
+ * stripped control characters and resolved mentions (doc-view.ts); without a doc the post's `content`
+ * is drawn as plain text, never parsed. One linear walk; a node this mod does not know draws its children.
+ * Free of the mods API: test/mod-text.test.ts covers it under `bun test`.
  */
 
 /** One styled stretch of a line. */
@@ -17,7 +19,16 @@ export interface Run {
   italic?: true
   code?: true
   dim?: true
+  strike?: true
   href?: string
+  /** A mention: drawn whole (never wrapped inside), `gone` for someone no longer in the workspace. */
+  mention?: 'active' | 'gone'
+  /** Drawn by the mod (bullet, bar, gutter, rule), not the post's own text. */
+  deco?: true
+  /** A URL drawn as text (a terminal without OSC 8 links): never split, cut where wider than a line. */
+  url?: true
+  /** A link's text where the terminal draws no links: looks like one; its URL is on a row of its own. */
+  link?: true
 }
 
 /** One drawn row. */
@@ -49,88 +60,10 @@ export function cellWidth(s: string): number {
   return w
 }
 
-const URL_AT = /^https?:\/\/[^\s<>()[\]]+/
-const LINK_AT = /^\[([^\]]+)\]\(([^)\s]+)\)/
-const ALNUM = /[\p{L}\p{N}]/u
 
-/** Inline Markdown as runs, before wrapping. Unclosed markers stay as typed. */
-function inline(src: string, style: Style = {}): Run[] {
-  const out: Run[] = []
-  let buf = ''
-  const flush = () => {
-    if (buf) out.push({ ...style, text: buf })
-    buf = ''
-  }
-  let i = 0
-  while (i < src.length) {
-    const ch = src[i]!
-    const rest = src.slice(i)
-    if (ch === '\\' && i + 1 < src.length && /[\\`*_{}[\]()#+\-.!|>~]/.test(src[i + 1]!)) {
-      buf += src[i + 1]
-      i += 2
-      continue
-    }
-    if (ch === '`') {
-      const end = src.indexOf('`', i + 1)
-      if (end > i + 1) {
-        flush()
-        out.push({ ...style, code: true, text: src.slice(i + 1, end) })
-        i = end + 1
-        continue
-      }
-    }
-    if (ch === '[') {
-      const m = LINK_AT.exec(rest)
-      if (m) {
-        flush()
-        out.push(...inline(m[1]!, { ...style, href: m[2]! }))
-        i += m[0].length
-        continue
-      }
-    }
-    if ((ch === 'h') && (i === 0 || /[\s(]/.test(src[i - 1]!))) {
-      const m = URL_AT.exec(rest)
-      if (m) {
-        const url = m[0].replace(/[.,;:!?'"]+$/, '')
-        flush()
-        out.push({ ...style, href: url, text: url })
-        i += url.length
-        continue
-      }
-    }
-    if (ch === '*' || ch === '_') {
-      const double = src[i + 1] === ch
-      const mark = double ? ch + ch : ch
-      const open = i + mark.length
-      // Opens before a non-space; `_` only at a word's start, so snake_case stays as typed.
-      const opens = open < src.length && !/\s/.test(src[open]!) && (ch === '*' || i === 0 || !ALNUM.test(src[i - 1]!))
-      if (opens) {
-        let end = src.indexOf(mark, open + 1)
-        while (end !== -1) {
-          const closes = !/\s/.test(src[end - 1]!) && (ch === '*' || end + mark.length >= src.length || !ALNUM.test(src[end + mark.length]!))
-          // A single `*` must not close on half of a `**`.
-          if (closes && (double || src[end + 1] !== ch)) break
-          end = src.indexOf(mark, end + 1)
-        }
-        if (end !== -1) {
-          flush()
-          out.push(...inline(src.slice(open, end), double ? { ...style, bold: true } : { ...style, italic: true }))
-          i = end + mark.length
-          continue
-        }
-      }
-      buf += mark
-      i += mark.length
-      continue
-    }
-    buf += ch
-    i += 1
-  }
-  flush()
-  return out
-}
-
-const same = (a: Run, b: Run) => a.bold === b.bold && a.italic === b.italic && a.code === b.code && a.dim === b.dim && a.href === b.href
+const same = (a: Run, b: Run) =>
+  a.bold === b.bold && a.italic === b.italic && a.code === b.code && a.dim === b.dim && a.strike === b.strike &&
+  a.href === b.href && a.mention === b.mention && a.deco === b.deco && a.url === b.url && a.link === b.link
 
 /** Adjacent runs of one style joined. */
 function merge(line: Line): Line {
@@ -163,10 +96,11 @@ function wrap(runs: Run[], width: number, first: Run[], hang: Run[]): Line[] {
     space = null
   }
   for (const r of runs) {
-    for (const tok of r.text.split(/(\s+)/)) {
+    // A mention is one token, spaces and all: it breaks only where it is wider than a whole line.
+    for (const tok of r.mention || r.url ? [r.text] : r.text.split(/(\s+)/)) {
       if (!tok) continue
       const style = { ...r, text: tok }
-      if (/^\s+$/.test(tok)) {
+      if (!r.mention && !r.url && /^\s+$/.test(tok)) {
         if (!empty) space = { ...style, text: ' ' }
         continue
       }
@@ -184,6 +118,14 @@ function wrap(runs: Run[], width: number, first: Run[], hang: Run[]): Line[] {
       if (used + w <= width) {
         cur.push(style)
         used += w
+        empty = false
+        continue
+      }
+      // A URL split over rows opens in no terminal: cut, the start of it kept.
+      if (r.url) {
+        const piece = cut(tok, width - used)
+        cur.push({ ...r, text: piece })
+        used += cellWidth(piece)
         empty = false
         continue
       }
@@ -220,73 +162,294 @@ function cut(s: string, width: number): string {
   return out + '…'
 }
 
-/** A fenced code line: gutter, hard-wrapped, `↪` where it continues. */
-function codeLines(text: string, width: number): Line[] {
-  const room = Math.max(2, width - 2)
+/** A code line: gutter, hard-wrapped, `↪` where it continues; `lead` gives each row's prefix. */
+function codeLines(text: string, width: number, lead: () => Run[]): Line[] {
   const out: Line[] = []
-  let left = text
+  const gutter: Run = { code: true, deco: true, text: '│ ' }
+  let i = 0
+  // A terminal draws a tab as up to 8 cells and we would count 1: expanded, the row's width is known.
+  const chars = [...text.replace(/\t/g, '    ')]
   do {
-    if (cellWidth(left) <= room) {
-      out.push([{ code: true, text: `│ ${left}` }])
-      break
-    }
+    const pre = lead()
+    const room = Math.max(2, width - cellWidth(pre.map(r => r.text).join('')) - 2)
     let piece = ''
-    for (const ch of left) {
-      if (cellWidth(piece + ch) > room - 1) break
-      piece += ch
+    let w = 0
+    let j = i
+    for (; j < chars.length; j++) {
+      const cw = charWidth(chars[j]!)
+      if (w + cw > room - (j < chars.length - 1 ? 1 : 0)) break
+      piece += chars[j]
+      w += cw
     }
-    out.push([{ code: true, text: `│ ${piece}↪` }])
-    left = left.slice(piece.length)
-  } while (left)
+    // A glyph wider than the room on its own still moves on.
+    if (j === i && j < chars.length) piece = chars[j++]!
+    const more = j < chars.length
+    out.push(merge([...pre, gutter, { code: true, text: piece }, ...(more ? [{ code: true as const, deco: true as const, text: '↪' }] : [])]))
+    i = j
+  } while (i < chars.length)
   return out
 }
 
-const FENCE = /^\s*```/
-const LIST = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/
-const HEADING = /^#{1,6}\s+(.*)$/
-const QUOTE = /^>\s?(.*)$/
+/**
+ * A doc node as `ui_thread` hands it over (the server's `[tag, attrs | 0, ...children]`, cleaned by
+ * doc-view.ts). Typed loosely on purpose: it is data, and anything else in it is skipped, never thrown on.
+ */
+export type DocNode = string | readonly [string, Record<string, unknown> | 0, ...unknown[]]
 
-/** A post's Markdown as lines at most `width` cells wide; blank lines collapse to one, none at the edges. */
-export function renderPost(src: string, width: number): Line[] {
+const BLOCKS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'table', 'hr'])
+const isEl = (n: unknown): n is readonly [string, unknown, ...unknown[]] => Array.isArray(n) && typeof n[0] === 'string'
+const attrs = (n: readonly unknown[]): Record<string, unknown> => (n[1] && typeof n[1] === 'object' ? (n[1] as Record<string, unknown>) : {})
+const kids = (n: readonly unknown[]) => n.slice(2)
+const textOf = (r: Run[]) => r.map(x => x.text).join('')
+
+/**
+ * How links are drawn. `links` false: the terminal has no OSC 8 (links.ts), so a link is its text and
+ * its URL goes in `urls`, for its own row after the paragraph; a bare URL is its own text, kept whole.
+ */
+interface Ctx {
+  links: boolean
+  urls: string[]
+}
+const LINKED: Ctx = { links: true, urls: [] }
+
+/** A node's text, styles dropped (only to tell a bare URL from a named link). */
+const flat = (nodes: readonly unknown[]): string =>
+  nodes.map(n => (typeof n === 'string' ? n : isEl(n) ? flat(kids(n)) : '')).join('')
+
+/** Inline nodes as runs, split into segments where a line must break (`br`, a newline in the text). */
+function inline(nodes: readonly unknown[], style: Style, segs: Run[][], ctx: Ctx = LINKED): void {
+  for (const n of nodes) {
+    if (typeof n === 'string') {
+      const parts = n.split('\n')
+      parts.forEach((t, i) => {
+        if (i) segs.push([])
+        if (t) segs[segs.length - 1]!.push({ ...style, text: t })
+      })
+      continue
+    }
+    if (!isEl(n)) continue
+    const a = attrs(n)
+    switch (n[0]) {
+      case 'br':
+        segs.push([])
+        break
+      case 'strong':
+        inline(kids(n), { ...style, bold: true }, segs, ctx)
+        break
+      case 'em':
+        inline(kids(n), { ...style, italic: true }, segs, ctx)
+        break
+      case 's':
+      case 'del':
+        inline(kids(n), { ...style, strike: true }, segs, ctx)
+        break
+      case 'code':
+        inline(kids(n), { ...style, code: true }, segs, ctx)
+        break
+      case 'a':
+        if (typeof a.href !== 'string' || !a.href) inline(kids(n), style, segs, ctx)
+        else if (ctx.links) inline(kids(n), { ...style, href: a.href }, segs, ctx)
+        else {
+          const text = flat(kids(n))
+          const bare = text === a.href || `mailto:${text}` === a.href
+          inline(kids(n), bare ? { ...style, url: true } : { ...style, link: true }, segs, ctx)
+          if (!bare) ctx.urls.push(a.href)
+        }
+        break
+      case 'img':
+        if (typeof a.alt === 'string' && a.alt) segs[segs.length - 1]!.push({ ...style, dim: true, text: a.alt })
+        break
+      case '@': {
+        const gone = a.gone === true
+        const name = typeof a.name === 'string' && a.name ? a.name : null
+        // One row whatever it carries: a newline in it would draw a second row the pane does not count.
+        const text = (gone ? (name ?? '@former member') : `@${typeof a.h === 'string' && a.h ? a.h : (name ?? '')}`).replace(/\s+/g, ' ')
+        segs[segs.length - 1]!.push(gone ? { ...style, italic: true, dim: true, mention: 'gone', text } : { ...style, bold: true, mention: 'active', text })
+        break
+      }
+      default:
+        // A block where only inline belongs, or a tag this mod does not know: its children (G11).
+        inline(kids(n), style, segs, ctx)
+    }
+  }
+}
+
+/** The prefixes a container gives its rows: `first` once, then `hang`. */
+interface Lead {
+  first: Run[]
+  hang: Run[]
+  used: boolean
+}
+const take = (l: Lead) => {
+  const r = l.used ? l.hang : l.first
+  l.used = true
+  return r
+}
+
+/**
+ * A doc as lines at most `width` cells wide (RFC-034 D6; below 6 cells it is drawn at 6, the narrowest a
+ * bar, a mark and a word share; the pane never asks below 10). Blocks are separated by a blank row (inside
+ * a quote, a bar); list items are not. Nesting indents until half the width is prefix, then stops growing.
+ */
+export function docLines(doc: readonly unknown[], width: number, opts: { links?: boolean } = {}): Line[] {
+  const w = Math.max(6, Math.floor(width))
+  const out: Line[] = []
+  const ctx: Ctx = { links: opts.links !== false, urls: [] }
+  const wide = (r: Run[]) => cellWidth(textOf(r)) > w / 2
+  const child = (l: Lead, first: Run[], hang: Run[]): Lead => {
+    const lead = take(l)
+    if (!wide([...l.hang, ...hang])) return { first: [...lead, ...first], hang: [...l.hang, ...hang], used: false }
+    // Too deep or too wide to indent further: the mark still shows while it fits, the hang stops growing.
+    return { first: cellWidth(textOf([...lead, ...first])) < w ? [...lead, ...first] : lead, hang: l.hang, used: false }
+  }
+  const para = (segs: Run[][], l: Lead) => {
+    for (const seg of segs) {
+      const first = take(l)
+      out.push(...wrap(seg, w, first, l.hang))
+    }
+    // A terminal without OSC 8: each named link's URL on a row of its own under the paragraph, whole
+    // where it fits (a URL split over rows opens in no terminal), cut where it does not.
+    for (const url of ctx.urls.splice(0)) {
+      const lead = take(l)
+      out.push(merge([...lead.map(r => ({ ...r })), { dim: true, url: true, text: cut(url, Math.max(1, w - cellWidth(textOf(lead)))) }]))
+    }
+  }
+
+  const blocks = (nodes: readonly unknown[], l: Lead, style: Style, gap: boolean): void => {
+    let buf: unknown[] = []
+    let any = false
+    const sep = () => {
+      if (gap && any) out.push(merge(l.hang.map(r => ({ ...r }))).map(r => ({ ...r, text: r.text.trimEnd() })).filter(r => r.text))
+      any = true
+    }
+    const flush = () => {
+      if (!buf.length) return
+      const segs: Run[][] = [[]]
+      inline(buf, style, segs, ctx)
+      buf = []
+      if (!segs.some(s => s.length)) return
+      sep()
+      para(segs, l)
+    }
+    for (const n of nodes) {
+      if (!isEl(n) || !BLOCKS.has(n[0])) {
+        buf.push(n)
+        continue
+      }
+      flush()
+      const a = attrs(n)
+      const tag = n[0]
+      if (tag === 'p') {
+        const segs: Run[][] = [[]]
+        inline(kids(n), style, segs, ctx)
+        sep()
+        para(segs, l)
+      } else if (/^h[1-6]$/.test(tag)) {
+        const segs: Run[][] = [[]]
+        inline(kids(n), { ...style, bold: true }, segs, ctx)
+        sep()
+        para(segs, l)
+      } else if (tag === 'blockquote') {
+        sep()
+        const bar: Run[] = [{ dim: true, deco: true, text: '▎ ' }]
+        blocks(kids(n), child(l, bar, bar), { ...style, dim: true }, true)
+      } else if (tag === 'ul' || tag === 'ol') {
+        sep()
+        const start = typeof a.start === 'number' && Number.isSafeInteger(a.start) ? a.start : 1
+        let i = 0
+        for (const item of kids(n)) {
+          if (!isEl(item)) continue
+          const ia = attrs(item)
+          const box = ia.checked === true ? '☑ ' : ia.checked === false ? '☐ ' : ''
+          const mark = (tag === 'ol' ? `${start + i}. ` : '• ') + box
+          i++
+          const lead = child(l, [{ deco: true, text: mark }], [{ deco: true, text: ' '.repeat(cellWidth(mark)) }])
+          const before = out.length
+          blocks(item[0] === 'li' ? kids(item) : [item], lead, style, false)
+          if (out.length === before) out.push(merge(lead.first.map(r => ({ ...r }))))
+        }
+      } else if (tag === 'li') {
+        // An item outside a list: its children in place.
+        blocks(kids(n), l, style, gap)
+      } else if (tag === 'pre') {
+        sep()
+        const segs: Run[][] = [[]]
+        inline(kids(n), {}, segs)
+        const rows = segs.map(textOf)
+        if (rows.length > 1 && rows[rows.length - 1] === '') rows.pop()
+        for (const row of rows) out.push(...codeLines(row, w, () => take(l)))
+      } else if (tag === 'table') {
+        sep()
+        const rows: { cells: string[]; head: boolean }[] = []
+        const walk = (ns: readonly unknown[], head: boolean) => {
+          for (const r of ns) {
+            if (!isEl(r)) continue
+            if (r[0] === 'tr') {
+              const cells = kids(r).filter(isEl).map(c => {
+                const segs: Run[][] = [[]]
+                inline(kids(c), {}, segs)
+                return segs.map(textOf).join(' ').replace(/\s+/g, ' ').trim()
+              })
+              rows.push({ cells, head: head || kids(r).some(c => isEl(c) && c[0] === 'th') })
+            } else walk(kids(r), head || r[0] === 'thead')
+          }
+        }
+        walk(kids(n), false)
+        for (const r of rows) {
+          const lead = take(l)
+          const room = Math.max(1, w - cellWidth(textOf(lead)))
+          const line: Run[] = []
+          r.cells.forEach((c, i) => {
+            if (i) line.push({ ...style, dim: true, deco: true, text: ' │ ' })
+            line.push({ ...style, ...(r.head ? { bold: true as const } : {}), text: c })
+          })
+          out.push(merge([...lead.map(x => ({ ...x })), ...cutRuns(line, room)]))
+        }
+      } else if (tag === 'hr') {
+        sep()
+        const lead = take(l)
+        out.push(merge([...lead.map(x => ({ ...x })), { dim: true, deco: true, text: '─'.repeat(Math.max(1, w - cellWidth(textOf(lead)))) }]))
+      }
+    }
+    flush()
+  }
+
+  blocks(doc, { first: [], hang: [], used: false }, {}, true)
+  while (out.length && !out[out.length - 1]!.length) out.pop()
+  return out
+}
+
+/** Runs cut to `width` cells, an ellipsis marking the cut. */
+function cutRuns(runs: Run[], width: number): Run[] {
+  if (cellWidth(textOf(runs)) <= width) return runs
+  const out: Run[] = []
+  let used = 0
+  for (const r of runs) {
+    const left = width - 1 - used
+    if (left <= 0) break
+    const w = cellWidth(r.text)
+    if (w <= left) {
+      out.push(r)
+      used += w
+      continue
+    }
+    out.push({ ...r, text: cut(r.text, left + 1).slice(0, -1) })
+    break
+  }
+  out.push({ deco: true, dim: true, text: '…' })
+  return out
+}
+
+/** A post without a doc (G11): its `content` as typed, wrapped. Never parsed; blank lines collapse to one. */
+export function plainLines(content: string, width: number): Line[] {
   const w = Math.max(4, Math.floor(width))
   const out: Line[] = []
-  const blank = () => {
-    if (out.length && out[out.length - 1]!.length) out.push([])
-  }
-  const lines = src.replace(/\r\n?/g, '\n').split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-    if (FENCE.test(line)) {
-      for (i++; i < lines.length && !FENCE.test(lines[i]!); i++) out.push(...codeLines(lines[i]!, w))
-      continue
-    }
+  for (const line of content.replace(/\r\n?/g, '\n').split('\n')) {
     if (!line.trim()) {
-      blank()
+      if (out.length && out[out.length - 1]!.length) out.push([])
       continue
     }
-    if (line.trimStart().startsWith('|')) {
-      out.push([{ text: cut(line.trim(), w) }])
-      continue
-    }
-    const heading = HEADING.exec(line)
-    if (heading) {
-      out.push(...wrap(inline(heading[1]!, { bold: true }), w, [], []))
-      continue
-    }
-    const quote = QUOTE.exec(line)
-    if (quote) {
-      const bar = [{ dim: true as const, text: '▎ ' }]
-      out.push(...wrap(inline(quote[1]!, { dim: true }), w, bar, bar))
-      continue
-    }
-    const item = LIST.exec(line)
-    if (item) {
-      const indent = '  '.repeat(Math.floor(item[1]!.replace(/\t/g, '  ').length / 2))
-      const mark = /\d/.test(item[2]!) ? `${item[2]} ` : '• '
-      out.push(...wrap(inline(item[3]!), w, [{ text: indent + mark }], [{ text: ' '.repeat(cellWidth(indent + mark)) }]))
-      continue
-    }
-    out.push(...wrap(inline(line), w, [], []))
+    out.push(...wrap([{ text: line }], w, [], []))
   }
   while (out.length && !out[out.length - 1]!.length) out.pop()
   return out

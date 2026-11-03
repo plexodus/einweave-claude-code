@@ -4,7 +4,7 @@
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
 import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
-import { cellWidth, renderPost, type Line } from './text'
+import { cellWidth, docLines, plainLines, type Line } from './text'
 
 /**
  * The design canvas's colours (https://claude.ai/artifact/4JomhfdVJR8goTtoaaqHNR, every board).
@@ -76,7 +76,7 @@ export function parseLine(line: string): { rev: number; snap: UiSnapshot } | { e
   if (!o || typeof o !== 'object') return null
   const r = o as { ok?: unknown; rev?: unknown; state?: unknown; error?: unknown }
   if (r.ok === false) return { error: typeof r.error === 'string' ? r.error : 'refused' }
-  if (r.ok === true && typeof r.rev === 'number' && isSnapshot(r.state)) return { rev: r.rev, snap: r.state }
+  if (r.ok === true && typeof r.rev === 'number' && isSnapshot(r.state)) return { rev: r.rev, snap: socketChecked(r.state) }
   return null
 }
 
@@ -99,7 +99,12 @@ function jsonOf(text: string | undefined): unknown {
 function snapshotOf(o: unknown): { rev: number; snap: UiSnapshot } | null {
   if (!o || typeof o !== 'object') return null
   const { rev, ...rest } = o as { rev?: unknown }
-  return typeof rev === 'number' && isSnapshot(rest) ? { rev, snap: rest } : null
+  return typeof rev === 'number' && isSnapshot(rest) ? { rev, snap: socketChecked(rest) } : null
+}
+
+/** `uiSocket` is a path or nothing: anything else (a plugin that sent junk) reads as no socket, never as a path to fetch. */
+function socketChecked(s: UiSnapshot): UiSnapshot {
+  return s.uiSocket === undefined || (typeof s.uiSocket === 'string' && s.uiSocket !== '') ? s : { ...s, uiSocket: null }
 }
 
 function isSnapshot(s: unknown): s is UiSnapshot {
@@ -438,6 +443,14 @@ export function threadView(text: string): ThreadView {
   }
 }
 
+/**
+ * A post's lines: the server's doc when `ui_thread` handed one over, else its `content` as typed (G11).
+ * `links` false: the terminal draws no OSC 8 links (links.ts), so URLs go in rows of their own.
+ */
+export function threadLines(m: ThreadMessage, width: number, links = true): Line[] {
+  return Array.isArray(m.doc) ? docLines(m.doc, width, { links }) : plainLines(m.content, width)
+}
+
 /** A post shows this many lines until it is opened (Thread tab, layout A, decision 2026-10-31). */
 export const POST_CAP = 6
 /** Replies one Load older brings. */
@@ -453,6 +466,8 @@ export interface PostBlock {
   key: string
   n: number
   lines: Line[]
+  /** Every line, the cap ignored: what a surface that scrolls itself (a desktop) draws. */
+  all: Line[]
   more: number
   top: number
   rows: number
@@ -471,18 +486,18 @@ export interface ThreadLayout {
  * of them unless `open`), and a "N more lines" row where the cap cut. With replies older than those
  * read, the gap row sits under the root, a blank row above it.
  */
-export function threadLayout(messages: readonly ThreadMessage[], width: number, open: Record<string, true>, older: number | null): ThreadLayout {
+export function threadLayout(messages: readonly ThreadMessage[], width: number, open: Record<string, true>, older: number | null, links = true): ThreadLayout {
   const blocks: PostBlock[] = []
   let gap: ThreadLayout['gap'] = null
   let row = 0
   messages.forEach((m, n) => {
     const key = postKey(m, n)
-    const all = renderPost(m.content, width)
+    const all = threadLines(m, width, links)
     const cut = !open[key] && all.length > POST_CAP + 1
     const lines = cut ? all.slice(0, POST_CAP) : all
     const more = cut ? all.length - POST_CAP : 0
     const rows = (blocks.length ? 1 : 0) + 1 + lines.length + (more ? 1 : 0)
-    blocks.push({ key, n, lines, more, top: row, rows })
+    blocks.push({ key, n, lines, all, more, top: row, rows })
     row += rows
     if (m.root && older !== 0 && n < messages.length - 1) {
       gap = { top: row, rows: 2 }

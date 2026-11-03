@@ -49,6 +49,10 @@ export declare const DOC_V: 1;
 export declare const docText: (doc: Doc, nameOf?: (principalId: string) => string | undefined) => string;
 /** G11: the doc to render, or null = render `content` as plain text (see the protocol's `docToRender`). */
 export declare const docToRender: (m: DocCarrier) => Doc | null;
+/** G8: may a rendered doc link to this URL (http, https, mailto)? The server's rule; a renderer re-applies it. */
+export declare const allowedLink: (u: unknown) => u is string;
+/** G8: may a rendered doc show this image (https only)? The server's rule; a renderer re-applies it. */
+export declare const allowedImage: (u: unknown) => u is string;
 /** A message as plain text for previews: the rendered doc's text, else `content`. */
 export declare const messageText: (m: DocCarrier, nameOf?: (principalId: string) => string | undefined) => string;
 export declare const DOC_CORPUS: readonly DocCase[];
