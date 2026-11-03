@@ -738,6 +738,37 @@ test('View opens a thread tab read through ui_thread (never read_thread, which w
   await ui.unmount()
 })
 
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`an opened tab not shown, ${surface}: its label and its × light as one tab under the pointer (terminal only)`, async ($, on) => {
+    const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [], has_older: false, older_count: 0 }
+    const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+    await start($, clock)
+    const ui = await $.ui.mount({ ...PANE, surface })
+    if (surface === 'terminal') await ui.press({ key: `open:${T_OLD}` })
+    else await ui.press({ key: `open:${T_OLD}`, link: { href: `https://einweave.invalid/${T_OLD}` } } as never)
+    await clock.settle()
+    await ui.press({ key: 'tab:inbox' })
+    const label = await ui.find({ key: `tab:${T_OLD}` })
+    const close = await ui.find({ key: `close:${T_OLD}` })
+    expect(label?.props).toMatchObject({ label: ' Older ask ', dimColor: true })
+    if (surface === 'terminal') {
+      // One group per tab: the pointer on either lights both, drawn as the pointer draws a tab.
+      const lit = { scope: `tab:${T_OLD}`, inverse: true, dimColor: false }
+      // (The kit reports a Text's hover beside its props; a Button's it does not, so the hover is the Texts'.)
+      expect(label).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: [' Older ask '] }] })
+      // At rest a dim `× `: the shown pill's width, so the tab does not grow when it is shown.
+      expect(close).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: ['× '] }] })
+      // The fixed tabs keep the engine's own pointer: nothing beside them to light.
+      expect((await ui.find({ key: 'tab:held' }))?.children).toEqual([])
+    } else {
+      // A desktop draws no hover: its native buttons, the × dim as before.
+      expect(label?.children).toEqual([])
+      expect(close).toMatchObject({ props: { dimColor: true }, children: [] })
+    }
+    await ui.unmount()
+  })
+}
+
 test('× while the thread still loads: the late answer does not bring the closed tab\'s content back', async ($, on) => {
   const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [{ sender: 'Kevin', content: 'late', type: 'text', ts: null }], has_older: false, older_count: 0 }
   let clockRef: { sleep: (ms: number) => Promise<void> } | null = null

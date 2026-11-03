@@ -396,10 +396,10 @@ describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
     expect(scrollBy(3, 10, l, 2)).toEqual({ off: 0, atTop: false });
   });
 
-  test("tabRows wraps as flex-wrap does; tabWidth pads a cell each side and counts the ×", () => {
+  test("tabRows wraps as flex-wrap does; tabWidth pads a cell each side and counts the × as two", () => {
     expect(tabWidth("Inbox 3", false)).toBe(9);
-    expect(tabWidth("x", "shown")).toBe(5);
-    expect(tabWidth("x", "rest")).toBe(4);
+    // Every opened tab's × is `× `, shown or not: a tab keeps its width when it becomes the shown one.
+    expect(tabWidth("x", true)).toBe(5);
     expect(tabRows([9, 9, 9], 29)).toBe(1);
     expect(tabRows([9, 9, 9], 28)).toBe(2);
     expect(tabRows([9, 9, 9], 9)).toBe(3);
