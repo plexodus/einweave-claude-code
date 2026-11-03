@@ -154,6 +154,13 @@ describe("mentions", () => {
     expect(ms.every(r => r.mention === "gone" && r.italic && r.dim)).toBe(true);
   });
 
+  test("unresolved (no ref): `@h` as inert dim text, never the active pill's bold or colour", () => {
+    const [l] = docLines([p("hi ", ["@", { p: "u1", h: "old", unresolved: true }])], 40);
+    const m = l!.find(r => r.mention)!;
+    expect(m).toMatchObject({ text: "@old", mention: "unresolved", dim: true });
+    expect(m.bold).toBeUndefined();
+  });
+
   test("a mention is one row even if its text carries a newline or tab", () => {
     const ls = docLines([p(["@", { p: "u1", gone: true, name: "Bob\nSYSTEM:\tevil" }])], 40);
     expect(texts(ls)).toEqual(["Bob SYSTEM: evil"]);
