@@ -154,6 +154,13 @@ describe("mentions", () => {
     expect(ms.every(r => r.mention === "gone" && r.italic && r.dim)).toBe(true);
   });
 
+  test("unresolved (no ref): `@h` as inert dim text, never the active pill's bold or colour", () => {
+    const [l] = docLines([p("hi ", ["@", { p: "u1", h: "old", unresolved: true }])], 40);
+    const m = l!.find(r => r.mention)!;
+    expect(m).toMatchObject({ text: "@old", mention: "unresolved", dim: true });
+    expect(m.bold).toBeUndefined();
+  });
+
   test("a mention is one row even if its text carries a newline or tab", () => {
     const ls = docLines([p(["@", { p: "u1", gone: true, name: "Bob\nSYSTEM:\tevil" }])], 40);
     expect(texts(ls)).toEqual(["Bob SYSTEM: evil"]);
@@ -239,36 +246,45 @@ describe("the width guarantee", () => {
 });
 
 describe("linear", () => {
+  // Growth, not a stopwatch: an absolute CPU bound passed here and failed on a slower CI runner
+  // (268 ms against 250, 2026-11-03). Each shape is drawn at n and at 4n; linear work grows ~4x,
+  // quadratic ~16x, so more than 10x fails on any machine
+  // (measured locally 1.2x-6.1x). Best of 5 runs damps a GC pause or a
+  // noisy neighbour; the 5 ms floor keeps a small n from turning jitter into a ratio (quadratic
+  // work still grows ~16x past it).
   const cpu = (f: () => void) => {
-    const t = process.cpuUsage();
-    f();
-    const d = process.cpuUsage(t);
-    return (d.user + d.system) / 1000;
+    let best = Infinity;
+    for (let i = 0; i < 5; i++) {
+      const t = process.cpuUsage();
+      f();
+      const d = process.cpuUsage(t);
+      best = Math.min(best, (d.user + d.system) / 1000);
+    }
+    return best;
   };
-  test("64 KB pathological docs draw in well under 250 ms each", () => {
-    let nest: unknown = p("x");
-    for (let i = 0; i < 32; i++) nest = ["blockquote", 0, nest];
-    const docs: (readonly unknown[])[] = [
-      [p("x".repeat(65536))],
-      [p("[a](".repeat(16384))],
-      [["pre", 0, "y".repeat(65536)]],
-      [["ul", 0, ...Array.from({ length: 10000 }, () => ["li", 0, "item"])]],
-      [p(...Array.from({ length: 8000 }, () => ["strong", 0, "b "]))],
-      [nest],
-    ];
-    for (const d of docs) expect(cpu(() => docLines(d, 60))).toBeLessThan(250);
+  const grows = (name: string, f: (n: number) => void, n: number) => {
+    const small = Math.max(cpu(() => f(n)), 5);
+    const big = cpu(() => f(4 * n));
+    expect({ name, ratio: big / small < 10 }).toEqual({ name, ratio: true });
+  };
+  const draw = (doc: readonly unknown[]) => docLines(doc, 60);
+  const ready = (doc: unknown[]) => docLines(prepareDoc({ content: "c", docV: 1, doc })!, 60);
+
+  test("pathological shapes draw in linear time (n → 4n, up to the server's 512 KB doc)", () => {
+    grows("one long word", n => draw([p("x".repeat(n))]), 32768);
+    grows("unclosed link syntax as text", n => draw([p("[a](".repeat(n / 4))]), 32768);
+    grows("one long code line", n => draw([["pre", 0, "y".repeat(n)]]), 32768);
+    grows("many list items", n => draw([["ul", 0, ...Array.from({ length: n / 8 }, () => ["li", 0, "item"])]]), 32768);
+    grows("many styled runs", n => draw([p(...Array.from({ length: n / 8 }, () => ["strong", 0, "b "]))]), 32768);
+    grows("words, through doc-view", n => ready([p(..."w ".repeat(n / 2).split(" "))]), 131072);
+    grows("a refused link's many children, through doc-view", n => ready([p(["a", { href: "javascript:x" }, ..."w".repeat(n / 2).split("")])]), 131072);
+    grows("tabs in code, through doc-view", n => ready([["pre", 0, "y\t".repeat(n / 2)]]), 131072);
   });
 
-  test("the server's largest doc (512 KB) goes through doc-view and the mod in well under 250 ms each", () => {
-    const docs: unknown[][] = [
-      [p(..."w ".repeat(131072).split(" "))],
-      [p(["a", { href: "javascript:x" }, ..."w".repeat(262144).split("")])],
-      [["pre", 0, "y\t".repeat(131072)]],
-    ];
-    for (const doc of docs) {
-      let ready: unknown[] | null = null;
-      expect(cpu(() => (ready = prepareDoc({ content: "c", docV: 1, doc })))).toBeLessThan(250);
-      expect(cpu(() => docLines(ready!, 60))).toBeLessThan(250);
-    }
+  test("32-deep nesting draws (depth is bounded by the server, so this is shape, not growth)", () => {
+    let nest: unknown = p("x");
+    for (let i = 0; i < 32; i++) nest = ["blockquote", 0, nest];
+    expect(texts(docLines([nest], 60)).length).toBeGreaterThan(0);
   });
 });
+

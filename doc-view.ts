@@ -14,9 +14,11 @@
  *   there would draw two rows where the pane counts one, the second free text the author controls.
  * - A URL is checked as it will be emitted: cleaned first, then `allowedLink`/`allowedImage`, then sent
  *   normalised by `new URL` (never the raw string the check saw).
- * - An `@` node is resolved from the message's mention refs: the current handle, or `gone` with the
- *   person's name when they hold none (`currentHandle == null`, as the web's "gone" pill). No ref: the
- *   handle at send. An active node carries the name too, for when it has no handle at all.
+ * - An `@` node is resolved from the message's mention refs, by `p`: the current handle, or `gone` with
+ *   the person's name when they hold none (`currentHandle == null`, as the web's "gone" pill). An active
+ *   node carries the name too. IDENTITY COMES FROM THE REF ALONE (RFC-034 D2): the node's `h` is the
+ *   handle as typed at send, a label. A handle can be released and reclaimed, so a node with no ref is
+ *   `unresolved` and the mod draws `@h` as inert text, never a mention of whoever holds `h` now.
  *
  * A node that is neither text nor an element is dropped, never thrown on; a tag this release does not
  * know passes through for the mod to draw its children.
@@ -82,7 +84,8 @@ export function prepareDoc(m: DocMessage): Node[] | null {
         const ref = p ? refs.get(p) : undefined;
         const name = ref ? line(ref.displayName) : null;
         if (ref && ref.currentHandle == null) out.push(["@", { p, gone: true, name }]);
-        else out.push(["@", { p, h: (ref && line(ref.currentHandle)) || line(a.h), ...(name ? { name } : {}) }]);
+        else if (ref) out.push(["@", { p, h: line(ref.currentHandle), ...(name ? { name } : {}) }]);
+        else out.push(["@", { p, h: line(a.h), unresolved: true }]);
         continue;
       }
       // Every other attribute the mod reads is a string, a number or a boolean: copy those, cleaned.

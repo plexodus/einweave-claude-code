@@ -22,7 +22,7 @@ export interface Run {
   strike?: true
   href?: string
   /** A mention: drawn whole (never wrapped inside), `gone` for someone no longer in the workspace. */
-  mention?: 'active' | 'gone'
+  mention?: 'active' | 'gone' | 'unresolved'
   /** Drawn by the mod (bullet, bar, gutter, rule), not the post's own text. */
   deco?: true
   /** A URL drawn as text (a terminal without OSC 8 links): never split, cut where wider than a line. */
@@ -264,7 +264,12 @@ function inline(nodes: readonly unknown[], style: Style, segs: Run[][], ctx: Ctx
         const name = typeof a.name === 'string' && a.name ? a.name : null
         // One row whatever it carries: a newline in it would draw a second row the pane does not count.
         const text = (gone ? (name ?? '@former member') : `@${typeof a.h === 'string' && a.h ? a.h : (name ?? '')}`).replace(/\s+/g, ' ')
-        segs[segs.length - 1]!.push(gone ? { ...style, italic: true, dim: true, mention: 'gone', text } : { ...style, bold: true, mention: 'active', text })
+        // No ref (doc-view.ts): `h` is only the handle as typed at send, so it is drawn inert, never as a pill.
+        segs[segs.length - 1]!.push(
+          gone ? { ...style, italic: true, dim: true, mention: 'gone', text }
+          : a.unresolved === true ? { ...style, dim: true, mention: 'unresolved', text }
+          : { ...style, bold: true, mention: 'active', text },
+        )
         break
       }
       default:
