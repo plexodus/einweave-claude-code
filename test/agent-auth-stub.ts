@@ -743,7 +743,7 @@ export function startAuthStub(opts: StubOptions = {}) {
         if (denied) return denied;
         const r = await opts.api?.(req, url);
         if (r) return core.withDate(r);
-        if (url.pathname === "/api/channels" && opts.channels) return core.withDate(Response.json({ channels: opts.channels }));
+        if (url.pathname === "/api/channels" && opts.channels) return core.withDate(Response.json({ channels: channelListAnswer(opts.channels, url) }));
         return core.withDate(Response.json([]));
       }
       if (url.pathname.startsWith("/api/")) return core.checkResource(req) ?? core.withDate(Response.json([]));
@@ -813,4 +813,13 @@ export function startAuthStub(opts: StubOptions = {}) {
     liveSockets: () => core.sockets.size,
     stop: () => server.stop(true),
   };
+}
+
+/**
+ * `GET /api/channels` as the server answers it: with `?name=`, only the channel of that name,
+ * matched regardless of case (server 0018: SQL lower(), names unique regardless of case).
+ */
+export function channelListAnswer<C extends { name: string }>(channels: readonly C[], url: URL): C[] {
+  const name = url.searchParams.get("name");
+  return name === null ? [...channels] : channels.filter((c) => c.name.toLowerCase() === name.replace(/^#/, "").toLowerCase());
 }

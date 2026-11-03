@@ -868,7 +868,10 @@ function feedStatus(state: "connected" | "reconnecting" | "stopped", reason?: st
 function channelIdOf(ref: string): string | null {
   const r = ref.replace(/^#/, "");
   if (UUID_ID_RE.test(r)) return r.toLowerCase();
-  return channelNameToId?.get(r) ?? null;
+  // Any case: names are one per workspace regardless of case (server migration 0018).
+  const want = r.toLowerCase();
+  for (const [name, id] of channelNameToId ?? []) if (name.toLowerCase() === want) return id;
+  return null;
 }
 const UUID_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -2204,24 +2207,17 @@ async function resolveChannelRef(ref: unknown): Promise<{ channelId: string; cha
     return { channelId: raw.toLowerCase(), channelName: raw.toLowerCase() };
   }
   /**
-   * `includeArchived`: an archived channel must resolve, so join/leave can say "it is
-   * archived" rather than "no such channel". Names are unique per workspace but
-   * CASE-SENSITIVE (`Ops` and `ops` can both exist), so an exact match wins; a
-   * case-insensitive one is used only when it is the only one — never a guess, since
-   * leave_channel acts on what this returns.
+   * The SERVER matches the name (`?name=`: regardless of case, NFC, in SQL — the one place names
+   * are folded; a JS toLowerCase beside SQL's lower() disagrees on some letters). `includeArchived`:
+   * an archived channel must resolve, so join/leave can say "it is archived" rather than "no such
+   * channel". Names are unique regardless of case (server 0018): one row, or none.
    */
-  const listRes = await apiFetch("/api/channels?includeArchived=true");
+  const listRes = await apiFetch(`/api/channels?includeArchived=true&name=${encodeURIComponent(raw)}`);
   if (!listRes.ok) throw new Error(`einweave API error ${listRes.status}`);
-  const all = (((await listRes.json()) as any).channels ?? []) as { id: string; name: string }[];
-  const exact = all.find((c) => c.name === raw);
-  if (exact) return { channelId: exact.id, channelName: exact.name };
-  const folded = all.filter((c) => c.name.toLowerCase() === raw.toLowerCase());
-  if (folded.length === 1) return { channelId: folded[0]!.id, channelName: folded[0]!.name };
-  if (folded.length > 1) {
-    throw new Error(
-      `"${raw}" matches several channels: ${folded.map((c) => `#${c.name} (${c.id})`).join(", ")} — pass the exact name or the id`
-    );
-  }
+  const found = (((await listRes.json()) as any).channels ?? []) as { id: string; name: string }[];
+  // More than one: a server that ignored `name` (older than this plugin) listed everything.
+  if (found.length > 1) throw new Error("This einweave server is too old to look channels up by name: ask its admin to update it.");
+  if (found[0]) return { channelId: found[0].id, channelName: found[0].name };
   throw new Error(`no channel named "${raw}" that this agent can see`);
 }
 
@@ -3252,6 +3248,8 @@ function searchRefusalText(a: Record<string, unknown> & { code: string }): strin
   switch (a.code as SearchRefusal["code"]) {
     case "unresolved_filter": {
       const s = list(a.suggestions);
+      // A key with nothing after it yet (`is:`, `in:`): not a miss, a question.
+      if (token.endsWith(":")) return `Pick a value for ${token}`;
       return `Nothing you can read matches ${token}.` + (s.length ? ` Did you mean: ${s.join(", ")}?` : "");
     }
     case "unknown_filter":

@@ -15,7 +15,7 @@ import {
   applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
-  applySuggestion, NO_SEARCH, SEARCH_DEBOUNCE_MS, searchAnswer,
+  applySuggestion, NO_SEARCH, oneLine, SEARCH_DEBOUNCE_MS, SEARCH_FIELD, SEARCH_FILL, searchAnswer,
   type InboxRow, type SearchHit, type SearchState, type Seg, type ThreadLayout, type Tone,
 } from './model'
 import type { Line } from './text'
@@ -892,7 +892,7 @@ export const register: Register = on => {
 
     /** A snippet as a record's line: the hits bright and bold, the rest dim (board Search). */
     const snippetSegs = (h: SearchHit): Seg[] =>
-      h.snippet_parts.map(p => (p.hit ? { text: p.text, weight: 'bold' as const } : { text: p.text, tone: 'dim' as const }))
+      oneLine(h.snippet_parts).map(p => (p.hit ? { text: p.text, weight: 'bold' as const } : { text: p.text, tone: 'dim' as const }))
     const heldHere = (id: string) => s.holds.some(h => h.threadId === id)
     const releaseAct = (id: string): Act => ({ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: id }) })
     const dot = { text: ' · ', tone: 'dim' as const }
@@ -1006,14 +1006,25 @@ export const register: Register = on => {
       const field = Input ? (
         <Box key="search-field" flexDirection="column">
           <Text dimColor>Search threads and messages</Text>
-          <Input
-            key="search"
-            value={st.q}
-            placeholder='words, "a phrase", in:#channel, from:@person, is:open'
-            submitLabel="search"
-            onInput={q => void editSearch($, { q })}
-            onSubmit={q => void editSearch($, { q }, true)}
-          />
+          {/* Bordered, as the board's field and Claude Code's own prompt box: bare, it read as a line of hint text (live check 2026-11-03). */}
+          <Box key="search-box" flexDirection="row" borderStyle="round" borderColor={RULE} paddingX={1} height={3} overflow="hidden">
+            <Input
+              key={SEARCH_FIELD}
+              value={st.q}
+              placeholder='words, "a phrase", in:#channel, from:@person, is:open'
+              submitLabel="search"
+              onInput={q => void editSearch($, { q })}
+              onSubmit={q => void editSearch($, { q }, true)}
+            />
+            {/* An Input is as wide as its text: the rest of the box is this blank, which puts the keyboard
+                in the field, so a click anywhere in the box lands there (live check 2026-11-03). Clipped by the box.
+                A terminal only: a desktop draws every Button native, and its field is a native one. */}
+            {desk ? null : (
+              <Button key={SEARCH_FILL} plain dimColor label="Search" hover={{ inverse: false }} onPress={() => void $.ui.focus({ requestId: PANE, key: SEARCH_FIELD })}>
+                {' '.repeat(Math.max(1, e.props.bodyColumns))}
+              </Button>
+            )}
+          </Box>
         </Box>
       ) : null
       const searching = !!Input && st.q.trim() !== ''

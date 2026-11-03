@@ -223,6 +223,9 @@ describe("search tool", () => {
     expect(JSON.parse(r.text)).toEqual({ refused: "unresolved_filter", hint: "Nothing you can read matches in:#opz. Did you mean: in:#ops, in:#infra?", suggestions: ["in:#ops", "in:#infra"] });
     stub.answer({ status: 422, body: { error: "unknown_filter", code: "unknown_filter", token: "chan:ops", keys: ["in", "from"] } });
     expect(JSON.parse((await callTool("search", { query: "chan:ops" })).text).hint).toBe("chan:ops is not a filter. Filters: in: from:");
+    // A key with no value yet: a question, with whole tokens to pick (server: `is:answered`, not `answered`).
+    stub.answer({ status: 422, body: { error: "unresolved_filter", code: "unresolved_filter", token: "is:", suggestions: ["is:answered", "is:unanswered", "is:archived"] } });
+    expect(JSON.parse((await callTool("search", { query: "is:" })).text)).toEqual({ refused: "unresolved_filter", hint: "Pick a value for is:", suggestions: ["is:answered", "is:unanswered", "is:archived"] });
   });
 
   test("a server without search says so; bad arguments are refused before any request", async () => {

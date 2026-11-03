@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, threadOff, withOlder,
 } from "../mod/model";
@@ -332,6 +332,28 @@ describe("the Inbox and thread tabs", () => {
     expect(channelsView("This einweave server is too old")).toMatchObject({ channels: [], error: "This einweave server is too old", loading: false });
     expect(channelView(JSON.stringify({ channel_id: "c", threads: [] }))).toEqual({ threads: [], error: null, loading: false });
     expect(channelView("")).toMatchObject({ error: "ui_channel answered nothing", loading: false });
+  });
+
+  test("a snippet draws on one line: newlines and runs of spaces become one space, the ends trimmed", () => {
+    expect(oneLine([{ text: "  line one\n\nline   two ", hit: false }, { text: "answered", hit: true }, { text: "\n by Brian\n", hit: false }])).toEqual([
+      { text: "line one line two ", hit: false },
+      { text: "answered", hit: true },
+      { text: " by Brian", hit: false },
+    ]);
+    expect(oneLine([{ text: "\n  ", hit: false }])).toEqual([]);
+  });
+
+  test("the search field's filler is never a stop: from the field on to the first record, from elsewhere back into the field", () => {
+    expect(focusTarget(["mark:a", "mark:b"], "search", "search-fill")).toBe("mark:a");
+    expect(focusTarget([], "search", "search-fill")).toBe("search");
+    expect(focusTarget(["mark:a", "mark:b"], "mark:a", "search-fill")).toBe("search");
+    expect(focusTarget(["mark:a"], "", "search")).toBe("search");
+  });
+
+  test("a suggestion replaces the token as it stands: is: → is:answered, in:#opz → in:#ops; no token found → added", () => {
+    expect(applySuggestion("deploy is:", "is:", "is:answered")).toBe("deploy is:answered");
+    expect(applySuggestion("deploy in:#opz", "in:#opz", "in:#ops")).toBe("deploy in:#ops");
+    expect(applySuggestion("deploy", "kind:bugg", "kind:bug")).toBe("deploy kind:bug");
   });
 
   test("find (searchText): a line per thread with where it matched and its id; refusal and non-JSON pass through", () => {

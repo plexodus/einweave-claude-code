@@ -410,6 +410,9 @@ export function recordOf(element: string | undefined): string {
  * `stops` are the stop keys drawn, top to bottom; `last` where the ring was.
  */
 export function focusTarget(stops: readonly string[], last: string, element: string | undefined): string | undefined {
+  // The Inbox search field's filler (a click target, never a stop): from the field the move was
+  // forward, on to the first record; from anywhere else it was back, into the field (live check 2026-11-03).
+  if (element === SEARCH_FILL) return last === SEARCH_FIELD ? (stops[0] ?? SEARCH_FIELD) : SEARCH_FIELD
   const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
   if (!m) return element
   const id = m[2]!
@@ -727,6 +730,20 @@ export function searchAnswer(raw: string): Pick<SearchState, 'rows' | 'total' | 
 export function applySuggestion(q: string, token: string | null, suggestion: string): string {
   if (token && q.includes(token)) return q.replace(token, suggestion)
   return `${q.trim()} ${suggestion}`.trim()
+}
+
+/** The Inbox search field's key, and the blank after it that makes the whole box a click target. */
+export const SEARCH_FIELD = 'search'
+export const SEARCH_FILL = 'search-fill'
+
+/** A snippet's runs on one line: newlines and runs of spaces from the message become one space each. */
+export function oneLine(parts: { text: string; hit: boolean }[]): { text: string; hit: boolean }[] {
+  const out = parts.map(p => ({ ...p, text: p.text.replace(/\s+/g, ' ') })).filter(p => p.text !== '')
+  if (out.length) {
+    out[0] = { ...out[0]!, text: out[0]!.text.trimStart() }
+    out[out.length - 1] = { ...out[out.length - 1]!, text: out[out.length - 1]!.text.trimEnd() }
+  }
+  return out.filter(p => p.text !== '')
 }
 
 /** Seconds of quiet before a typed query is sent: a pause, not every key. */
