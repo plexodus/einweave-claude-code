@@ -619,6 +619,25 @@ test('a snapshot with uiSocket: the thread tab reads over http.fetch on that soc
   await ui.unmount()
 })
 
+test('a snapshot with uiSocket: a person\'s actions (a /einweave command, a pane button) POST /tool/<name> on that socket, with NO mcp.call for them; a refusal falls back to MCP', async ($, on) => {
+  const posted: { url: string; method?: string; body?: string; socketPath?: string }[] = []
+  let refused = false
+  on('http.fetch', (_$, e) => {
+    if (!e.url.includes('/tool/')) return { value: { status: 404, ok: false, headers: {}, text: '{"error":"not found"}' } }
+    posted.push({ url: e.url, method: e.init?.method, body: e.init?.body, socketPath: e.init?.socketPath })
+    if (refused) throw new Error('refused by policy')
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ content: [{ type: 'text', text: 'released over the socket' }] }) } }
+  })
+  const { calls, clock } = engine(on, { polled: { ...WAITING, uiSocket: '/tmp/ew/u1.sock' }, answer: c => text(`${c.tool} ${JSON.stringify(c.args)}`) })
+  await start($, clock)
+  expect((await $.command.run({ command: 'einweave', args: 'release 2' })).text).toBe('released over the socket')
+  expect(posted).toEqual([{ url: 'http://einweave/tool/release', method: 'POST', body: '{"ref":"2"}', socketPath: '/tmp/ew/u1.sock' }])
+  expect(calls.filter(c => c.tool === 'release')).toEqual([])
+  refused = true
+  expect((await $.command.run({ command: 'einweave', args: 'release 3' })).text).toBe('release {"ref":"3"}')
+  expect(calls.filter(c => c.tool === 'release').map(c => c.args)).toEqual([{ ref: '3' }])
+})
+
 for (const [name, polled] of [['absent', WAITING], ['null', { ...WAITING, uiSocket: null }], ['junk', { ...WAITING, uiSocket: 42 as unknown as string }]] as const) {
   test(`a snapshot whose uiSocket is ${name}: the thread tab reads through mcp.call, and http.fetch is never touched`, async ($, on) => {
     const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [], has_older: false, older_count: 0 }
@@ -1240,6 +1259,8 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   // Post text is our own lines: bold run, link run, each line one row.
   expect(await ui.find({ type: 'Text', text: '14:00' })).toMatchObject({ props: { weight: 'bold' } })
   expect(await ui.find({ type: 'Text', text: 'https://example.com/x' })).toMatchObject({ props: { color: PALETTE.blue, underline: true } })
+  // A terminal that draws links needs no Option-click hint.
+  expect(await ui.find({ type: 'Text', text: /click a URL/ })).toBeUndefined()
   // A link is the kit's Link on the terminal too (an OSC 8 link), not coloured text alone.
   expect((await ui.findAll({ type: 'Link' })).map(l => (l.props as { href?: string }).href)).toContain('https://example.com/x')
   // The long post capped at 6 lines, a "more" row after them.
@@ -1387,6 +1408,8 @@ test('a terminal without OSC 8 links: no Link; the URL is part of the line, coun
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
   expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  // Terminal.app opens a URL on Option+click (Claude Code takes the plain and Cmd clicks): the footer says so.
+  expect(await ui.find({ type: 'Text', text: '⌥-click a URL to open it ·' })).toBeDefined()
   const row = (await ui.findAll({ type: 'Box' })).find(b => String(b.key) === `ln:${T_OLD}:s31:0`)
   expect(row).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'https://example.com/x' })).toMatchObject({ props: { dimColor: true } })

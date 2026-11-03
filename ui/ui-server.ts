@@ -7,8 +7,11 @@
  * person looking, not a model reading, so it reads over HTTP from here instead (`$.http.fetch` with
  * `socketPath`), whole. The `ui_*` MCP tools stay as the fallback and keep their size budget.
  *
- * ROUTES (GET only, JSON): `/state`, `/channels`, `/channel/:id`, `/thread/:id?before_seq=&limit=`.
- * A route that fails answers `{ error }` with a 4xx/5xx; anything else is 404; a body is refused.
+ * ROUTES (JSON): GET `/state`, `/channels`, `/channel/:id`, `/thread/:id?before_seq=&limit=` (no body);
+ * POST `/tool/:name` with a JSON object of arguments: an action a PERSON started in the pane (Take,
+ * Release, Connect, a `/einweave` command), run by the same code as the MCP tool of that name and
+ * answered with its result. Only the tools the routes allow (server.ts PERSON_TOOLS): the socket is not
+ * a way to run any tool. A route that fails answers `{ error }` with a 4xx/5xx; anything else is 404.
  *
  * SAFETY is the control socket's, copied rather than reinvented (delivery/ctl-server.ts): the socket is
  * 0600 in a directory verified 0700 and ours (private-dir.ts) before anything is bound; it binds at a
@@ -40,6 +43,8 @@ export interface UiRoutes {
   channels(): Promise<unknown>;
   channel(id: string): Promise<unknown>;
   thread(id: string, page: { beforeSeq?: number; limit?: number }): Promise<unknown>;
+  /** A person's action: the MCP tool `name`'s result; a tool not allowed is a UiHttpError 403. */
+  tool(name: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
 export interface UiServerOptions {
@@ -60,6 +65,8 @@ export type UiOpen = { server: UiServer; failure?: undefined } | { server: null;
 /** A request line longer than this is not ours (ids are UUIDs). */
 const MAX_URL = 2048;
 const MAX_ID = 256;
+/** An action's arguments: a label, a ref, a channel list. Far under this. */
+const MAX_BODY = 4096;
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -74,12 +81,14 @@ function intParam(v: string | null): number | undefined {
 
 export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response> {
   return async (req) => {
-    if (req.method !== "GET") return json(405, { error: "GET only" });
+    if (req.method !== "GET" && req.method !== "POST") return json(405, { error: "GET or POST only" });
     if (req.url.length > MAX_URL) return json(414, { error: "request too long" });
-    // A GET carries no body here: refuse one rather than read it.
-    if (req.body !== null || req.headers.has("transfer-encoding") || Number(req.headers.get("content-length") ?? 0) > 0) return json(400, { error: "no body expected" });
     const url = new URL(req.url);
     const [, head, rest, ...more] = url.pathname.split("/");
+    // POST is an action, and only an action; a GET carries no body: refuse one rather than read it.
+    const post = req.method === "POST";
+    if (post !== (head === "tool")) return json(405, { error: post ? "GET only here" : "POST only" });
+    if (!post && (req.body !== null || req.headers.has("transfer-encoding") || Number(req.headers.get("content-length") ?? 0) > 0)) return json(400, { error: "no body expected" });
     let id = "";
     if (rest !== undefined) {
       try {
@@ -94,6 +103,18 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
         if (head === "state" && rest === undefined) return json(200, await routes.state());
         if (head === "channels" && rest === undefined) return json(200, await routes.channels());
         if (head === "channel" && rest !== undefined) return json(200, await routes.channel(id));
+        if (head === "tool" && rest !== undefined) {
+          const text = await req.text();
+          if (text.length > MAX_BODY) return json(413, { error: "arguments too large" });
+          let args: unknown;
+          try {
+            args = text ? JSON.parse(text) : {};
+          } catch {
+            return json(400, { error: "arguments are not JSON" });
+          }
+          if (!args || typeof args !== "object" || Array.isArray(args)) return json(400, { error: "arguments must be an object" });
+          return json(200, await routes.tool(id, args as Record<string, unknown>));
+        }
         if (head === "thread" && rest !== undefined) {
           return json(200, await routes.thread(id, { beforeSeq: intParam(url.searchParams.get("before_seq")), limit: intParam(url.searchParams.get("limit")) }));
         }
@@ -125,7 +146,7 @@ export function openUiServer(o: UiServerOptions): UiOpen {
       o.log(`einweave ui: data socket not started — ${safe.reason}; the pane reads over MCP`);
       return { server: null, failure: safe.reason };
     }
-    server = Bun.serve({ unix: tmp, maxRequestBodySize: 1024, fetch: uiHandler(o.routes) });
+    server = Bun.serve({ unix: tmp, maxRequestBodySize: MAX_BODY, fetch: uiHandler(o.routes) });
     chmodSync(tmp, 0o600);
     const st = lstatSync(tmp);
     mine = { ino: st.ino, dev: st.dev };

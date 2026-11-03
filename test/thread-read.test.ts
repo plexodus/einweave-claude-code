@@ -566,6 +566,14 @@ describe("read_thread / list_threads", () => {
     expect(((await callTool("ui_thread", { thread_id: THREAD })).text as string).length).toBeLessThanOrEqual(40000);
     // A refusal is JSON with its status, not a dropped socket.
     expect((await fetch(`http://einweave/thread/no-such`, { unix: uiSocket as string } as RequestInit)).status).toBe(500);
+    // A person's action runs the tool of that name (the same answer as MCP); a tool no person starts is refused.
+    const post = (name: string, args: object) => fetch(`http://einweave/tool/${name}`, { method: "POST", body: JSON.stringify(args), unix: uiSocket as string } as RequestInit);
+    const status = await post("status", {});
+    expect(status.status).toBe(200);
+    expect(((await status.json()) as { content: { text: string }[] }).content[0]!.text).toBe((await callTool("status", {})).text);
+    const reply = await post("reply", { channel_id: CHANNEL_ID, text: "from the socket" });
+    expect(reply.status).toBe(403);
+    expect(stub.calls.some((c) => c.startsWith("POST") && c.includes("/messages"))).toBe(false);
   }, 30_000);
 
   test("ui_channels: the channels it is in or follows (mine, no include), named from the list; counts passed through, ABSENT ones stay absent", async () => {

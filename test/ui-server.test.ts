@@ -34,6 +34,10 @@ const ROUTES: UiRoutes = {
     if (id === "boom") throw new Error("kaboom");
     return { thread: { id }, content: "x".repeat(200_000) };
   },
+  tool: async (name, args) => {
+    if (name !== "take") throw new UiHttpError(403, `${name} is not run from the pane`);
+    return { content: [{ type: "text", text: `took ${String(args.ref)}` }] };
+  },
 };
 
 function open(path: string, routes: UiRoutes = ROUTES): UiServer {
@@ -94,6 +98,20 @@ describe("ui server", () => {
     expect(boom.status).toBe(500);
     expect(await boom.json()).toEqual({ error: "kaboom" });
     expect((await get(path, "/state")).status).toBe(200);
+  });
+
+  test("POST /tool/:name runs a person's action with its JSON arguments; a refused tool is 403; GET on it 405; bad bodies 400/413", async () => {
+    const path = join(privateDir(), "u1.sock");
+    open(path);
+    const post = (url: string, body: string) => get(path, url, { method: "POST", body, headers: { "content-type": "application/json" } });
+    const ok = await post("/tool/take", JSON.stringify({ ref: "t1" }));
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ content: [{ type: "text", text: "took t1" }] });
+    expect((await post("/tool/reply", JSON.stringify({ text: "hi" }))).status).toBe(403);
+    expect((await get(path, "/tool/take")).status).toBe(405);
+    expect((await post("/tool/take", "not json")).status).toBe(400);
+    expect((await post("/tool/take", "[1]")).status).toBe(400);
+    expect((await post("/tool/take", JSON.stringify({ ref: "x".repeat(5000) }))).status).toBeGreaterThanOrEqual(400);
   });
 
   test("unknown routes are 404; only GET; a body is refused", async () => {

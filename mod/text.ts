@@ -27,6 +27,8 @@ export interface Run {
   deco?: true
   /** A URL drawn as text (a terminal without OSC 8 links): never split, cut where wider than a line. */
   url?: true
+  /** A link's text where the terminal draws no links: looks like one; its URL is on a row of its own. */
+  link?: true
 }
 
 /** One drawn row. */
@@ -61,7 +63,7 @@ export function cellWidth(s: string): number {
 
 const same = (a: Run, b: Run) =>
   a.bold === b.bold && a.italic === b.italic && a.code === b.code && a.dim === b.dim && a.strike === b.strike &&
-  a.href === b.href && a.mention === b.mention && a.deco === b.deco && a.url === b.url
+  a.href === b.href && a.mention === b.mention && a.deco === b.deco && a.url === b.url && a.link === b.link
 
 /** Adjacent runs of one style joined. */
 function merge(line: Line): Line {
@@ -250,7 +252,7 @@ function inline(nodes: readonly unknown[], style: Style, segs: Run[][], ctx: Ctx
         else {
           const text = flat(kids(n))
           const bare = text === a.href || `mailto:${text}` === a.href
-          inline(kids(n), bare ? { ...style, url: true } : style, segs, ctx)
+          inline(kids(n), bare ? { ...style, url: true } : { ...style, link: true }, segs, ctx)
           if (!bare) ctx.urls.push(a.href)
         }
         break

@@ -63,9 +63,9 @@ const paint = (tone: Tone | undefined) => (tone === 'dim' ? { dimColor: true } :
  * (`$.http.fetch` with `socketPath`, whole): the host cuts a tool result at its MODEL-facing output limit, and a long
  * thread page came back as an error (88,741 chars, 2026-11-03). A refusal of the fetch itself (no socket any more,
  * a policy) falls back to the MCP tool for that call, which keeps its size budget; an answer, even an error, stands.
- * `ui_state` itself stays MCP: small, the call that tells the mod the socket's path, and the probe that the plugin process is up.
+ * `ui_state` goes over MCP until a snapshot has named the socket (that read is how the mod learns its path).
  */
-async function uiRead($: EngineInterface, path: string, query: Record<string, number>, tool: string, args: Record<string, string | number>) {
+async function uiRead($: EngineInterface, path: string, query: Record<string, number>, tool: string, args: Record<string, string | number>, server = SERVER) {
   const socketPath = (await read($, view)).snap?.uiSocket
   if (socketPath) {
     try {
@@ -79,6 +79,28 @@ async function uiRead($: EngineInterface, path: string, query: Record<string, nu
       return { isError: true, content: [{ type: 'text' as const, text: error || `${tool} failed (HTTP ${r.status})` }] }
     } catch {}
   }
+  return $.mcp.call(server, tool, args)
+}
+
+/**
+ * A person's action (Take, Release, Connect, a `/einweave` command): the plugin's tool of that name, run over
+ * the UI socket when the snapshot names one (`POST /tool/:name`, the same code as the MCP tool), so the
+ * person's own action is not a model's tool call: not bound by its output limit nor seen by its tool hooks.
+ * A refusal of the fetch itself falls back to the MCP tool; an answer, even an error, stands.
+ */
+async function uiTool($: EngineInterface, tool: string, args: Record<string, unknown>) {
+  const socketPath = (await read($, view)).snap?.uiSocket
+  if (socketPath) {
+    try {
+      const r = await $.http.fetch(`http://einweave/tool/${encodeURIComponent(tool)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args), socketPath })
+      let body: { content?: unknown; isError?: unknown; error?: unknown } = {}
+      try {
+        body = JSON.parse(r.text) as typeof body
+      } catch {}
+      if (r.ok && Array.isArray(body.content)) return { isError: body.isError === true, content: body.content as { type: 'text'; text: string }[] }
+      return { isError: true, content: [{ type: 'text' as const, text: String(body.error ?? '') || `${tool} failed (HTTP ${r.status})` }] }
+    } catch {}
+  }
   return $.mcp.call(SERVER, tool, args)
 }
 
@@ -86,7 +108,9 @@ async function uiRead($: EngineInterface, path: string, query: Record<string, nu
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
   const now = await $.clock.now()
   const wasDown = (await read($, view)).downSince !== null
-  await update($, view, v => ({ ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
+  // While the relay is live it is the truth (the plugin pushes every change on it): a poll's answer, however
+  // late it lands, never overwrites it. A restarted plugin's relay counts from rev 1 under a higher polled rev.
+  await update($, view, v => (live === undefined && v.live ? v : { ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
   if (!wasDown && got.snap.connection.state === 'disconnected') $.clock.after(BAND_GRACE_MS + 50, () => void update($, view, v => ({ ...v })))
 }
 
@@ -96,7 +120,7 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
     // The first draw runs while the server is still starting: wait for it, or the read fails and says "not answering".
     const c = await $.mcp.connect('einweave')
     if (!c.isConnected) return void (await update($, view, v => ({ ...v, error: c.message })))
-    const r = await $.mcp.call(c.server, 'ui_state', {})
+    const r = await uiRead($, '/state', {}, 'ui_state', {}, c.server)
     const got = r.isError ? null : fromTool(r)
     if (got) await take($, got, restart)
     else await update($, view, v => ({ ...v, error: r.isError ? textOf(r) || 'ui_state failed' : 'ui_state answered no snapshot' }))
@@ -106,7 +130,7 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
 }
 
 async function connect($: EngineInterface): Promise<string> {
-  const r = await $.mcp.call(SERVER, 'connect', {})
+  const r = await uiTool($, 'connect', {})
   let text = textOf(r)
   await poll($)
   if ((await read($, view)).snap?.connection.state === 'standby') {
@@ -114,7 +138,7 @@ async function connect($: EngineInterface): Promise<string> {
     try {
       answer = await $.ui.ask('Another window has this einweave session. Take it over here?', ['Take it over', 'Leave it'])
     } catch {}
-    if (answer === 'Take it over') text = textOf(await $.mcp.call(SERVER, 'connect', { takeover: 'lock' }))
+    if (answer === 'Take it over') text = textOf(await uiTool($, 'connect', { takeover: 'lock' }))
   }
   return text.startsWith('connecting') ? settled($) : text
 }
@@ -135,7 +159,7 @@ async function togglePane($: EngineInterface): Promise<{ isPlaced: boolean } | n
 
 /** Take this session back from the window that took it over: the person pressed for it, so no question. */
 async function takeBack($: EngineInterface): Promise<string> {
-  const text = textOf(await $.mcp.call(SERVER, 'connect', { takeover: 'lock' }))
+  const text = textOf(await uiTool($, 'connect', { takeover: 'lock' }))
   return text.startsWith('connecting') ? settled($) : text
 }
 
@@ -160,7 +184,7 @@ async function settled($: EngineInterface): Promise<string> {
  * the person, and only on their yes take it with confirm (by id: a number cannot carry a confirmation).
  */
 async function takeThread($: EngineInterface, ref: string): Promise<string> {
-  const first = textOf(await $.mcp.call(SERVER, 'take', { ref }))
+  const first = textOf(await uiTool($, 'take', { ref }))
   const o = takeOutcome(first)
   if (o.kind !== 'ask') {
     await poll($)
@@ -171,7 +195,7 @@ async function takeThread($: EngineInterface, ref: string): Promise<string> {
     answer = await $.ui.ask(o.question, ['Take it', 'Leave it'])
   } catch {}
   if (answer !== 'Take it') return 'Nothing was taken.'
-  const text = textOf(await $.mcp.call(SERVER, 'take', { ref: o.id, confirm: true }))
+  const text = textOf(await uiTool($, 'take', { ref: o.id, confirm: true }))
   await poll($)
   return text
 }
@@ -283,6 +307,10 @@ async function tooOld($: EngineInterface): Promise<string | null> {
 // Does this terminal draw OSC 8 links? Claude Code's own answer (links.ts), asked once per load: where
 // it is no, the kit's Link prints its URL after its text, uncounted, and every row overflowed.
 let linking: Promise<boolean> | undefined
+// Terminal.app: no OSC 8, and Claude Code's mouse capture takes a plain or Cmd click; Option+click reaches
+// Terminal.app itself, which opens the URL under it (measured 2026-11-03). The thread tab says so there.
+let appleTerminal: Promise<boolean> | undefined
+const isAppleTerminal = ($: EngineInterface) => (appleTerminal ??= $.env.get('TERM_PROGRAM').then(v => v === 'Apple_Terminal', () => false))
 
 async function terminalLinks($: EngineInterface): Promise<boolean> {
   linking ??= (async () => {
@@ -419,18 +447,18 @@ export const register: Register = on => {
       case 'connect':
         return { text: await connect($) }
       case 'status': {
-        const r = await $.mcp.call(SERVER, 'status', {})
+        const r = await uiTool($, 'status', {})
         const text = textOf(r)
         return { text: action.full || r.isError ? text : statusSummary(text, (await read($, view)).snap?.waiting ?? null) }
       }
       case 'tool': {
-        const r = await $.mcp.call(SERVER, action.tool, action.args)
+        const r = await uiTool($, action.tool, action.args)
         return { text: textOf(r) || (r.isError ? `${action.tool} failed` : 'Done.') }
       }
       case 'take':
         return { text: await takeThread($, action.ref) }
       case 'find': {
-        const r = await $.mcp.call(SERVER, 'list_threads', { takeable: true, limit: 50 })
+        const r = await uiTool($, 'list_threads', { takeable: true, limit: 50 })
         return { text: r.isError ? textOf(r) || 'list_threads failed' : findInList(textOf(r), action.words) }
       }
     }
@@ -563,7 +591,7 @@ export const register: Register = on => {
     const t = await read($, tabs)
     const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     const act = (tool: string, args: Record<string, unknown>) => () =>
-      void $.mcp.call(SERVER, tool, args).then(
+      void uiTool($, tool, args).then(
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
         err => $.ui.toast(`${tool} failed: ${String(err).slice(0, 120)}`),
       )
@@ -1011,7 +1039,9 @@ export const register: Register = on => {
       const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
       const sc = (await read($, scrolls))[id]
       // A desktop draws links itself; a terminal only when it draws OSC 8.
-      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, desk || (await terminalLinks($)))
+      const links = desk || (await terminalLinks($))
+      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, links)
+      const optionClick = !links && (await isAppleTerminal($))
       // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
       // rule, the thread's own header (title, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
@@ -1041,7 +1071,7 @@ export const register: Register = on => {
                 <Text
                   key={`${key}:${n}`}
                   wrap="truncate-end"
-                  {...(r.href ? { color: PALETTE.blue, underline: true } : r.mention === 'active' ? { color: PALETTE.brand } : r.dim ? { dimColor: true } : {})}
+                  {...(r.href || r.link ? { color: PALETTE.blue, underline: true } : r.mention === 'active' ? { color: PALETTE.brand } : r.dim ? { dimColor: true } : {})}
                   {...(r.code ? { backgroundColor: RULE } : {})}
                   {...(r.bold ? { weight: 'bold' as const } : {})}
                   {...(r.italic ? { italic: true } : {})}
@@ -1145,6 +1175,7 @@ export const register: Register = on => {
             {held ? null : <Text key="sep:refresh" dimColor>·</Text>}
             {held ? null : <Button key={`refresh:${id}`} plain label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
             <Box flexGrow={1} />
+            {optionClick ? <Text key="hint:links" dimColor>⌥-click a URL to open it ·</Text> : null}
             <Text dimColor>read-only</Text>
           </Box>
         </Box>

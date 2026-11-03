@@ -44,6 +44,7 @@ const PROCESS_STARTED_AT = new Date().toISOString();
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync, mkdirSync, chmodSync, existsSync } from "fs";
 import { homedir, hostname, tmpdir } from "os";
@@ -1347,9 +1348,20 @@ async function holdsLiveLock(): Promise<boolean> {
   }
 }
 
-/** The UI socket's routes: the same reads as the `ui_*` tools, whole (no budget), gated as they are. */
+/**
+ * The tools a PERSON starts from the pane (its buttons and `/einweave` commands): the only ones the UI
+ * socket runs. A person's action, not a model's call: it answers whole, past the model's tool-output limit
+ * and its tool hooks. Any other name is refused (403): the socket is not a way to run every tool.
+ */
+const PERSON_TOOLS = new Set(["connect", "take", "release", "handover", "scope", "set_session_label", "status", "disconnect", "logout", "list_threads"]);
+
+/** The UI socket's routes: the same reads as the `ui_*` tools, whole (no budget), gated as they are; and a person's actions. */
 const uiRoutes: UiRoutes = {
   state: () => uiState(),
+  tool: async (name, args) => {
+    if (!PERSON_TOOLS.has(name)) throw new UiHttpError(403, `${name} is not run from the pane`);
+    return runTool(name, args);
+  },
   channels: async () => (uiGate(), await uiChannels()),
   channel: async (id) => (uiGate(), await uiChannel(id)),
   thread: async (id, page) => (uiGate(), await uiThread(id, { before_seq: page.beforeSeq, limit: page.limit })),
@@ -2350,7 +2362,7 @@ async function requireHolder(): Promise<{ content: { type: "text"; text: string 
  */
 const READ_DELIVERIES_BUDGET_BYTES = 40_000;
 
-async function readDeliveries(args: Record<string, unknown>) {
+async function readDeliveries(args: Record<string, unknown>): Promise<CallToolResult> {
   const gate = requireBridge();
   if (gate) return gate;
   const notHolder = await requireHolder();
@@ -3325,9 +3337,17 @@ function describeSendHold(hold: any, threadId: unknown): string {
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // The first tool call proves the host has finished its handshake: channel pushes may flow.
   openHostGate();
-  const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+  return runTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
+});
+
+/**
+ * One tool, by name: what an MCP call runs, and what the pane's socket runs for the actions a person
+ * starts (ui/ui-server.ts `POST /tool/:name`, PERSON_TOOLS). Same code, same answers; only the path in
+ * differs, so a person's action is not bound by the model's tool-output limit or its tool hooks.
+ */
+async function runTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   try {
-    switch (req.params.name) {
+    switch (name) {
       case "reply": {
         { const gate = requireBridge(); if (gate) return gate; }
         const channelId = args.channel_id as string;
@@ -4250,7 +4270,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "list_items":
       case "item_schema": {
         { const gate = requireBridge(); if (gate) return gate; }
-        return { content: [{ type: "text", text: await callWorkTool(req.params.name, args, workDeps) }] };
+        return { content: [{ type: "text", text: await callWorkTool(name, args, workDeps) }] };
       }
 
       case "set_session_label": {
@@ -4470,7 +4490,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       default:
         return {
           content: [
-            { type: "text", text: `unknown tool: ${req.params.name}` },
+            { type: "text", text: `unknown tool: ${name}` },
           ],
           isError: true,
         };
@@ -4478,11 +4498,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
-      content: [{ type: "text", text: `${req.params.name} failed: ${msg}` }],
+      content: [{ type: "text", text: `${name} failed: ${msg}` }],
       isError: true,
     };
   }
-});
+}
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 

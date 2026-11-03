@@ -123,6 +123,8 @@ describe("inline styles", () => {
     expect(texts(ls)).toEqual(["see a safe link or https://y.test/long/path", "https://x.test/a"]);
     expect(ls.flat().some(r => r.href)).toBe(false);
     expect(ls[1]!.every(r => r.dim && r.url)).toBe(true);
+    // The named link's text still looks like a link.
+    expect(ls[0]!.find(r => r.text.includes("a safe link"))).toMatchObject({ link: true });
     // Never split over rows (it would open in no terminal): narrower than the URL, it is cut.
     const narrow = docLines(doc, 12, { links: false });
     expect(texts(narrow).filter(t => t.startsWith("https://y"))).toEqual(["https://y.t…"]);
