@@ -799,10 +799,15 @@ export const register: Register = on => {
           <Text backgroundColor={PALETTE.pillBg} color={PALETTE.pillFg} weight="bold">{` ${label} `}</Text>
         </Button>
       ) : (
-        <Button key={key} label={` ${label} `} plain dimColor onPress={onPress}>
-          {/* An opened tab's label lights with its × (tabLit): the hover is the Text's, as the shown pill's fill is. */}
-          {lit ? <Text dimColor hover={lit}>{` ${label} `}</Text> : undefined}
-        </Button>
+        // An opened tab's label lights with its × (tabLit): dim and hover are the Text's, as the shown pill's fill
+        // is; a dimColor Button would keep the lit Text grey beside a bright × (live 2026-11-03).
+        lit ? (
+          <Button key={key} label={` ${label} `} plain onPress={onPress}>
+            <Text dimColor hover={lit}>{` ${label} `}</Text>
+          </Button>
+        ) : (
+          <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
+        )
       )
 
     // A blank row between the pane's name and its tabs (Jörgen 2026-11-03): the name cannot move up onto the
@@ -837,7 +842,7 @@ export const register: Register = on => {
                 key={`close:${o.id}`}
                 label="×"
                 plain
-                {...(shown && !desk ? { hover: { inverse: false } } : { dimColor: true })}
+                {...(shown && !desk ? { hover: { inverse: false } } : lit ? {} : { dimColor: true })}
                 onPress={() => {
                   void update($, tabs, x => closeTab(x, o.id))
                   if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))

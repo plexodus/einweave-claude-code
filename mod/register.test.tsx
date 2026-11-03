@@ -750,16 +750,17 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'tab:inbox' })
     const label = await ui.find({ key: `tab:${T_OLD}` })
     const close = await ui.find({ key: `close:${T_OLD}` })
-    expect(label?.props).toMatchObject({ label: ' Older ask ', dimColor: true })
+    expect(label?.props).toMatchObject({ label: ' Older ask ' })
     if (surface === 'terminal') {
-      // One group per tab: the pointer on either lights both, as the pointer draws a tab not shown (dim, inverse).
-      expect(close?.props).toMatchObject({ dimColor: true })
-      const lit = { scope: `tab:${T_OLD}`, inverse: true }
+      // One group per tab: the pointer on either lights both, as the pointer draws a fixed tab (inverse, full
+      // strength). Dim is the Texts' only: a dimColor Button keeps its lit Text grey (live 2026-11-03).
+      expect([label?.props, close?.props].map(p => (p as { dimColor?: boolean }).dimColor)).toEqual([undefined, undefined])
+      const lit = { scope: `tab:${T_OLD}`, inverse: true, dimColor: false }
       // (The kit reports a Text's hover beside its props; a Button's it does not, so the hover is the Texts'.)
       expect(label).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: [' Older ask '] }] })
       // At rest a dim `× `: the shown pill's width, so the tab does not grow when it is shown.
       expect(close).toMatchObject({ children: [{ type: 'Text', props: { dimColor: true }, hover: lit, children: ['× '] }] })
-      // Exactly that, both: un-dimmed, the × lit bright beside a grey label (live 2026-11-03).
+      // Exactly that, both.
       expect([label?.children[0]?.hover, close?.children[0]?.hover]).toEqual([lit, lit])
       // The tab's Box joins the group too (it sets it off; a Text inside a Button does not, live 2026-11-03). The
       // kit reports no Box's or Button's hover, so that half is checked live, not here.
@@ -767,6 +768,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect((await ui.find({ key: 'tab:held' }))?.children).toEqual([])
     } else {
       // A desktop draws no hover: its native buttons, the × dim as before.
+      expect(label?.props).toMatchObject({ dimColor: true })
       expect(label?.children).toEqual([])
       expect(close).toMatchObject({ props: { dimColor: true }, children: [] })
     }
