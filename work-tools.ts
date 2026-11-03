@@ -19,6 +19,8 @@ export type ApiCall = (method: string, path: string, body?: unknown) => Promise<
 
 export interface WorkDeps {
   api: ApiCall;
+  /** POST /api/messages through `sendMessage` (clientMsgId, one parser_busy retry, RFC-034 refusals thrown). */
+  send: (body: Record<string, unknown>) => ReturnType<ApiCall>;
   /** This session's agent id ("" before it authenticates): an answer names it "you", never by id. */
   self?: () => string;
   /** A root this session posted (create_item): its echo must be dismissed, and the feed shown it. */
@@ -131,7 +133,10 @@ function similarRow(s: any) {
 }
 
 async function call(deps: WorkDeps, method: string, path: string, body?: unknown): Promise<any> {
-  const r = await deps.api(method, path, body);
+  return answer(path, await deps.api(method, path, body));
+}
+
+function answer(path: string, r: Awaited<ReturnType<ApiCall>>): any {
   if (r.status === 404) throw new Error(`einweave refused (404 not_found) — not found, or not readable by this agent (${path.replace(/\?.*$/, "")})`);
   if (r.status < 200 || r.status >= 300) throw new Error(describeRefusal(r.status, r.body, r.text));
   return r.body;
@@ -381,7 +386,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["review", args.review],
         ["confirmNew", args.confirm_new === true ? true : undefined],
       ]);
-      const r = await call(deps, "POST", "/api/messages", body);
+      const r = answer("/api/messages", await deps.send(body));
       if (r?.id) deps.onRootSent?.({ id: String(r.id), channelId: String(r.channelId ?? channelId), threadId: String(r.threadId ?? ""), title, text });
       const item = r?.item;
       const similar = Array.isArray(r?.similar) ? r.similar.map(similarRow) : [];

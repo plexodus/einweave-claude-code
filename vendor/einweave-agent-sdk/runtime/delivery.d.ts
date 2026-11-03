@@ -12,9 +12,14 @@
  * from a host receipt, or `Session.ack` from a read tool that returned it. Never on push.
  */
 import type { ActionRequestPayload, DeliveryReason, ThreadEventPayload, WireMessage } from "../core";
-/** One inbound message, with the reason(s) THIS session was sent it for. */
+/**
+ * One inbound message, with the reason(s) THIS session was sent it for. `addressed`: the server picked
+ * this session's agent specifically (RFC-035 §5: the server's verdict, never re-derived from `deliveryReasons`
+ * on this SDK's vocab — a newer server's reason, e.g. `reply`, is unknown to it). Classify by THIS.
+ */
 export type Inbound = WireMessage & {
     deliveryReasons: DeliveryReason[];
+    addressed: boolean;
 };
 /** What a host is handed. `redelivery`: a frame of it was sent before (resume, reconcile). */
 export type Entry = {

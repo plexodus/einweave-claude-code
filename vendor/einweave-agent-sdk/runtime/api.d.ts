@@ -12,7 +12,7 @@
  * ("callers MUST call clear() … skipping it leaks both") rather than the
  * plugin's caller-specific workaround.
  */
-import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Scope } from "../core";
+import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type Scope, type WorkspaceLinks } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 export declare class ApiRequestError extends Error {
@@ -23,6 +23,12 @@ export declare class ApiRequestError extends Error {
     constructor(status: number, body: unknown, retryAfterS?: number);
 }
 export declare function isApiRequestError(e: unknown): e is ApiRequestError;
+interface RequestOpts {
+    body?: unknown;
+    signal?: AbortSignal;
+}
+/** Exported for the test only: no public call takes a `signal` yet, so the abort is driven here. */
+export declare function request(rt: Runtime, client: AgentClient, method: string, path: string, opts: RequestOpts, retried?: boolean, busyRetried?: boolean): Promise<unknown>;
 export interface ChannelSummary {
     id: string;
     name: string;
@@ -36,6 +42,16 @@ export interface ChannelThreadCounts {
     parked: number;
     /** The least recent activity among the waiting threads; null when none waits. */
     oldestWaitingAt: string | null;
+}
+/**
+ * `GET /api/me/workspace` (server #332): where the caller's workspace lives in the web app. `links`
+ * (RFC-035 D1): the server's URI templates — fill them with core `threadUrl` / `messageUrl`, never
+ * build a path from `webUrl`. All null when the caller has no workspace.
+ */
+export interface MyWorkspace {
+    workspaceId: string | null;
+    webUrl: string | null;
+    links: WorkspaceLinks | null;
 }
 /** The caller's relationship to one channel: a row of `GET /api/me/channels` (server #331). */
 export interface MyChannel {
@@ -75,6 +91,9 @@ export interface MessageEnvelope {
     /** The sending session's grant id, or null for a person / a session-less send. */
     senderContextId?: string | null;
     createdAt: string;
+    /** RFC-034: the parsed body, only when the read asked `include: "doc"`; `docV` 0 = render `content`. */
+    doc?: Doc;
+    docV?: number;
     [k: string]: unknown;
 }
 /**
@@ -129,6 +148,16 @@ export interface ThreadHold {
         parked: boolean;
     }) | null;
 }
+/** A thread's newest post, as a list row names it (server #332; a system line is no one's post). */
+export interface NewestMessage {
+    sender: {
+        name: string | null;
+        handle: string | null;
+        type: "agent" | "human" | null;
+    };
+    type: string;
+    at: string;
+}
 /** One row of `GET /api/threads?takeable=1` (RFC-028 D8): a thread this session could take. */
 export interface TakeableThread {
     thread: {
@@ -138,6 +167,10 @@ export interface TakeableThread {
         status?: string;
         replyCount?: number;
         lastActivityAt?: string;
+        /** Unread for this caller, by the picker badge's rule (absent from an older server). */
+        unreadCount?: number;
+        /** The newest post; null = none yet (absent from an older server). */
+        last?: NewestMessage | null;
     };
     channel: {
         id: string;
@@ -239,6 +272,9 @@ export interface ThreadMessagesResult {
         lastSeq: number;
         /** THIS reader's reply read position: replies above it are unread, and a read must be contiguous from it. */
         readSeq: number;
+        /** How many replies are unread for this reader, by the picker badge's rule; null = unread does not apply
+         *  (a manager reading a private channel without a seat); absent from an older server. */
+        unreadCount?: number | null;
         /** RFC-029 G11: a work item's header for THIS reader; null for a conversation kind. */
         work?: ThreadReadWork | null;
     } | null;
@@ -742,6 +778,7 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             limit?: number;
             since?: string;
             sinceSeq?: number;
+            include?: "doc";
         }) => Promise<{
             messages: (MessageEnvelope & {
                 deliveryReasons?: DeliveryReason[];
@@ -764,6 +801,7 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             since?: string;
             sinceSeq?: number;
             markRead?: boolean;
+            include?: "doc";
         }) => Promise<{
             messages: (MessageEnvelope & {
                 deliveryReasons?: DeliveryReason[];
@@ -811,6 +849,7 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             beforeSeq?: number;
             aroundSeq?: number;
             around?: "unread";
+            include?: "doc";
         }) => Promise<ThreadMessagesResult>;
         /**
          * Read a page of a thread AND mark what it covered as read — the one rule for every agent.
@@ -830,6 +869,7 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             around?: "unread";
             limit?: number;
             markRead?: boolean;
+            include?: "doc";
         }) => Promise<ThreadMessagesResult & ReadOutcome>;
         events: (threadId: string) => Promise<{
             events: unknown[];
@@ -922,6 +962,8 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
         }>;
     };
     me: {
+        /** The caller's acting workspace and its web app URL (link with `links` + core `threadUrl` / `messageUrl`); nulls when it has none. */
+        workspace: () => Promise<MyWorkspace>;
         /** The caller's channels: the ones it is in or follows; `include: "visible"` = every channel it can see. */
         channels: (p?: {
             include?: "mine" | "visible";
@@ -954,3 +996,4 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
         }) => Promise<DeliveriesResponse>;
     };
 };
+export {};

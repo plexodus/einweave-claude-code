@@ -14,12 +14,14 @@ export * from "./lock-decision";
 export * from "./format-guard";
 export * from "./software";
 export * from "./wire";
+export * from "./doc";
 export * from "./dedupe";
 export * from "./control-chars";
 export * from "./feed";
 export * from "./tail-render";
 export * from "./tail-state";
 export * from "./principal-label";
+export * from "./links";
 /**
  * auth/core's public surface — the future `@einweave/agent-sdk` entry point. Encoding
  * helpers (base64url, raw JWS signing) stay internal: every signature goes through a

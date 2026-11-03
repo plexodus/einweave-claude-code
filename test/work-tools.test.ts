@@ -21,6 +21,13 @@ function fake(answer: (s: Sent) => { status: number; body: any } = () => ({ stat
       const a = answer(s);
       return { status: a.status, body: a.body, text: JSON.stringify(a.body) };
     },
+    // create_item's POST /api/messages goes through `send` (sendMessage in the plugin), not `api`.
+    send: async (body) => {
+      const s = { method: "POST", path: "/api/messages", body };
+      sent.push(s);
+      const a = answer(s);
+      return { status: a.status, body: a.body, text: JSON.stringify(a.body) };
+    },
     onRootSent: (r) => roots.push(r),
     self: () => self,
   };
@@ -278,6 +285,24 @@ describe("refusals name the fix", () => {
     const block = src.slice(start, end).replaceAll("requireBridge", ""); // the gate's name is code, not text
     expect(block).toContain("einweave API error");
     expect(block).not.toContain("Bridge");
+  });
+
+  test("create_item posts through deps.send (sendMessage), never the plain api", async () => {
+    const f = fake(() => ({ status: 200, body: { id: "m1", threadId: T } }));
+    f.deps.api = async () => {
+      throw new Error("create_item must not use deps.api for POST /api/messages");
+    };
+    await callWorkTool("create_item", { channel_id: "dev", kind: "discussion", title: "t" }, f.deps);
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]).toMatchObject({ method: "POST", path: "/api/messages" });
+  });
+
+  test("a refusal thrown by send reaches the caller untouched", async () => {
+    const f = fake();
+    f.deps.send = async () => {
+      throw new Error("Your message was not sent. (einweave 503 parser_busy)");
+    };
+    await expect(callWorkTool("create_item", { channel_id: "dev", kind: "discussion", title: "t" }, f.deps)).rejects.toThrow(/^Your message was not sent/);
   });
 
   test("a 404 says einweave refused", async () => {

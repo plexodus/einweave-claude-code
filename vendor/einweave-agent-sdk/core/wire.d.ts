@@ -1,9 +1,13 @@
+import type { Doc } from "./doc";
 /** The server picked THIS agent specifically — never suppressible by a client. */
 export declare const ADDRESSED_REASONS: readonly ["target", "assignee", "mention", "thread"];
 /** A standing subscription matched — a client MAY narrow this tier. */
 export declare const BROADCAST_REASONS: readonly ["channel", "member", "type", "tag"];
 export type DeliveryReason = (typeof ADDRESSED_REASONS)[number] | (typeof BROADCAST_REASONS)[number];
-/** True if the server picked this recipient specifically. */
+/**
+ * True if these reasons are addressed on THIS SDK's vocab. For a received message prefer
+ * `Inbound.addressed` (the server's own verdict, set per entry by the session): a reason added after this build is unknown here.
+ */
 export declare const isAddressed: (reasons: Iterable<string> | undefined) => boolean;
 /** The protocol this SDK speaks. A server that wants another closes 4008 "client too old". */
 export declare const PROTOCOL_VERSION: 2;
@@ -116,8 +120,8 @@ declare const WIRE: {
     };
     released: {
         title: string | null;
-        channelId: string;
         threadId: string;
+        channelId: string;
         channelName: string;
     };
     auth: {
@@ -178,8 +182,8 @@ declare const WIRE: {
         carried?: string[] | undefined;
         released?: {
             title: string | null;
-            channelId: string;
             threadId: string;
+            channelId: string;
             channelName: string;
         }[] | undefined;
         notCarried?: string[] | undefined;
@@ -202,8 +206,8 @@ declare const WIRE: {
         };
     };
     hold_update: {
-        agentId: string;
         threadId: string;
+        agentId: string;
         holder: {
             online: boolean;
             label: string | null;
@@ -219,8 +223,8 @@ declare const WIRE: {
     for_you: {
         id: string;
         title: string | null;
-        channelId: string | null;
         threadId: string | null;
+        channelId: string | null;
         entry: "message" | "action_request" | "thread_event";
         why: string;
     };
@@ -229,17 +233,6 @@ declare const WIRE: {
     };
     wireMessage: {
         type?: string | undefined;
-        agentId?: string | null | undefined;
-        userId?: string | null | undefined;
-        agentName?: string | null | undefined;
-        senderType?: "agent" | "human" | undefined;
-        senderName?: string | undefined;
-        senderHandle?: string | null | undefined;
-        metadata?: string | null | undefined;
-        isRoot?: boolean | undefined;
-        seq?: number | undefined;
-        senderProvenance?: string | undefined;
-        senderContextLabel?: string | null | undefined;
         mentions?: {
             kind: "agent" | "human" | null;
             principalId: string;
@@ -247,28 +240,48 @@ declare const WIRE: {
             currentHandle: string | null;
             displayName: string | null;
         }[] | undefined;
-        id: string;
-        channelId: string;
+        doc?: unknown;
+        docV?: number | undefined;
+        seq?: number | undefined;
+        senderName?: string | undefined;
+        senderHandle?: string | null | undefined;
+        senderType?: "agent" | "human" | undefined;
+        agentId?: string | null | undefined;
+        userId?: string | null | undefined;
+        agentName?: string | null | undefined;
+        metadata?: string | null | undefined;
+        isRoot?: boolean | undefined;
+        senderProvenance?: string | undefined;
+        senderContextLabel?: string | null | undefined;
+        replyTo?: {
+            id: string;
+            threadId: string;
+            seq: number;
+            senderName: string | null;
+            senderHandle: string | null;
+            senderType: "agent" | "human" | null;
+            excerpt: string | null;
+        } | undefined;
         content: string;
+        id: string;
         threadId: string | null;
+        channelId: string;
         createdAt: string;
         senderContextId: string | null;
+    };
+    replyRef: {
+        id: string;
+        threadId: string;
+        seq: number;
+        senderName: string | null;
+        senderHandle: string | null;
+        senderType: "agent" | "human" | null;
+        excerpt: string | null;
     };
     message: {
         redelivery?: boolean | undefined;
         message: {
             type?: string | undefined;
-            agentId?: string | null | undefined;
-            userId?: string | null | undefined;
-            agentName?: string | null | undefined;
-            senderType?: "agent" | "human" | undefined;
-            senderName?: string | undefined;
-            senderHandle?: string | null | undefined;
-            metadata?: string | null | undefined;
-            isRoot?: boolean | undefined;
-            seq?: number | undefined;
-            senderProvenance?: string | undefined;
-            senderContextLabel?: string | null | undefined;
             mentions?: {
                 kind: "agent" | "human" | null;
                 principalId: string;
@@ -276,14 +289,37 @@ declare const WIRE: {
                 currentHandle: string | null;
                 displayName: string | null;
             }[] | undefined;
-            id: string;
-            channelId: string;
+            doc?: unknown;
+            docV?: number | undefined;
+            seq?: number | undefined;
+            senderName?: string | undefined;
+            senderHandle?: string | null | undefined;
+            senderType?: "agent" | "human" | undefined;
+            agentId?: string | null | undefined;
+            userId?: string | null | undefined;
+            agentName?: string | null | undefined;
+            metadata?: string | null | undefined;
+            isRoot?: boolean | undefined;
+            senderProvenance?: string | undefined;
+            senderContextLabel?: string | null | undefined;
+            replyTo?: {
+                id: string;
+                threadId: string;
+                seq: number;
+                senderName: string | null;
+                senderHandle: string | null;
+                senderType: "agent" | "human" | null;
+                excerpt: string | null;
+            } | undefined;
             content: string;
+            id: string;
             threadId: string | null;
+            channelId: string;
             createdAt: string;
             senderContextId: string | null;
         };
         deliveryReasons: ("target" | "assignee" | "mention" | "thread" | "channel" | "member" | "type" | "tag")[];
+        addressed: boolean;
     };
     thread_event: {
         work: {
@@ -291,8 +327,8 @@ declare const WIRE: {
         } | null;
         id: string;
         status: string | null;
-        channelId: string;
         threadId: string;
+        channelId: string;
         redelivery?: boolean | undefined;
         action: string;
         detail: {
@@ -415,12 +451,27 @@ type _WireMessage = typeof WIRE.wireMessage;
 /**
  * One message, identical for every recipient. The reason it reached THIS session travels beside
  * it, never inside it. `senderContextId`: the sending session's grant id, or null for a person / a
- * session-less send.
+ * session-less send. `doc` (RFC-034): the parsed body, `docV` its format; `docV` 0 or absent = render
+ * `content` as plain text. Typed here: the schema leaves the doc's inside to the client's own check.
  */
-export interface WireMessage extends _WireMessage {
+export interface WireMessage extends Omit<_WireMessage, "doc"> {
+    doc?: Doc;
+}
+type _ReplyRef = typeof WIRE.replyRef;
+/**
+ * RFC-035 D3: on a reply, the message it answers (same channel, maybe another thread) — one level,
+ * server-built, identical for every recipient. `excerpt` is plain text (never Markdown), ≤ 160 chars.
+ * Point a person at it with `messageUrl(links, { ...replyTo, channelId })` (the reply's own channel; `links` from `api.me.workspace()`) or by quoting a few of its
+ * words — never by `seq` (a paging cursor people never see).
+ */
+export interface ReplyRef extends _ReplyRef {
 }
 type _MessagePayload = typeof WIRE.message;
-/** `redelivery: true` when a frame of this entry was sent before (a resume, or a reconcile). */
+/**
+ * `redelivery: true` when a frame of this entry was sent before (a resume, or a reconcile).
+ * `addressed` (RFC-035 §5): the SERVER's verdict that it picked this recipient specifically — classify
+ * by it (the session copies it to `Inbound.addressed`), never by this SDK's bundled vocab, which a newer server's reasons outgrow.
+ */
 export interface MessagePayload extends _MessagePayload {
 }
 type _ThreadEventPayload = typeof WIRE.thread_event;

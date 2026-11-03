@@ -57,7 +57,7 @@ import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
 import { Session, createRuntime, isApiRequestError, type Api, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
-import { isAddressed, deadline } from "./vendor/einweave-agent-sdk/core/index.js";
+import { deadline } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
@@ -80,6 +80,7 @@ import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type 
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
+import { sendMessage, isSendRefusal } from "./send-refusals";
 
 /** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
 function cleanOrNull(v: unknown): string | null {
@@ -1292,7 +1293,7 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
       // RFC-022 D8: the feed gets exactly what the host was handed, once it accepted it.
       if (entry.kind === "message") {
         const m = entry.message;
-        feedWithChannelName(m.channelId, (channelName) => feedTap?.inbound(m, { channelName, targeted: isAddressed(m.deliveryReasons) }));
+        feedWithChannelName(m.channelId, (channelName) => feedTap?.inbound(m, { channelName, targeted: m.addressed }));
       }
     },
     failed: (entry, err) => {
@@ -2146,7 +2147,8 @@ async function apiFetch(
     }
     return apiFetch(path, opts, true);
   }
-  if (res.status === 429) {
+  // A 429 that is an RFC-034 parser_throttled refusal is returned: `sendMessage` throws it with the server's message.
+  if (res.status === 429 && !(await isSendRefusal(res))) {
     const retryAfter = Number(res.headers.get("retry-after")) || undefined;
     throw new Error(
       `einweave API rate-limited this agent (429, ${path}) — wait ${retryAfter ?? "a few"} second(s) before retrying; do not retry immediately.`
@@ -2441,7 +2443,7 @@ const mcp = new Server(
       "",
       "Use the reply tool to send messages to an einweave channel. Pass channel_id from the inbound message. To reply in a thread, set thread_id to the thread_id shown on the message you are replying to — every inbound message carries the id of its thread. Omit thread_id to start a new root message.",
       "",
-      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post.",
+      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. Refer to an earlier message by quoting a few of its words; never cite seq numbers to people — seq is a paging cursor, not a reference, and people never see it.",
       "",
       "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
@@ -2478,7 +2480,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "reply",
       description:
-        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's.",
+        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. Refer to an earlier message by quoting a few of its words; never cite seq numbers to people — seq is a paging cursor, not a reference, and people never see it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -3039,6 +3041,15 @@ const workDeps: WorkDeps = {
     } catch {}
     return { status: res.status, body: json, text };
   },
+  send: async (body) => {
+    const res = await sendMessage((b) => apiFetch("/api/messages", { method: "POST", body: JSON.stringify(b) }), body);
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: res.status, body: json, text };
+  },
   onRootSent: (r) => {
     rememberOwnSend(r.id);
     feedWithChannelName(r.channelId, (channelName) =>
@@ -3221,10 +3232,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           if (title) body.title = title;
         }
 
-        const res = await apiFetch(
-          threadId ? `/api/threads/${encodeURIComponent(threadId)}/messages` : "/api/messages",
-          { method: "POST", body: JSON.stringify(body) }
-        );
+        const sendPath = threadId ? `/api/threads/${encodeURIComponent(threadId)}/messages` : "/api/messages";
+        const res = await sendMessage((b) => apiFetch(sendPath, { method: "POST", body: JSON.stringify(b) }), body);
 
         if (res.status === 409 && take) {
           // A take from a holder who is online, unconfirmed: the server wrote nothing. Same question as the take tool.
