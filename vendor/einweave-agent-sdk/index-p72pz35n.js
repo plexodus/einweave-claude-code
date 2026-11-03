@@ -290,6 +290,417 @@ function userAgent(sdkVersion, id) {
 function identityTokenClientOptions(id) {
   return { clientId: id.softwareId, softwareId: id.softwareId, softwareVersion: id.softwareVersion };
 }
+// ../protocol/src/v2/doc.ts
+var DOC_V = 1;
+var BLOCK = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "table", "thead", "tbody", "tr", "hr"]);
+function docText(doc, nameOf) {
+  const walk = (nodes) => nodes.map(node).join("");
+  const node = (n) => {
+    if (typeof n === "string")
+      return n;
+    const [tag, a, ...kids] = n;
+    switch (tag) {
+      case "br":
+        return `
+`;
+      case "img":
+        return a && a.alt || "";
+      case "@":
+        return "@" + (a && (a.h ?? (a.p ? nameOf?.(a.p) : undefined)) || "");
+      case "td":
+      case "th":
+        return walk(kids) + " ";
+    }
+    const text = walk(kids);
+    return BLOCK.has(tag) ? `
+${text}
+` : text;
+  };
+  return walk(doc).split(`
+`).map((line) => line.trim()).filter(Boolean).join(`
+`);
+}
+function docToRender(m) {
+  return m.docV != null && m.docV >= 1 && m.docV <= DOC_V && Array.isArray(m.doc) ? m.doc : null;
+}
+function messageText(m, nameOf) {
+  const doc = docToRender(m);
+  return doc ? docText(doc, nameOf) : m.content;
+}
+
+// ../protocol/src/v2/doc-corpus.ts
+var DOC_CORPUS = [
+  {
+    name: "inline",
+    content: "Hello **bold** _em_ ~~gone~~ `code`",
+    doc: [
+      [
+        "p",
+        0,
+        "Hello ",
+        [
+          "strong",
+          0,
+          "bold"
+        ],
+        " ",
+        [
+          "em",
+          0,
+          "em"
+        ],
+        " ",
+        [
+          "s",
+          0,
+          "gone"
+        ],
+        " ",
+        [
+          "code",
+          0,
+          "code"
+        ]
+      ]
+    ],
+    text: "Hello bold em gone code"
+  },
+  {
+    name: "headings",
+    content: `# One
+
+###### Six`,
+    doc: [
+      [
+        "h1",
+        0,
+        "One"
+      ],
+      [
+        "h6",
+        0,
+        "Six"
+      ]
+    ],
+    text: `One
+Six`
+  },
+  {
+    name: "lists",
+    content: `- a
+- b
+
+3. three
+4. four`,
+    doc: [
+      [
+        "ul",
+        0,
+        [
+          "li",
+          0,
+          "a"
+        ],
+        [
+          "li",
+          0,
+          "b"
+        ]
+      ],
+      [
+        "ol",
+        {
+          start: 3
+        },
+        [
+          "li",
+          0,
+          "three"
+        ],
+        [
+          "li",
+          0,
+          "four"
+        ]
+      ]
+    ],
+    text: `a
+b
+three
+four`
+  },
+  {
+    name: "task list",
+    content: `- [x] done
+- [ ] todo`,
+    doc: [
+      [
+        "ul",
+        0,
+        [
+          "li",
+          {
+            checked: true
+          },
+          "done"
+        ],
+        [
+          "li",
+          {
+            checked: false
+          },
+          "todo"
+        ]
+      ]
+    ],
+    text: `done
+todo`
+  },
+  {
+    name: "fence",
+    content: "```ts\nconst a = 1;\n```",
+    doc: [
+      [
+        "pre",
+        {
+          lang: "ts"
+        },
+        `const a = 1;
+`
+      ]
+    ],
+    text: "const a = 1;"
+  },
+  {
+    name: "table",
+    content: `| a | b |
+|---|---|
+| 1 | 2 |`,
+    doc: [
+      [
+        "table",
+        0,
+        [
+          "thead",
+          0,
+          [
+            "tr",
+            0,
+            [
+              "th",
+              0,
+              "a"
+            ],
+            [
+              "th",
+              0,
+              "b"
+            ]
+          ]
+        ],
+        [
+          "tbody",
+          0,
+          [
+            "tr",
+            0,
+            [
+              "td",
+              0,
+              "1"
+            ],
+            [
+              "td",
+              0,
+              "2"
+            ]
+          ]
+        ]
+      ]
+    ],
+    text: `a b
+1 2`
+  },
+  {
+    name: "links",
+    content: "[site](https://example.com) <mailto:x@example.com> https://auto.example",
+    doc: [
+      [
+        "p",
+        0,
+        [
+          "a",
+          {
+            href: "https://example.com"
+          },
+          "site"
+        ],
+        " ",
+        [
+          "a",
+          {
+            href: "mailto:x@example.com"
+          },
+          "mailto:x@example.com"
+        ],
+        " ",
+        [
+          "a",
+          {
+            href: "https://auto.example"
+          },
+          "https://auto.example"
+        ]
+      ]
+    ],
+    text: "site mailto:x@example.com https://auto.example"
+  },
+  {
+    name: "image",
+    content: "![alt](https://example.com/i.png)",
+    doc: [
+      [
+        "p",
+        0,
+        [
+          "img",
+          {
+            src: "https://example.com/i.png",
+            alt: "alt"
+          }
+        ]
+      ]
+    ],
+    text: "alt"
+  },
+  {
+    name: "breaks",
+    content: `line one  
+line two
+
+---`,
+    doc: [
+      [
+        "p",
+        0,
+        "line one",
+        [
+          "br",
+          0
+        ],
+        "line two"
+      ],
+      [
+        "hr",
+        0
+      ]
+    ],
+    text: `line one
+line two`
+  },
+  {
+    name: "unsafe urls",
+    content: "[x](javascript:alert(1)) [y](data:text/html,hi) ![z](data:image/png;base64,AA) [r](/relative) [f](ftp://h/x)",
+    doc: [
+      [
+        "p",
+        0,
+        "[x](javascript:alert(1)) [y](data:text/html,hi) z r f"
+      ]
+    ],
+    text: "[x](javascript:alert(1)) [y](data:text/html,hi) z r f"
+  },
+  {
+    name: "raw html",
+    content: "<b>raw</b>",
+    doc: [
+      [
+        "p",
+        0,
+        "<b>raw</b>"
+      ]
+    ],
+    text: "<b>raw</b>"
+  },
+  {
+    name: "mentions",
+    content: "hi @aio, not `@aio`, not [@aio](https://x.example), not @nobody\n\n> nor @aio",
+    resolved: {
+      aio: {
+        p: "019a0000-0000-7000-8000-00000000a110",
+        h: "aio"
+      }
+    },
+    doc: [
+      [
+        "p",
+        0,
+        "hi ",
+        [
+          "@",
+          {
+            p: "019a0000-0000-7000-8000-00000000a110",
+            h: "aio"
+          }
+        ],
+        ", not ",
+        [
+          "code",
+          0,
+          "@aio"
+        ],
+        ", not ",
+        [
+          "a",
+          {
+            href: "https://x.example"
+          },
+          "@aio"
+        ],
+        ", not @nobody"
+      ],
+      [
+        "blockquote",
+        0,
+        [
+          "p",
+          0,
+          "nor @aio"
+        ]
+      ]
+    ],
+    text: `hi @aio, not @aio, not @aio, not @nobody
+nor @aio`
+  },
+  {
+    name: "code message",
+    content: "**not** @aio markdown",
+    type: "code",
+    doc: [
+      [
+        "pre",
+        0,
+        "**not** @aio markdown"
+      ]
+    ],
+    text: "**not** @aio markdown"
+  }
+];
+var DOC_FORWARD_CASES = [
+  { name: "unknown tag renders its children", content: "x", doc: [["p", 0, "before ", ["mark", 0, "kept"], " after"]], docV: 1, render: "doc", text: "before kept after" },
+  { name: "docV above the known one", content: "plain **content**", doc: [["p", 0, "newer"]], docV: 2, render: "content", text: "plain **content**" },
+  { name: "docV 0: not parsed", content: "plain **content**", docV: 0, render: "content", text: "plain **content**" },
+  { name: "docV 0 with a doc left set: docV decides", content: "plain **content**", doc: [["p", 0, "stale"]], docV: 0, render: "content", text: "plain **content**" },
+  { name: "no docV: an old server or row", content: "plain **content**", render: "content", text: "plain **content**" }
+];
+
+// src/core/doc.ts
+var DOC_V2 = DOC_V;
+var docText2 = docText;
+var docToRender2 = docToRender;
+var messageText2 = messageText;
+var DOC_CORPUS2 = DOC_CORPUS;
+var DOC_FORWARD_CASES2 = DOC_FORWARD_CASES;
 // src/core/dedupe.ts
 class Dedupe {
   ttlMs;
@@ -1453,6 +1864,21 @@ function principalLabel(p, self) {
     return "you";
   return p.handle ? `@${p.handle}` : p.name ?? (p.kind === "agent" ? "a removed agent" : "a removed person");
 }
+// src/core/links.ts
+function expandLink(template, values) {
+  return template.replace(/\{([A-Za-z0-9_]+)\}/g, (_, name) => {
+    const v = values[name];
+    if (typeof v !== "string")
+      throw new Error(`einweave link template needs {${name}}`);
+    return encodeURIComponent(v);
+  });
+}
+function threadUrl(links, t) {
+  return expandLink(links.thread, { channelId: t.channelId, threadId: t.threadId });
+}
+function messageUrl(links, m) {
+  return expandLink(links.message, { channelId: m.channelId, threadId: m.threadId, id: m.id });
+}
 // src/core/b64url.ts
 function b64url(bytes) {
   let bin = "";
@@ -2027,4 +2453,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, FEED_PROTOCOL_VERSION, FEED_SERVER_FRAME_KINDS, FeedError, isFeedError, encodeFrame, FEED_MAX_LINE, FeedLineDecoder, FEED_CLIENT_FRAME_KINDS, parseServerFrame, parseClientFrame, FEED_RING_MAX_EVENTS, FEED_RING_MAX_BYTES, FeedRing, BODY_CAP_ROWS, TAIL_SGR, TAIL_SELECT_BG, cleanText, cleanLine, charWidth, stringWidth, truncateTo, bodyRows, messageLayout, isCapped, clockOf, dayKey, renderMessage, clipRow, dateSeparator, newDivider, createRenderCache, renderTranscript, viewport, renderHeader, renderFooter, TAIL_MAX_MESSAGES, initialTailState, messageKey, hasMessage, tailReduce, createTailInputParser, parseTailInput, principalLabel, expandLink, threadUrl, messageUrl, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };

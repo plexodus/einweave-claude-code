@@ -2,7 +2,6 @@ import {
   AsyncChannel
 } from "./index-0nd9zcgb.js";
 import {
-  ADDRESSED_REASONS,
   CONNECTION_KINDS,
   Clock,
   MAX_ACK_IDS,
@@ -29,7 +28,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-8n6g869q.js";
+} from "./index-p72pz35n.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -830,7 +829,7 @@ class Session {
     }
     if (this.pending.has(entry.id))
       return false;
-    if (entry.kind === "message" && !isAddressed(entry.message.deliveryReasons) && this.opts.filter && !this.opts.filter(entry.message))
+    if (entry.kind === "message" && !entry.message.addressed && this.opts.filter && !this.opts.filter(entry.message))
       return false;
     this.pending.add(pendingMeta(entry));
     if (this.adapter.mode !== "channel" || !this.adapter.push)
@@ -882,10 +881,21 @@ class Session {
 function entryFrom(f, redelivery = f.payload.redelivery === true) {
   switch (f.type) {
     case "message": {
-      const { message, deliveryReasons } = f.payload;
+      const { message, deliveryReasons, addressed } = f.payload;
       if (!message || typeof message.id !== "string")
         return null;
-      return { kind: "message", id: message.id, redelivery, message: { ...message, deliveryReasons: Array.isArray(deliveryReasons) ? deliveryReasons : [] } };
+      const reasons = Array.isArray(deliveryReasons) ? deliveryReasons : [];
+      return {
+        kind: "message",
+        id: message.id,
+        redelivery,
+        message: {
+          ...message,
+          doc: message.doc,
+          deliveryReasons: reasons,
+          addressed: typeof addressed === "boolean" ? addressed : isAddressed(reasons)
+        }
+      };
     }
     case "thread_event":
       return typeof f.payload.id === "string" ? { kind: "thread_event", id: f.payload.id, redelivery, event: f.payload } : null;
@@ -908,7 +918,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.18.0";
+var SDK_VERSION = "0.22.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -929,7 +939,30 @@ function isApiRequestError(e) {
   const o = e;
   return typeof o === "object" && o !== null && o.name === "ApiRequestError" && typeof o.status === "number";
 }
-async function request(rt, client, method, path, opts, retried = false) {
+var BUSY_RETRY_CAP_MS = 5000;
+function isParserBusy(json) {
+  const o = json;
+  return typeof o === "object" && o !== null && (o.code === "parser_busy" || o.error === "parser_busy");
+}
+function busyWait(rt, ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted)
+      return reject(signal.reason);
+    const onAbort = () => {
+      handle.clear();
+      reject(signal.reason);
+    };
+    const handle = rt.timer.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+function withClientMsgId(body) {
+  return { ...body, clientMsgId: body.clientMsgId ?? crypto.randomUUID() };
+}
+async function request(rt, client, method, path, opts, retried = false, busyRetried = false) {
   const auth = await client.httpAuth(method, path);
   const dl = opts.signal ? undefined : deadline(HTTP_TIMEOUT_MS);
   let res;
@@ -970,13 +1003,18 @@ async function request(rt, client, method, path, opts, retried = false) {
     } else {
       client.invalidateAccess(auth.token);
     }
-    return request(rt, client, method, path, opts, true);
+    return request(rt, client, method, path, opts, true, busyRetried);
+  }
+  const retryAfterS = Number(res.headers.get("retry-after")) || undefined;
+  if (res.status === 503 && !busyRetried && isParserBusy(json)) {
+    await busyWait(rt, Math.min((retryAfterS ?? 1) * 1000, BUSY_RETRY_CAP_MS), opts.signal);
+    return request(rt, client, method, path, opts, retried, true);
   }
   if (res.status === 429) {
-    throw new ApiRequestError(429, json, Number(res.headers.get("retry-after")) || undefined);
+    throw new ApiRequestError(429, json, retryAfterS);
   }
   if (!res.ok)
-    throw new ApiRequestError(res.status, json);
+    throw new ApiRequestError(res.status, json, res.status === 503 ? retryAfterS : undefined);
   return json;
 }
 function createApi(rt, client) {
@@ -1008,7 +1046,7 @@ function createApi(rt, client) {
       list: (p) => req("GET", `/api/messages${qs(p)}`),
       read: async (p) => {
         const limit = Math.min(Math.max(Math.trunc(p.limit || 50), 1), 200);
-        const page = await req("GET", `/api/messages${qs({ channel: p.channel, limit, since: p.since, sinceSeq: p.sinceSeq })}`);
+        const page = await req("GET", `/api/messages${qs({ channel: p.channel, limit, since: p.since, sinceSeq: p.sinceSeq, include: p.include })}`);
         const contiguous = p.sinceSeq !== undefined || p.since === undefined && page.messages.length < limit;
         const seqs = page.messages.map((m) => m.seq).filter((n) => typeof n === "number");
         const channelId = page.messages[0]?.channelId;
@@ -1016,7 +1054,7 @@ function createApi(rt, client) {
           return page;
         return { ...page, ...await markRun(`/api/channels/${encodeURIComponent(channelId)}/read`, p.sinceSeq ?? 0, Math.max(...seqs)) };
       },
-      create: (channelId, body) => req("POST", "/api/messages", { body: { channelId, ...body } }),
+      create: (channelId, body) => req("POST", "/api/messages", { body: withClientMsgId({ channelId, ...body }) }),
       receipts: (ids) => req("GET", `/api/messages/receipts?ids=${ids.map(encodeURIComponent).join(",")}`)
     },
     threads: {
@@ -1026,7 +1064,7 @@ function createApi(rt, client) {
       messages: (threadId, p = {}) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/messages${qs(p)}`),
       read: async (threadId, p = {}) => {
         const id = encodeURIComponent(threadId);
-        const page = await req("GET", `/api/threads/${id}/messages${qs({ sinceSeq: p.sinceSeq, beforeSeq: p.beforeSeq, aroundSeq: p.aroundSeq, around: p.around, limit: p.limit })}`);
+        const page = await req("GET", `/api/threads/${id}/messages${qs({ sinceSeq: p.sinceSeq, beforeSeq: p.beforeSeq, aroundSeq: p.aroundSeq, around: p.around, limit: p.limit, include: p.include })}`);
         if (p.markRead === false || p.beforeSeq !== undefined || p.aroundSeq !== undefined || p.around !== undefined)
           return page;
         const last = page.replies[page.replies.length - 1]?.seq ?? (!p.sinceSeq ? page.parent?.seq : undefined);
@@ -1035,11 +1073,11 @@ function createApi(rt, client) {
         return { ...page, ...await markRun(`/api/threads/${id}/read`, p.sinceSeq ?? 0, last) };
       },
       events: (threadId) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/events`),
-      reply: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/messages`, { body }),
+      reply: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/messages`, { body: withClientMsgId(body) }),
       markRead: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/read`, { body: body ?? {} }),
       markAnswer: (threadId, messageId) => req("PUT", `/api/threads/${encodeURIComponent(threadId)}/answer`, { body: { messageId } }),
       unmarkAnswer: (threadId) => req("DELETE", `/api/threads/${encodeURIComponent(threadId)}/answer`),
-      create: (channelId, body) => req("POST", "/api/messages", { body: { channelId, ...body } }),
+      create: (channelId, body) => req("POST", "/api/messages", { body: withClientMsgId({ channelId, ...body }) }),
       work: (threadId, body) => req("PUT", `/api/threads/${encodeURIComponent(threadId)}/work`, { body }),
       resolve: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/resolve`, { body }),
       reopen: (threadId, body = {}) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/reopen`, { body }),
@@ -1083,6 +1121,7 @@ function createApi(rt, client) {
       setContextLabel: (agentId, contextId, label) => req("PUT", `/api/agents/${encodeURIComponent(agentId)}/contexts/${encodeURIComponent(contextId)}/label`, { body: { label } })
     },
     me: {
+      workspace: () => req("GET", "/api/me/workspace"),
       channels: (p = {}) => req("GET", `/api/me/channels${qs({ include: p.include })}`)
     },
     presence: {
@@ -1713,13 +1752,12 @@ function queueAdapter() {
   };
 }
 // src/runtime/turn-trigger.ts
-var TURN_TRIGGER_REASONS = new Set([...ADDRESSED_REASONS, "channel"]);
 function isTurnTrigger(msg, self) {
   if (msg.id && self.ownMessageIds?.has(msg.id))
     return false;
   if (self.contextId && msg.senderContextId === self.contextId)
     return false;
-  return msg.deliveryReasons.some((r) => TURN_TRIGGER_REASONS.has(r));
+  return msg.addressed || msg.deliveryReasons.includes("channel");
 }
 // src/runtime/store.ts
 function memoryCredentialStore() {
