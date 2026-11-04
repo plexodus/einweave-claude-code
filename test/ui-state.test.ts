@@ -253,6 +253,23 @@ describe("ctl watch", () => {
     await until(() => server.watchers() === 0);
   });
 
+  test("a snapshot bigger than the socket buffer arrives whole, and so does the next one (live 2026-11-04: 63 sessions cut at 8 KB)", async () => {
+    // A Bun socket write takes what fits and returns the count: the rest must wait for drain, not be dropped.
+    const big = (n: number) => ({ v: 1, connection: { state: "connected" }, holds: [], pad: "é".repeat(n) });
+    let fn: ((rev: number, state: unknown) => void) | null = null;
+    const port: WatchPort = { current: () => ({ rev: 1, state: big(300_000) }), subscribe: (f) => ((fn = f), () => {}) };
+    const { path } = await serve(port);
+    const c = watchLines(path);
+    await until(() => c.lines.length === 1, 5000);
+    expect(c.lines[0].state.pad.length).toBe(300_000);
+    fn!(2, big(200_000));
+    await until(() => c.lines.length === 2, 5000);
+    expect(c.lines[1]).toMatchObject({ rev: 2 });
+    expect(c.lines[1].state.pad.length).toBe(200_000);
+    c.end();
+    await c.closed;
+  });
+
   test("a current() that refreshes (as server.ts's does) still sends each rev once", async () => {
     const w = new UiWatch();
     w.set(buildUiState(INPUTS));
