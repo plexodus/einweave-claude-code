@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
-  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, threadOff, withOlder,
+  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
 } from "../mod/model";
 import type { ThreadMessage, ThreadView } from "../types";
 import type { ChannelThread } from "../types";
@@ -454,9 +454,52 @@ describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
     const ms = [post(5, "a"), post(6, "b")];
     const l = threadLayout(ms, 40, {}, 0); // total 5
     const grown = threadLayout([...ms, post(7, "c")], 40, {}, 0); // total 8
-    expect(threadOff({ off: 1, newest: "s6", open: {} }, grown, ms, 2)).toBe(1 + 3);
-    expect(threadOff({ off: 0, newest: "s6", open: {} }, grown, ms, 2)).toBe(0);
-    expect(threadOff({ off: 99, newest: "s6", open: {} }, l, ms, 2)).toBe(3);
+    expect(windowOff({ off: 1, newest: "s6", open: {} }, grown, 2, landOff(grown, ms, 2), "end")).toBe(1 + 3);
+    expect(windowOff({ off: 0, newest: "s6", open: {} }, grown, 2, landOff(grown, ms, 2), "end")).toBe(0);
+    expect(windowOff({ off: 99, newest: "s6", open: {} }, l, 2, landOff(l, ms, 2), "end")).toBe(3);
+    // Not moved yet: where it lands, clamped.
+    expect(windowOff(undefined, l, 2, 99, "end")).toBe(3);
+  });
+
+  // The pane's one window, every tab (plan 2026-11-04-mod-pinned-every-tab-plan.md).
+  const list = stack([{ key: "a", rows: 2 }, { key: "b", rows: 3 }, { key: "c", rows: 2 }, { key: "d", rows: 3 }]); // tops 0, 2, 5, 7; total 10
+
+  test("stack: each block under the last, its top and the height", () => {
+    expect(list.blocks.map(b => [b.key, b.top])).toEqual([["a", 0], ["b", 2], ["c", 5], ["d", 7]]);
+    expect(list.total).toBe(10);
+  });
+
+  test("a list lands at its top and stays there as rows arrive; moved down, its place holds", () => {
+    const max = 10 - 4;
+    expect(windowOff(undefined, list, 4, max, "top")).toBe(max);
+    const grown = stack([{ key: "new", rows: 2 }, ...list.blocks]); // a row arrived above
+    expect(windowOff({ off: max, newest: "d", open: {}, top: true }, grown, 4, 12 - 4, "top")).toBe(12 - 4);
+    // Not at the top: rows above leave the window on the same rows (counted from the end).
+    expect(windowOff({ off: 2, newest: "d", open: {} }, grown, 4, 12 - 4, "top")).toBe(2);
+    // An end-anchored window (a thread) does not follow the top.
+    expect(windowOff({ off: max, newest: "d", open: {}, top: true }, grown, 4, 0, "end")).toBe(max);
+  });
+
+  test("revealOff: the least move that shows a block whole, none when it shows", () => {
+    // off 6 shows rows 0-3 (a, b's first two). b ends at row 5: down by one row.
+    expect(revealOff(list, "b", 6, 4)).toBe(5);
+    expect(revealOff(list, "a", 6, 4)).toBe(6);
+    // d (rows 7-9) from the top: its foot at the window's foot.
+    expect(revealOff(list, "d", 6, 4)).toBe(0);
+    // From the end, a: its top at the window's top.
+    expect(revealOff(list, "a", 0, 4)).toBe(6);
+    // Taller than the window: its top.
+    expect(revealOff(stack([{ key: "x", rows: 2 }, { key: "big", rows: 9 }]), "big", 7, 4)).toBe(11 - 4 - 2);
+    expect(revealOff(list, "nope", 3, 4)).toBe(3);
+  });
+
+  test("hidden + cueText: the rows above and below the window, only the sides that hide any", () => {
+    expect(hidden(list, 6, 4)).toEqual({ above: 0, below: 6 });
+    expect(hidden(list, 2, 4)).toEqual({ above: 4, below: 2 });
+    expect(hidden(list, 0, 20)).toEqual({ above: 0, below: 0 });
+    expect(cueText({ above: 0, below: 6 })).toBe("↓ 6");
+    expect(cueText({ above: 4, below: 2 })).toBe("↑ 4 · ↓ 2");
+    expect(cueText({ above: 0, below: 0 })).toBe("");
   });
 
   test("scrollBy: negative goes up; atTop once the top shows", () => {
@@ -473,6 +516,9 @@ describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
     expect(tabRows([9, 9, 9], 29)).toBe(1);
     expect(tabRows([9, 9, 9], 28)).toBe(2);
     expect(tabRows([9, 9, 9], 9)).toBe(3);
+    // Any gap: the pane's header and a row of suggestions are two cells apart.
+    expect(tabRows([9, 9, 9], 29, 2)).toBe(2);
+    expect(tabRows([9, 9, 9], 31, 2)).toBe(1);
   });
 
   test("withOlder puts an older page between the root and the replies, once each; the cursor is the oldest reply", () => {

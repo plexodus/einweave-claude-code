@@ -96,13 +96,16 @@ export interface ThreadMessage {
 }
 
 /** A thread tab's own window over its posts, once the person moved it; absent, the tab lands (first new post, else the newest). */
-export interface ThreadScroll {
-  /** Rows scrolled up from the newest post as it was then; 0 follows the newest. */
+/** A tab's own window over its body, once the person moved it (every tab: the pane's one window, mod/model.ts). */
+export interface PaneScroll {
+  /** Rows scrolled up from the end of the body as it was then; 0 follows the end. */
   off: number
-  /** postKey of the newest post when `off` was set: rows that came after it keep the place. */
+  /** Key of the body's last block when `off` was set: rows that came after it keep the place. */
   newest: string
-  /** Posts shown whole (by postKey), past the cap. */
+  /** A thread's posts shown whole (by postKey), past the cap. */
   open: Record<string, true>
+  /** A list scrolled to its top: it stays at the top as rows arrive. */
+  top?: true
 }
 
 /** `ui_thread`'s answer for one thread tab, or why it is missing. */
@@ -165,6 +168,8 @@ export interface ChannelsView {
   channels: ChannelRow[]
   error: string | null
   loading: boolean
+  /** When it was read (ms): the head's "Updated HH:MM". */
+  at?: number
 }
 
 /** A session holding a thread, as a hold shows it. */
@@ -191,6 +196,8 @@ export interface ChannelView {
   threads: ChannelThread[]
   error: string | null
   loading: boolean
+  /** When it was read (ms): the head's "Updated HH:MM". */
+  at?: number
 }
 
 export type SearchHit = {
@@ -250,8 +257,9 @@ declare module 'claude-code' {
       unfolded: Shaped<Record<string, boolean>>
       paneUp: Shaped<boolean>
       /** The held thread whose Hand over picker is open ('' when none), and whether it shows the offline sessions. */
-      handover: Shaped<{ id: string; offline: boolean }>
-      scrolls: Shaped<Record<string, ThreadScroll>>
+      /** The held thread whose Hand over picker is open, whether it shows the offline sessions, and the tab it opened on. */
+      handover: Shaped<{ id: string; offline: boolean; on: string }>
+      scrolls: Shaped<Record<string, PaneScroll>>
       search: Shaped<SearchState>
     }
   }

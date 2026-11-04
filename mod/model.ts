@@ -3,7 +3,7 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, SearchHit, SearchRefused, SearchSort, SearchState, ThreadMessage, ThreadScroll, ThreadView, ThreadWork, UiHeld, UiSnapshot, UiWaitingItem, View } from '../types'
+import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, SearchHit, SearchRefused, SearchSort, SearchState, ThreadMessage, PaneScroll, ThreadView, ThreadWork, UiHeld, UiSnapshot, UiWaitingItem, View } from '../types'
 import { cellWidth, docLines, plainLines, type Line } from './text'
 
 /**
@@ -563,10 +563,39 @@ export function threadLayout(messages: readonly ThreadMessage[], width: number, 
   return { blocks, gap, total: row }
 }
 
-/** The window's lowest offset: rows up from the end at which the top shows. */
-const maxOff = (l: ThreadLayout, room: number) => Math.max(0, l.total - room)
+/**
+ * THE PANE'S ONE WINDOW (every tab, plan 2026-11-04-mod-pinned-every-tab-plan.md). A tab's body is a stack
+ * of blocks of known rows; the pane shows `room` of them under its pinned head, over its pinned key bar.
+ * `off` counts rows up from the stack's END (0: the end shows), as the thread tab always did: rows added
+ * above the window then never move it. A thread lands at its first new post (chat: anchored at the end);
+ * a list lands at its top and, while there, follows it as rows arrive (anchored at the top).
+ */
+export interface StackBlock {
+  key: string
+  top: number
+  rows: number
+}
+export interface Stack {
+  blocks: readonly StackBlock[]
+  total: number
+}
+export type Anchor = 'top' | 'end'
 
-/** Where a tab first opens: its first new post at the top of the window, else the newest. */
+/** Blocks one under another, each `rows` tall: their tops and the stack's height. */
+export function stack<B extends { key: string; rows: number }>(blocks: readonly B[]): { blocks: (B & { top: number })[]; total: number } {
+  let row = 0
+  const out = blocks.map(b => {
+    const top = row
+    row += b.rows
+    return { ...b, top }
+  })
+  return { blocks: out, total: row }
+}
+
+/** The window's highest offset: rows up from the end at which the top shows. */
+const maxOff = (l: Stack, room: number) => Math.max(0, l.total - room)
+
+/** Where a thread tab first opens: its first new post at the top of the window, else the newest. */
 export function landOff(l: ThreadLayout, messages: readonly ThreadMessage[], room: number): number {
   const first = l.blocks.find(b => messages[b.n]?.new)
   if (!first) return 0
@@ -576,41 +605,66 @@ export function landOff(l: ThreadLayout, messages: readonly ThreadMessage[], roo
 }
 
 /**
- * The window now: landed while the person has not moved it; else their place, kept when posts came
- * after the one that was newest (a held thread is live), clamped to what fits.
+ * The window now, on any tab: where it lands while the person has not moved it (`land`; a list's is its
+ * top); a list scrolled to its top stays there as rows arrive; else their place, kept when blocks came after
+ * the one that was last (a live thread), clamped to what fits.
  */
-export function threadOff(sc: ThreadScroll | undefined, l: ThreadLayout, messages: readonly ThreadMessage[], room: number): number {
-  if (!sc) return landOff(l, messages, room)
+export function windowOff(sc: PaneScroll | undefined, l: Stack, room: number, land: number, anchor: Anchor): number {
+  const max = maxOff(l, room)
+  if (!sc) return Math.min(max, Math.max(0, land))
+  if (anchor === 'top' && sc.top) return max
   let off = sc.off
   if (off > 0) {
     const at = l.blocks.findIndex(b => b.key === sc.newest)
     if (at >= 0) off += l.blocks.slice(at + 1).reduce((a, b) => a + b.rows, 0)
   }
-  return Math.min(maxOff(l, room), Math.max(0, off))
+  return Math.min(max, Math.max(0, off))
 }
 
 /** The window moved `by` rows (negative toward the top), and whether it now shows the top. */
-export function scrollBy(off: number, by: number, l: ThreadLayout, room: number): { off: number; atTop: boolean } {
+export function scrollBy(off: number, by: number, l: Stack, room: number): { off: number; atTop: boolean } {
   const max = maxOff(l, room)
   const next = Math.min(max, Math.max(0, off - by))
   return { off: next, atTop: next >= max }
 }
 
-/** The newest post's key, what ThreadScroll.newest records. */
-export const newestKey = (l: ThreadLayout) => l.blocks.at(-1)?.key ?? ''
+/** The smallest move that shows block `key` whole (its top, when taller than the window); `off` when it shows or is not there. */
+export function revealOff(l: Stack, key: string, off: number, room: number): number {
+  const b = l.blocks.find(x => x.key === key)
+  if (!b) return off
+  const first = l.total - room - off
+  const top = b.top
+  const bottom = b.top + Math.min(b.rows, room)
+  const next = top < first ? l.total - room - top : bottom > first + room ? l.total - bottom : off
+  return Math.min(maxOff(l, room), Math.max(0, next))
+}
+
+/** Rows hidden above and below the window: the key bar's `↑ n · ↓ n`. */
+export function hidden(l: Stack, off: number, room: number): { above: number; below: number } {
+  if (l.total <= room) return { above: 0, below: 0 }
+  return { above: Math.max(0, l.total - room - off), below: Math.max(0, off) }
+}
+
+/** The key bar's scroll cue: only the sides that hide rows; '' when everything shows. */
+export function cueText(h: { above: number; below: number }): string {
+  return [h.above ? `↑ ${h.above}` : '', h.below ? `↓ ${h.below}` : ''].filter(Boolean).join(' · ')
+}
+
+/** The last block's key, what PaneScroll.newest records. */
+export const newestKey = (l: Stack) => l.blocks.at(-1)?.key ?? ''
 
 /**
- * Rows a wrapping row of tabs takes at `width`: each tab `widths[n]` cells, a cell between, greedy as
- * flex-wrap lays them out.
+ * Rows a wrapping row takes at `width`: each item `widths[n]` cells, `gap` cells between, greedy as
+ * flex-wrap lays them out (the tabs, the pane's header, a row of suggestions).
  */
-export function tabRows(widths: readonly number[], width: number): number {
+export function tabRows(widths: readonly number[], width: number, gap = 1): number {
   let rows = 1
   let x = 0
   for (const w of widths) {
-    if (x > 0 && x + 1 + w > width) {
+    if (x > 0 && x + gap + w > width) {
       rows++
       x = w
-    } else x += (x > 0 ? 1 : 0) + w
+    } else x += (x > 0 ? gap : 0) + w
   }
   return rows
 }
