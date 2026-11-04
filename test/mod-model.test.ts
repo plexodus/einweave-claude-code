@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
-  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
+  landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, leadOf, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
 } from "../mod/model";
 import type { ThreadMessage, ThreadView } from "../types";
 import type { ChannelThread } from "../types";
@@ -491,6 +491,32 @@ describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
     // Taller than the window: its top.
     expect(revealOff(stack([{ key: "x", rows: 2 }, { key: "big", rows: 9 }]), "big", 7, 4)).toBe(11 - 4 - 2);
     expect(revealOff(list, "nope", 3, 4)).toBe(3);
+  });
+
+  test("revealOff: a section's first record brings its heading along when both fit; else the record alone", () => {
+    // Rows: h(0) · r1(1-3, a blank on top) · note(4) · h2(5-6, a blank on top) · gw(7) · r2(8-10) · r3(11-13). Total 14.
+    const l = stack([
+      { key: "h", rows: 1, section: true },
+      { key: "r1", rows: 3, stop: true, space: true },
+      { key: "note", rows: 1 },
+      { key: "h2", rows: 2, section: true, space: true },
+      { key: "gw", rows: 1 },
+      { key: "r2", rows: 3, stop: true },
+      { key: "r3", rows: 3, stop: true, space: true },
+    ]);
+    expect(leadOf(l, "r1")?.key).toBe("h");
+    // Over a row that is no stop (Unowned's gateway line) to the heading.
+    expect(leadOf(l, "r2")?.key).toBe("h2");
+    // Not a section's first: a stop comes first.
+    expect(leadOf(l, "r3")).toBeUndefined();
+    // From the end (off 0, rows 9-13 at room 5): r1 brings h, the window's top at row 0.
+    expect(revealOff(l, "r1", 0, 5)).toBe(14 - 5);
+    // h2's own blank row stays out: the window's top is its heading row, 6 (r2 ends at row 10, 5 rows).
+    expect(revealOff(l, "r2", 0, 5)).toBe(14 - 5 - 6);
+    // Too short for both (room 4: heading row 6 to row 10 is 5): the record alone, its top at the window's top.
+    expect(revealOff(l, "r2", 0, 4)).toBe(14 - 4 - 8);
+    // Moving down (from the top): the foot at the window's foot, the heading already in view.
+    expect(revealOff(l, "r2", 14 - 5, 5)).toBe(14 - 11);
   });
 
   test("hidden + cueText: the rows above and below the window, only the sides that hide any", () => {

@@ -477,6 +477,8 @@ interface Block {
   rows: number
   space?: boolean
   stop?: boolean
+  /** A section's heading: the window shows it with the section's first record (model revealOff). */
+  section?: boolean
   focus?: readonly string[]
   draw: () => RenderElement
 }
@@ -1208,6 +1210,8 @@ export const register: Register = on => {
       }
     }
     /** Blocks after the first get a blank row above them: a list's breathing room, counted. */
+    /** A section's heading as a body block: one row, revealed with the section's first record. */
+    const section = (key: string, title: string, note: string): Block => ({ ...one(key, heading(key, title, note)), section: true })
     const spaced = (blocks: Block[]) => blocks.map((b, n) => (n && b.space === undefined ? { ...b, space: true } : b))
     /** A head's title row: what the tab is on the left, how fresh it is on the right (thread chrome A, every tab). */
     // Only the title gives way when the row is short: what leads it (a thread's #channel), what follows it (a
@@ -1336,7 +1340,7 @@ export const register: Register = on => {
       const similar = st.rows.filter(h => h.similar_title)
       return spaced([
         ...(st.type === 'messages' ? text.map(messageHit) : text.map(threadHit)).map(r => recordBlock(r)),
-        ...(similar.length ? [one('h:similar', heading('h:similar', 'Similar titles', 'no word matched exactly'))] : []),
+        ...(similar.length ? [section('h:similar', 'Similar titles', 'no word matched exactly')] : []),
         ...similar.map(threadHit).map(r => recordBlock(r)),
         ...(st.next ? [{ ...one('search-more', <Button key="search-more" plain dimColor label={st.loading ? 'Loading…' : 'More'} onPress={() => detach(runSearch($, true))} />), stop: true, focus: ['search-more'] }] : []),
       ])
@@ -1417,9 +1421,9 @@ export const register: Register = on => {
         const agent = s.session.agent ? `@${s.session.agent}` : 'this agent'
         return spaced([
           ...(waiting === 0 ? [prose('nothing', 'Nothing waits for this session.')] : []),
-          ...(box.forYou.length ? [one('h:forYou', heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you'))] : []),
+          ...(box.forYou.length ? [section('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you')] : []),
           ...box.forYou.map(r => recordBlock(inboxRecordOf(r))),
-          ...(box.open.length ? [one('h:open', heading('h:open', `Unowned ${openCount}`, 'nobody holds these · newest first'))] : []),
+          ...(box.open.length ? [section('h:open', `Unowned ${openCount}`, 'nobody holds these · newest first')] : []),
           // Board Unowned: whether the gateway routes these, brand when it does, amber while they wait for a take.
           ...(box.open.length && s.gateway
             ? [

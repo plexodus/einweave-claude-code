@@ -1824,14 +1824,23 @@ test('the window follows the keyboard: a record the ring lands on outside it com
   await clock.settle()
   expect(await listOff(ui)).toBe(0)
   expect(await findRun(ui, '↑ 16')).toBeDefined()
-  // t-1: rows 1-3: its top at the window's top.
+  // t-1, rows 1-3, opens For you: its heading (row 0) comes with it, so the window's top is the heading's.
   await focus($, 'mark:t-1')
   await clock.settle()
-  expect(await listOff(ui)).toBe(25 - 9 - 1)
-  // One already in view does not move it.
+  expect(await listOff(ui)).toBe(25 - 9)
+  expect(await findRun(ui, 'For you 8')).toBeDefined()
+  expect(await findRun(ui, '↓ 16')).toBeDefined()
+  expect(await findRun(ui, '↑ 1 · ↓ 15')).toBeUndefined()
+  // t-2 is no section's first: the least move, its top at the window's top (row 4), the heading left above.
+  await focus($, 'mark:t-8')
+  await clock.settle()
   await focus($, 'mark:t-2')
   await clock.settle()
-  expect(await listOff(ui)).toBe(25 - 9 - 1)
+  expect(await listOff(ui)).toBe(25 - 9 - 4)
+  // One already in view does not move it.
+  await focus($, 'mark:t-3')
+  await clock.settle()
+  expect(await listOff(ui)).toBe(25 - 9 - 4)
   await ui.unmount()
 })
 
