@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, oneLine, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, threadOff, withOlder,
 } from "../mod/model";
@@ -332,6 +332,26 @@ describe("the Inbox and thread tabs", () => {
     expect(channelsView("This einweave server is too old")).toMatchObject({ channels: [], error: "This einweave server is too old", loading: false });
     expect(channelView(JSON.stringify({ channel_id: "c", threads: [] }))).toEqual({ threads: [], error: null, loading: false });
     expect(channelView("")).toMatchObject({ error: "ui_channel answered nothing", loading: false });
+  });
+
+  test("fitSnippet: a line that fits is untouched; a long one keeps context before the first hit, cut with … at either end", () => {
+    const P = (text: string, hit = false) => ({ text, hit });
+    expect(fitSnippet([P("short "), P("hit", true)], 40)).toEqual([P("short "), P("hit", true)]);
+    const long = [P("bellman #4115 is being "), P("deployed", true), P(" right now and should be available in ten minutes")];
+    const fit = fitSnippet(long, 30);
+    expect(fit.map((p) => p.text).join("").length).toBe(30);
+    expect(fit.find((p) => p.hit)).toEqual(P("deployed", true));
+    expect(fit.at(-1)).toEqual(P("…"));
+    // Far into the text: a leading … and the hit still whole.
+    const deep = fitSnippet([P("x".repeat(100) + " before "), P("deploy", true), P(" after")], 24);
+    expect(deep[0]).toEqual(P("…"));
+    expect(deep.map((p) => p.text).join("").length).toBeLessThanOrEqual(24);
+    expect(deep.find((p) => p.hit)).toEqual(P("deploy", true));
+    // The window opens on a whole word, never mid-word ("…ellman").
+    const words = fitSnippet([P("the rest of the bellman story is being "), P("deployed", true), P(" as we speak and more text to cut here")], 30);
+    expect(words[0]).toEqual(P("…"));
+    expect(words[1]!.text.startsWith(" ")).toBe(false);
+    expect(["the", "rest", "of", "bellman", "story", "is", "being"].some((w) => words[1]!.text.startsWith(w))).toBe(true);
   });
 
   test("a snippet draws on one line: newlines and runs of spaces become one space, the ends trimmed", () => {

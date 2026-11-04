@@ -717,26 +717,44 @@ export interface SearchState {
   next: string | null
   refused: SearchRefused | null
   error: string | null
+  /**
+   * What the server did, from its echo: the sort it used, and whether the query had words. Filters
+   * alone are listed newest first whatever was asked (there is nothing to rank), so the pane says
+   * that and offers no Best first. Null before an answer.
+   */
+  applied: { sort: SearchSort; words: boolean } | null
 }
-export const NO_SEARCH: SearchState = { q: '', type: 'threads', sort: 'relevance', seq: 0, loading: false, rows: [], total: null, next: null, refused: null, error: null }
+export const NO_SEARCH: SearchState = { q: '', type: 'threads', sort: 'relevance', seq: 0, loading: false, rows: [], total: null, next: null, refused: null, error: null, applied: null }
 
 /** The `/search` route's answer (or the `ui_search` tool's) as state: a page, a refusal, or the error text it was. */
-export function searchAnswer(raw: string): Pick<SearchState, 'rows' | 'total' | 'next' | 'refused' | 'error'> {
-  const none = { rows: [], total: null, next: null, refused: null }
-  let page: { refused?: SearchRefused; results?: SearchHit[]; total?: { count: number; capped: boolean }; next?: string | null }
+export function searchAnswer(raw: string): Pick<SearchState, 'rows' | 'total' | 'next' | 'refused' | 'error' | 'applied'> {
+  const none = { rows: [], total: null, next: null, refused: null, applied: null }
+  let page: { refused?: SearchRefused; results?: SearchHit[]; total?: { count: number; capped: boolean }; next?: string | null; query?: { text?: string; sort?: string } }
   try {
     page = JSON.parse(raw)
   } catch {
     return { ...none, error: raw.trim() || 'search answered nothing' }
   }
   if (page.refused) return { ...none, refused: page.refused, error: null }
-  return { rows: page.results ?? [], total: page.total ?? null, next: page.next ?? null, refused: null, error: null }
+  const applied = page.query ? { sort: (page.query.sort === 'newest' ? 'newest' : 'relevance') as SearchSort, words: !!page.query.text?.trim() } : null
+  return { rows: page.results ?? [], total: page.total ?? null, next: page.next ?? null, refused: null, error: null, applied }
 }
 
 /** A suggestion pressed (`in:#ops` for the refused `in:#opz`): the query with that token replaced, or the suggestion added. */
 export function applySuggestion(q: string, token: string | null, suggestion: string): string {
   if (token && q.includes(token)) return q.replace(token, suggestion)
   return `${q.trim()} ${suggestion}`.trim()
+}
+
+/**
+ * The search field's placeholder, padded with no-break spaces to `width` columns: an Input is as
+ * wide as its text, and only the field itself takes a click from anywhere (a button's focus request
+ * waits while the pane does not hold the keyboard — measured live 2026-11-04). So the empty field
+ * IS the whole box. No-break spaces: trailing plain ones may be trimmed.
+ */
+export const SEARCH_HINT = 'words, "a phrase", in:#channel, from:@person, is:open'
+export function searchPlaceholder(width: number): string {
+  return SEARCH_HINT + '\u00A0'.repeat(Math.max(0, width - SEARCH_HINT.length))
 }
 
 /** The Inbox search field's key, and the blank after it that makes the whole box a click target. */
@@ -751,6 +769,43 @@ export function oneLine(parts: { text: string; hit: boolean }[]): { text: string
     out[out.length - 1] = { ...out[out.length - 1]!, text: out[out.length - 1]!.text.trimEnd() }
   }
   return out.filter(p => p.text !== '')
+}
+
+/**
+ * A snippet's runs cut to `width` columns, the first hit always in view: up to a third of the width
+ * of context before it ("…" where text was cut), then as much as fits ("…" at the end if cut).
+ *
+ * WHY HERE, not the layout's clipping: a row of styled runs wider than the pane was drawn with each
+ * later run starting early, over the end of the one before ("is being deployed" read "is
+ * deploye"; live check 2026-11-04, twice). A line that already fits is drawn right.
+ * Width is counted in code points: one column each for the sv/en text this carries.
+ */
+export function fitSnippet(parts: { text: string; hit: boolean }[], width: number): { text: string; hit: boolean }[] {
+  // One entry per code point, so a window can start and end anywhere.
+  const cells = parts.flatMap(p => [...p.text].map(ch => ({ ch, hit: p.hit })))
+  if (width < 3 || cells.length <= width) return parts
+  const firstHit = Math.max(0, cells.findIndex(c => c.hit))
+  // Start a third of the width before the first hit, never past the point where the rest just fits;
+  // then forward to the next word's start (never past the hit), so the line opens on a whole word.
+  let start = Math.max(0, Math.min(firstHit - Math.floor(width / 3), cells.length - width))
+  if (start > 0 && cells[start - 1]!.ch !== ' ') {
+    let w = start
+    while (w < firstHit && cells[w]!.ch !== ' ') w++
+    if (w < firstHit) start = w + 1
+  }
+  const cutStart = start > 0
+  const end = Math.min(cells.length, start + width - (cutStart ? 1 : 0))
+  const cutEnd = end < cells.length
+  const window = cells.slice(start, cutEnd ? end - 1 : end)
+  const out: { text: string; hit: boolean }[] = []
+  for (const c of window) {
+    const last = out[out.length - 1]
+    if (last && last.hit === c.hit) last.text += c.ch
+    else out.push({ text: c.ch, hit: c.hit })
+  }
+  if (cutStart) out.unshift({ text: '…', hit: false })
+  if (cutEnd) out.push({ text: '…', hit: false })
+  return out
 }
 
 /** Seconds of quiet before a typed query is sent: a pause, not every key. */
