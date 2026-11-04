@@ -10,13 +10,15 @@
 import { atom, read, update } from 'claude-code'
 import type { ButtonProps, EngineInterface, Register } from 'claude-code'
 
-import type { ChannelView, OpenTab, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
+import type { ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
 import {
   applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
   applySuggestion, fitSnippet, NO_SEARCH, oneLine, SEARCH_DEBOUNCE_MS, searchPlaceholder, SEARCH_FIELD, SEARCH_FILL, searchAnswer,
   type InboxRow, type SearchHit, type SearchState, type Seg, type ThreadLayout, type Tone,
+  heldRow,
+  pickerSessions,
 } from './model'
 import type { Line } from './text'
 import { hyperlinks } from './links'
@@ -43,6 +45,10 @@ const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shap
 const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
+/** The held thread whose Hand over picker is open (Held tab row or thread tab); '' when none. */
+// `offline`: whether it shows the offline sessions too; folded again each time a picker opens or closes.
+const NO_HANDOVER = { id: '', offline: false, on: '' }
+const handover = atom({ plugin: 'einweave', key: 'handover' } as const, NO_HANDOVER, { shape: 'handover-3' })
 /** The Inbox search (board Search): the query, the current answer, and which edit it answers. */
 // shape: bump when SearchState's form changes, so a pane reloaded mid-search drops the old state rather than
 // drawing it without the new fields (search-2: `applied`, live check 2026-11-04).
@@ -206,6 +212,20 @@ async function takeThread($: EngineInterface, ref: string): Promise<string> {
   return text
 }
 
+/**
+ * Every change to the tabs goes through here: one that changes the tab shown closes the Hand over picker,
+ * so going back to the tab it opened on does not bring it back (Jörgen 2026-11-04: closed on any tab switch).
+ */
+async function setTabs($: EngineInterface, f: (t: PaneTabs) => PaneTabs): Promise<void> {
+  let moved = false
+  await update($, tabs, t => {
+    const next = f(t)
+    moved = shownTab(next) !== shownTab(t)
+    return next
+  })
+  if (moved) await update($, handover, () => NO_HANDOVER)
+}
+
 /** Read a thread tab's content with `ui_thread`: the person's view, which neither marks read nor acks. */
 async function loadThread($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...(m[id] ?? NO_THREAD), loading: true } }))
@@ -245,7 +265,7 @@ async function loadOlder($: EngineInterface, id: string): Promise<void> {
 }
 
 async function viewThread($: EngineInterface, id: string, title: string): Promise<void> {
-  await update($, tabs, t => openTab(t, 'thread', id, title))
+  await setTabs($, t => openTab(t, 'thread', id, title))
   await loadThread($, id)
 }
 
@@ -325,7 +345,7 @@ async function loadChannel($: EngineInterface, id: string): Promise<void> {
 }
 
 async function viewChannel($: EngineInterface, id: string, name: string): Promise<void> {
-  await update($, tabs, t => openTab(t, 'channel', id, `#${name}`))
+  await setTabs($, t => openTab(t, 'channel', id, `#${name}`))
   await loadChannel($, id)
 }
 
@@ -658,10 +678,10 @@ export const register: Register = on => {
     // tab, the way back, shows; the tabs opened stay in state and return on connecting (Jörgen 2026-10-31).
     const gated = !!s && !connected && i.kind !== 'reconnecting'
     const tab = gated ? 'session' : shownTab(t)
-    const show = (to: string) => () => void update($, tabs, x => ({ ...x, tab: to }))
+    const show = (to: string) => () => void setTabs($, x => ({ ...x, tab: to }))
     // Channels and channel tabs load each time they are shown: nothing pushes them.
-    const showChannels = () => void update($, tabs, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
-    const showOpen = (o: OpenTab) => () => void update($, tabs, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id)))
+    const showChannels = () => void setTabs($, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
+    const showOpen = (o: OpenTab) => () => void setTabs($, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id)))
     const ch = await read($, channels)
     const st = await read($, search)
 
@@ -679,6 +699,86 @@ export const register: Register = on => {
     }
     const takeAct = (id: string, after?: () => Promise<void>, asks = false): Act => ({ key: 'take', label: asks ? 'Ask to take' : 'Take', hotkey: 't', onPress: take(id, after) })
     const newAct = (id: string): Act => ({ key: 'new', label: 'New session', hotkey: 'n', onPress: newSession(id) })
+    // The picker belongs to the tab it opened on; setTabs closes it on a switch, and this hides it where the
+    // tab shown changes without one (not connected: the Session tab only). Held and a thread tab share it.
+    const ho = await read($, handover)
+    const picking = ho.on === tab ? ho.id : ''
+    const offlineOpen = ho.offline
+    const togglePicker = (id: string) => () => void update($, handover, open => (open.on === tab && open.id === id ? NO_HANDOVER : { id, offline: false, on: tab }))
+    const handoverAct = (id: string): Act => ({ key: 'handover', label: 'Hand over', hotkey: 'h', onPress: togglePicker(id) })
+
+    /**
+     * Hand over's picker (Jörgen 2026-11-03/04): this agent's other sessions that are online, each one press;
+     * the offline ones behind `▸ Show N offline`, which turns into `▾ Hide offline` in the same row; then
+     * New window, which copies the command that starts one and takes the thread there (also the way when
+     * there is no other session); then Cancel. `rows` bounds it where it has a fixed area (the thread tab's
+     * posts window): what does not fit is counted, so Cancel always shows.
+     */
+    const picker = (threadId: string, rows = Infinity) => {
+      const close = () => void update($, handover, () => NO_HANDOVER)
+      const { online, offline } = pickerSessions(s?.sessions)
+      const showOff = offlineOpen && offline.length > 0
+      const agent = s?.session.agent ? `@${s.session.agent}` : 'this agent'
+      const head = online.length ? 'Hand over to' : `No other session of ${agent}${offline.length ? ' online' : ''} · start one`
+      const fixed = 2 + (offline.length ? 1 : 0)
+      const want = online.length + (showOff ? offline.length : 0)
+      const fits = fixed + want <= rows
+      const budget = fits ? want : Math.max(0, rows - fixed - 1)
+      const shownOn = online.slice(0, budget)
+      const shownOff = showOff ? offline.slice(0, budget - shownOn.length) : []
+      const cut = want - shownOn.length - shownOff.length
+      // One row, clipped as the Inbox's title row, its runs ONE Text: a long label wrapped to 2 rows and broke
+      // the row budget (live 2026-11-04).
+      const row = (o: (typeof online)[number]) => (
+        <Box key={`pick-row:${threadId}:${o.id}`} flexDirection="row" height={1} overflow="hidden">
+          <Button
+            key={`pick:${threadId}:${o.id}`}
+            plain
+            label={`Hand over to ${o.label}`}
+            onPress={() => {
+              act('handover', { ref: threadId, to: o.id })()
+              close()
+            }}
+          >
+            <Text wrap="truncate-end">
+              <Text color={o.online ? PALETTE.brand : undefined} dimColor={!o.online}>{o.online ? '● ' : '○ '}</Text>
+              <Text weight="semibold">{o.label}</Text>
+              {o.online ? null : <Text dimColor> · offline</Text>}
+            </Text>
+          </Button>
+        </Box>
+      )
+      return (
+        <Box key={`picker:${threadId}`} flexDirection="column" paddingLeft={2} flexShrink={0}>
+          <Text dimColor>{head}</Text>
+          {shownOn.map(row)}
+          {offline.length ? (
+            <Button
+              key={`pick-offline:${threadId}`}
+              plain
+              dimColor
+              label={showOff ? '▾ Hide offline' : `▸ Show ${offline.length} offline`}
+              onPress={() => void update($, handover, h => ({ ...h, offline: !h.offline }))}
+            />
+          ) : null}
+          {shownOff.map(row)}
+          {cut > 0 ? <Text key={`pick-cut:${threadId}`} dimColor>{`${cut} more · a taller pane shows them`}</Text> : null}
+          <Box key={`pick-foot:${threadId}`} flexDirection="row" columnGap={1}>
+            <Button
+              key={`pick-new:${threadId}`}
+              plain
+              label="New window"
+              onPress={(press: Press) => {
+                newSession(threadId)(press)
+                close()
+              }}
+            />
+            <Text dimColor>·</Text>
+            <Button key={`pick-cancel:${threadId}`} plain dimColor label="Cancel" onPress={close} />
+          </Box>
+        </Box>
+      )
+    }
 
     // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
     // VS Code): there a title is a link and a record's actions live in the tab it opens.
@@ -898,7 +998,7 @@ export const register: Register = on => {
                 plain
                 {...(shown && !desk ? { hover: { inverse: false } } : lit ? {} : { dimColor: true })}
                 onPress={() => {
-                  void update($, tabs, x => closeTab(x, o.id))
+                  void setTabs($, x => closeTab(x, o.id))
                   if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                   else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
                   // Its place goes too: View opens it again where it lands (first new, else newest), not where it was
@@ -1124,15 +1224,23 @@ export const register: Register = on => {
       ) : (
         <Box flexDirection="column" rowGap={1}>
           {s.holds.length === 0 ? <Text dimColor>None. Take one from the Inbox.</Text> : null}
-          {s.holds.map(held =>
-            record({
-              id: held.threadId,
-              label: held.title ?? held.threadId,
-              onOpen: () => void viewThread($, held.threadId, held.title ?? held.threadId),
-              acts: [{ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: held.threadId }) }],
-            }),
-          )}
-          {s.holds.length > 0 ? <Text dimColor>{'Hand one over: /einweave handover N <session>'}</Text> : null}
+          {/* Board Held (Jörgen 2026-11-03): rows as the Inbox's, Release and Hand over on the row. */}
+          {s.holds.map(held => {
+            const r = heldRow(held, now)
+            return (
+              <Box key={`held:${r.threadId}`} flexDirection="column">
+                {record({
+                  id: r.threadId,
+                  label: r.title,
+                  title: r.channel ? [{ text: `#${r.channel}`, tone: 'brand' }, { text: ' ' }, { text: r.title, weight: 'semibold' }] : undefined,
+                  onOpen: () => void viewThread($, r.threadId, r.title),
+                  meta: r.meta.length ? r.meta : undefined,
+                  acts: [releaseAct(r.threadId), handoverAct(r.threadId)],
+                })}
+                {picking === r.threadId && !desk ? picker(r.threadId) : null}
+              </Box>
+            )
+          })}
         </Box>
       )
     } else if (tab === 'channels') {
@@ -1273,6 +1381,7 @@ export const register: Register = on => {
       const th = (await read($, threads))[id] ?? NO_THREAD
       const title = th.title ?? t.open.find(x => x.id === id)?.title ?? id
       const held = s.holds.some(h => h.threadId === id)
+      const picks = held && picking === id
       // Board ThreadTab, layout A: header and footer pinned, the posts in chat order scrolled between them
       // by the mod itself (docked in a terminal, where the window is known to the row). Elsewhere the
       // frame fits the tree, so the posts flow and the surface scrolls.
@@ -1380,7 +1489,15 @@ export const register: Register = on => {
               <Text weight="bold" wrap="truncate-end">{title}</Text>
             </Box>
             <Box flexGrow={1} />
-            {held ? <Text key="stamp" dimColor>● live</Text> : th.at !== undefined ? <Text key="stamp" dimColor>{`Updated ${clockOf(th.at)}`}</Text> : null}
+            {/* Live only while it is: held AND connected, else replies are not arriving (Jörgen 2026-11-04: brand dot, dim word, no pulse). */}
+            {held && connected ? (
+              <Box key="stamp" flexDirection="row">
+                <Text color={PALETTE.brand}>● </Text>
+                <Text dimColor>live</Text>
+              </Box>
+            ) : held ? (
+              <Text key="stamp" dimColor>○ reconnecting</Text>
+            ) : th.at !== undefined ? <Text key="stamp" dimColor>{`Updated ${clockOf(th.at)}`}</Text> : null}
           </Box>
           {held ? (
             <Text color={PALETTE.brand} wrap="truncate-end">held by you · replies come here</Text>
@@ -1391,24 +1508,35 @@ export const register: Register = on => {
           {own ? (
             // A thread that fits starts under its header, read from the root down (no reply box to sit next to).
             // One that overflows is bottom-anchored: the newest at the window's foot, `off` rows up from it.
-            <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={layout.total + notes.filter(Boolean).length > room ? 'flex-end' : 'flex-start'} flexShrink={0}>
-              <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
-                {notes}
-                {flow}
-                {tail ? <Box key={`tail:${id}`} height={tail} flexShrink={0} /> : null}
+            // Hand over's picker takes the posts' window while open (Jörgen 2026-11-04, option B): the header
+            // and key bar stay pinned, and Cancel brings the posts back where they were.
+            picks ? (
+              <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" flexShrink={0}>
+                {picker(id, room)}
               </Box>
-            </Box>
+            ) : (
+              <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={layout.total + notes.filter(Boolean).length > room ? 'flex-end' : 'flex-start'} flexShrink={0}>
+                <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
+                  {notes}
+                  {flow}
+                  {tail ? <Box key={`tail:${id}`} height={tail} flexShrink={0} /> : null}
+                </Box>
+              </Box>
+            )
           ) : (
             <Box key={`posts:${id}`} flexDirection="column">
-              {notes}
-              {flow}
+              {picks ? picker(id) : [notes, flow]}
             </Box>
           )}
           {threadRule('rule:foot')}
           {/* The key bar: the thread's actions on their keys (`t: Take`), drawn as the pane's footer for a record. */}
           <Box key={`keys:${id}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
             {held ? (
-              <Button key={`release:${id}`} plain {...hot('r')} label="Release" dimColor onPress={act('release', { ref: id })} />
+              <Box key={`held-acts:${id}`} flexDirection="row" columnGap={1}>
+                <Button key={`release:${id}`} plain {...hot('r')} label="Release" dimColor onPress={act('release', { ref: id })} />
+                <Text dimColor>·</Text>
+                <Button key={`handover:${id}`} plain {...hot('h')} label="Hand over" dimColor onPress={togglePicker(id)} />
+              </Box>
             ) : (
               <Button key={`take:${id}`} plain {...hot('t')} label="Take" onPress={take(id)} />
             )}

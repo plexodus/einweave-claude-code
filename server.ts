@@ -67,7 +67,7 @@ import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
-import { buildUiState, mergeRefresh, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type UiGateway, type UiWaiting } from "./ui/ui-state";
+import { buildUiState, mergeRefresh, toHeld, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type HeldInfo, type UiGateway, type UiSession, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
 import { ctlSocketPath, uiSocketPath } from "./delivery/ctl-path";
@@ -1241,6 +1241,9 @@ const forYou = forYouBox();
 const uiWatch = new UiWatch();
 let uiWaiting: UiWaiting | null = null;
 let uiGateway: UiGateway | null = null;
+// The Held tab's rows (server's held list, by thread id) and the Hand over picker's sessions: see heldMayHaveChanged.
+let uiHeld: ReadonlyMap<string, HeldInfo> = new Map();
+let uiSessions: UiSession[] | null = null;
 /** Read-tool acks that found no live Session (delivery/returned-acks.ts). */
 const returnedAcks = new ReturnedAcks();
 /** Entries handed to the host in this process — `status`'s "idle" until the first. */
@@ -1303,6 +1306,7 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
       // RFC-022 D8: the feed gets exactly what the host was handed, once it accepted it.
       if (entry.kind === "message") {
         const m = entry.message;
+        if (m.threadId && serverHolds.includes(m.threadId)) heldMayHaveChanged();
         feedWithChannelName(m.channelId, (channelName) => feedTap?.inbound(m, { channelName, targeted: m.addressed }));
       }
     },
@@ -1383,7 +1387,12 @@ function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<Pend
       // Only a LIVE Session answers the hooks: one the SDK stopped (superseded, revoked, …) has
       // nothing pending to show and no socket to send an ack on.
       list: () => liveSession()?.pending.list() ?? [],
-      confirm: (ids) => liveSession()?.pending.confirm(ids) ?? [],
+      confirm: (ids) => {
+        const done = liveSession()?.pending.confirm(ids) ?? [];
+        // A held thread's "N new" counts what the model has not confirmed.
+        if (done.length) heldMayHaveChanged();
+        return done;
+      },
     },
     tracker,
     toNotice: pendingNotice,
@@ -1845,6 +1854,7 @@ function onStatus(st: SessionStatus): void {
       const u = st.update;
       const mine = !!u.holder && u.holder.id === myContextId;
       serverHolds = mine ? (serverHolds.includes(u.threadId) ? serverHolds : [...serverHolds, u.threadId]) : serverHolds.filter((t) => t !== u.threadId);
+      heldMayHaveChanged();
       process.stderr.write(`einweave channel: hold ${u.via}: thread ${u.threadId} ${u.holder ? `-> ${u.holder.label ?? u.holder.id}` : "released"}${mine ? " (this session)" : ""}\n`);
       return;
     }
@@ -3380,7 +3390,8 @@ function uiSnapshot() {
     kind: connectionKind,
     scope: serverScope && { ...serverScope, channelNames: serverScope.channelIds.map((id) => channelNameOf(id) || null) },
     holds: serverHolds,
-    titles: new Map([...heldTitles].map(([id, t]) => [id, t.title])),
+    held: uiHeld,
+    sessions: uiSessions,
     waiting: uiWaiting,
     gateway: uiGateway,
     version: PLUGIN_VERSION,
@@ -3389,52 +3400,54 @@ function uiSnapshot() {
   });
 }
 
-// Held threads' titles for the snapshot: one API call per thread (holds.titlesOf), so each is read
-// once; a null (no title, or the read failed) is read again after a minute, a failed batch likewise.
-const TITLE_RETRY_MS = 60_000;
-const heldTitles = new Map<string, { title: string | null; at: number }>();
-let titlesBusy = false;
-let titlesRetryAt = 0;
+// The Held tab's rows: the server's held list (one read, bridge #351), by thread id. Which ids are held is
+// serverHolds, live from the socket; this says how each is drawn, and is read again when it may have changed.
+const HELD_REFRESH_MS = 1000;
+let heldTimer: ReturnType<typeof setTimeout> | null = null;
 
-function readHeldTitles(): void {
-  for (const id of [...heldTitles.keys()]) if (!serverHolds.includes(id)) heldTitles.delete(id);
-  const now = Date.now();
-  if (!authenticated || titlesBusy || now < titlesRetryAt) return;
-  const missing = serverHolds.filter((id) => {
-    const t = heldTitles.get(id);
-    return !t || (t.title === null && now - t.at > TITLE_RETRY_MS);
-  });
-  if (missing.length === 0) return;
-  titlesBusy = true;
-  void holds
-    .titlesOf(missing)
-    .then(
+/** A hold moved, a post reached a held thread, or the model confirmed one: read the held list again, once per burst. */
+function heldMayHaveChanged(): void {
+  if (heldTimer || uiWatch.subscribers() === 0) return;
+  heldTimer = setTimeout(() => {
+    heldTimer = null;
+    if (!authenticated || creds.configError()) return;
+    void holds.held().then(
       (rows) => {
-        for (const r of rows) heldTitles.set(r.id, { title: r.title, at: Date.now() });
+        uiHeld = toHeld(rows);
+        refreshUi();
       },
-      () => {
-        titlesRetryAt = Date.now() + TITLE_RETRY_MS;
-      }
-    )
-    .finally(() => {
-      titlesBusy = false;
-      refreshUi();
-    });
+      () => {}
+    );
+  }, HELD_REFRESH_MS);
+  heldTimer.unref?.();
 }
 
 function refreshUi(): void {
-  readHeldTitles();
   uiWatch.set(uiSnapshot());
 }
 
-/** What waits, and whether the gateway routes it (two API calls). Only while someone draws it: a session no mod watches pays nothing. */
+/**
+ * What waits, whether the gateway routes it, the other sessions and what this one holds (three reads: the
+ * sessions list serves the gateway and the picker). Only while someone draws it: a session no mod watches pays nothing.
+ */
 async function refreshWaiting(): Promise<void> {
   if (!authenticated || creds.configError()) {
     uiWaiting = null;
     uiGateway = null;
+    uiSessions = null;
+    uiHeld = new Map();
   } else {
-    const [waiting, gateway] = await Promise.allSettled([holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES).then((r) => toWaiting(r)), holds.gateway()]);
-    ({ waiting: uiWaiting, gateway: uiGateway } = mergeRefresh({ waiting: uiWaiting, gateway: uiGateway }, waiting, gateway));
+    const sessions = holds.sessionsView();
+    const [waiting, gateway, siblings, held] = await Promise.allSettled([
+      holds.needSomeone(UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES).then((r) => toWaiting(r)),
+      sessions.then((v) => v.gateway),
+      sessions.then((v) => v.siblings),
+      holds.held().then(toHeld),
+    ]);
+    ({ waiting: uiWaiting, gateway: uiGateway, sessions: uiSessions, held: uiHeld } = mergeRefresh(
+      { waiting: uiWaiting, gateway: uiGateway, sessions: uiSessions, held: uiHeld },
+      { waiting, gateway, sessions: siblings, held }
+    ));
   }
   refreshUi();
 }

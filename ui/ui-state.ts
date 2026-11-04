@@ -38,14 +38,40 @@ export interface UiGateway {
 export interface UiHeld {
   threadId: string;
   title: string | null;
+  /** The rest is the server's held list (`?held=1`); null until it is read. */
+  channel: string | null;
+  /** The thread's last activity (ISO). */
+  quietSince: string | null;
+  /** Posts pushed to this window that its model has not confirmed. */
+  unseenByModel: number | null;
+  /** Who posted last: `@handle`, else the name. */
+  lastBy: string | null;
+}
+
+/** Another session of this agent, a Hand over target (observers excluded). */
+export interface UiSession {
+  id: string;
+  label: string;
+  online: boolean;
+}
+
+/** One held thread as the server lists it, before it meets the live set of held ids. */
+export interface HeldInfo {
+  title: string;
+  channel: string;
+  quietSince: string | null;
+  unseenByModel: number | null;
+  lastBy: string | null;
 }
 
 export interface UiState {
   v: 1;
   connection: { state: UiConnection; detail: string | null };
   session: { agent: string | null; label: string | null; kind: string | null; scope: unknown };
-  /** Threads this session holds, in hold order; `title` null until read, or when it has none. */
+  /** Threads this session holds, newest activity first; one the list has not caught up with last, its fields null. */
   holds: UiHeld[];
+  /** This agent's other sessions, online first; null until read. */
+  sessions: UiSession[] | null;
   /** Unheld work this session could take; null until first read, or while not connected. */
   waiting: UiWaiting | null;
   /** Null until first read, while not connected, or when the sessions list cannot be read. */
@@ -71,9 +97,11 @@ export interface UiInputs {
   label: string | null;
   kind: string | null;
   scope: unknown;
+  /** The live set of held ids (hello + hold_update): which threads are listed. */
   holds: readonly string[];
-  /** Titles read so far (holds.titlesOf); a held id missing here is drawn without one. */
-  titles: ReadonlyMap<string, string | null>;
+  /** The server's held list, by thread id: what each is drawn with. */
+  held: ReadonlyMap<string, HeldInfo>;
+  sessions: UiSession[] | null;
   waiting: UiWaiting | null;
   gateway: UiGateway | null;
   version: string;
@@ -101,13 +129,58 @@ export function buildUiState(i: UiInputs): UiState {
     v: 1,
     connection: { state, detail },
     session: { agent: i.agent, label: i.label, kind: i.kind, scope: i.authenticated ? (i.scope ?? null) : null },
-    holds: i.authenticated ? i.holds.map((threadId) => ({ threadId, title: i.titles.get(threadId) ?? null })) : [],
+    holds: i.authenticated ? heldRows(i.holds, i.held) : [],
+    sessions: i.authenticated ? i.sessions : null,
     waiting: i.authenticated ? i.waiting : null,
     gateway: i.authenticated ? i.gateway : null,
     version: i.version,
     staleSince: i.staleSince,
     uiSocket: i.uiSocket ?? null,
   };
+}
+
+/**
+ * The held ids (live: the socket says at once when one comes or goes) drawn with the server's list (read on
+ * change): newest activity first, an id the list has not caught up with last, in hold order.
+ */
+function heldRows(ids: readonly string[], held: ReadonlyMap<string, HeldInfo>): UiHeld[] {
+  const at = (h: HeldInfo | undefined) => {
+    const t = h?.quietSince ? Date.parse(h.quietSince) : NaN;
+    return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+  };
+  return [...new Set(ids)]
+    .map((threadId, n) => ({ threadId, n, h: held.get(threadId) }))
+    .sort((a, b) => at(b.h) - at(a.h) || a.n - b.n)
+    .map(({ threadId, h }) => ({
+      threadId,
+      title: h?.title || null,
+      channel: h?.channel ?? null,
+      quietSince: h?.quietSince ?? null,
+      unseenByModel: h?.unseenByModel ?? null,
+      lastBy: h?.lastBy ?? null,
+    }));
+}
+
+/** The server's held rows (holds.held), keyed for `heldRows`. */
+export function toHeld(rows: ReadonlyArray<{
+  thread: { id: string; title: string; lastActivityAt?: string; unseenByModel?: number; last?: { sender: { name: string | null; handle: string | null } } | null };
+  channel: { name: string };
+}>): Map<string, HeldInfo> {
+  return new Map(
+    rows.map((r) => {
+      const s = r.thread.last?.sender;
+      return [
+        r.thread.id,
+        {
+          title: r.thread.title,
+          channel: r.channel.name,
+          quietSince: r.thread.lastActivityAt ?? null,
+          unseenByModel: typeof r.thread.unseenByModel === "number" ? r.thread.unseenByModel : null,
+          lastBy: s?.handle ? `@${s.handle}` : (s?.name ?? null),
+        },
+      ];
+    })
+  );
 }
 
 /**
@@ -149,18 +222,16 @@ export class UiWatch {
 }
 
 /**
- * One refresh's two reads, merged: each side keeps its last good value when only its read failed,
- * so a failing sessions list never blanks what waits, nor the reverse.
+ * One refresh's reads, merged: each keeps its last good value when only its read failed, so a failing
+ * sessions list never blanks what waits, nor the reverse.
  */
-export function mergeRefresh(
-  prev: { waiting: UiWaiting | null; gateway: UiGateway | null },
-  waiting: PromiseSettledResult<UiWaiting>,
-  gateway: PromiseSettledResult<UiGateway>
-): { waiting: UiWaiting | null; gateway: UiGateway | null } {
-  return {
-    waiting: waiting.status === "fulfilled" ? waiting.value : prev.waiting,
-    gateway: gateway.status === "fulfilled" ? gateway.value : prev.gateway,
-  };
+export function mergeRefresh<T extends Record<string, unknown>>(prev: T, next: { [K in keyof T]: PromiseSettledResult<T[K]> }): T {
+  const out = { ...prev };
+  for (const k of Object.keys(next) as (keyof T)[]) {
+    const r = next[k];
+    if (r.status === "fulfilled") out[k] = r.value;
+  }
+  return out;
 }
 
 /** The mod's Inbox lists this many, picked from up to UI_WAITING_PAGES pages of UI_WAITING_PAGE (the server's max). */

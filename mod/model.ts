@@ -3,7 +3,7 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot, UiWaitingItem, View } from '../types'
+import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, SearchHit, SearchRefused, SearchSort, SearchState, ThreadMessage, ThreadScroll, ThreadView, UiHeld, UiSnapshot, UiWaitingItem, View } from '../types'
 import { cellWidth, docLines, plainLines, type Line } from './text'
 
 /**
@@ -390,6 +390,41 @@ export function inbox(waiting: UiSnapshot['waiting'], now: number): { forYou: In
   return { forYou: rows.filter(w => w.why !== 'channel').map(row), open: rows.filter(w => w.why === 'channel').map(row) }
 }
 
+/** A Held tab row: as an Inbox row (`#channel Title`), its meta `N new · last @x · age`. */
+export interface HeldRowView {
+  threadId: string
+  title: string
+  channel: string | null
+  meta: Seg[]
+}
+
+/**
+ * The Held tab (Jörgen 2026-11-03: as the Inbox): `N new` is what this window was pushed and its model has
+ * not confirmed (the server's `unseenByModel`, never the read cursor), brand while there is any; then who
+ * posted last; then the age, amber once stale. A row the server's list has not caught up with is its id alone.
+ */
+export function heldRow(h: UiHeld, now: number): HeldRowView {
+  const q = quietFor(h.quietSince, now)
+  const parts: Seg[][] = []
+  if (h.unseenByModel) parts.push([{ text: `${h.unseenByModel} new`, tone: 'brand', weight: 'semibold' }])
+  if (h.lastBy) parts.push([{ text: `last ${h.lastBy}`, tone: 'dim' }])
+  if (q.age) parts.push([q.stale ? { text: q.age, tone: 'amber', weight: 'semibold' } : { text: q.age, tone: 'dim' }])
+  const meta = parts.flatMap((p, n) => (n ? [{ text: ' · ', tone: 'dim' as const }, ...p] : p))
+  return { threadId: h.threadId, title: h.title ?? h.threadId, channel: h.channel ?? null, meta }
+}
+
+type PickerSession = { id: string; label: string; online: boolean }
+
+/**
+ * The Hand over picker's targets, the other sessions split by whether they are online (the server's order
+ * kept within each). The picker lists the online ones and folds the offline ones (Jörgen 2026-11-04): a
+ * thread handed to a closed window waits there unanswered, so they are rarely the place to hand it.
+ */
+export function pickerSessions(sessions: UiSnapshot['sessions']): { online: PickerSession[]; offline: PickerSession[] } {
+  const all = sessions ?? []
+  return { online: all.filter(s => s.online), offline: all.filter(s => !s.online) }
+}
+
 /** A list split for drawing: the recent rows in their order, then those under the "Older" fold. */
 export function fold<T extends { old: boolean }>(rows: T[]): { recent: T[]; older: T[] } {
   return { recent: rows.filter(r => !r.old), older: rows.filter(r => r.old) }
@@ -397,7 +432,7 @@ export function fold<T extends { old: boolean }>(rows: T[]): { recent: T[]; olde
 
 /** The record a pane element belongs to: `mark:<id>`, `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
 export function recordOf(element: string | undefined): string {
-  const m = element && /^(mark|open|take|new|release|join):(.+)$/.exec(element)
+  const m = element && /^(mark|open|take|new|release|join|handover):(.+)$/.exec(element)
   return m ? m[2]! : ''
 }
 
@@ -413,7 +448,7 @@ export function focusTarget(stops: readonly string[], last: string, element: str
   // The Inbox search field's filler (a click target, never a stop): from the field the move was
   // forward, on to the first record; from anywhere else it was back, into the field (live check 2026-11-03).
   if (element === SEARCH_FILL) return last === SEARCH_FIELD ? (stops[0] ?? SEARCH_FIELD) : SEARCH_FIELD
-  const m = element && /^(open|take|new|release|join):(.+)$/.exec(element)
+  const m = element && /^(open|take|new|release|join|handover):(.+)$/.exec(element)
   if (!m) return element
   const id = m[2]!
   const at = stops.indexOf(`mark:${id}`)
@@ -680,50 +715,8 @@ export function channelRows(threads: ChannelThread[]): { rows: (ChannelThread & 
 }
 
 /** One search hit as the plugin's `/search` route answers it (server.ts `searchPage`): a thread row, or a message row (`message_id` + `thread_title`). */
-export type SearchHit = {
-  thread_id: string
-  title?: string | null
-  thread_title?: string | null
-  message_id?: string | null
-  channel: string | null
-  kind: string | null
-  status: string | null
-  sender?: string | null
-  created_at?: string
-  last_activity_at?: string
-  matched_in?: string | null
-  similar_title?: boolean
-  matching_replies?: number
-  snippet_parts: { text: string; hit: boolean }[]
-}
+export type { SearchHit, SearchRefused, SearchSort, SearchState, SearchType } from '../types'
 
-export type SearchType = 'threads' | 'messages'
-export type SearchSort = 'relevance' | 'newest'
-export type SearchRefused = { code: string; token: string | null; suggestions: string[]; message: string }
-
-/**
- * The Inbox search (RFC-031, board Search): what is typed, which answer is current, and what it said.
- * `seq` counts edits: an answer for an older `seq` is dropped, so a slow reply never draws over a newer
- * query. `rows` hold every page loaded for this query (More appends); `next` the server's cursor.
- */
-export interface SearchState {
-  q: string
-  type: SearchType
-  sort: SearchSort
-  seq: number
-  loading: boolean
-  rows: SearchHit[]
-  total: { count: number; capped: boolean } | null
-  next: string | null
-  refused: SearchRefused | null
-  error: string | null
-  /**
-   * What the server did, from its echo: the sort it used, and whether the query had words. Filters
-   * alone are listed newest first whatever was asked (there is nothing to rank), so the pane says
-   * that and offers no Best first. Null before an answer.
-   */
-  applied: { sort: SearchSort; words: boolean } | null
-}
 export const NO_SEARCH: SearchState = { q: '', type: 'threads', sort: 'relevance', seq: 0, loading: false, rows: [], total: null, next: null, refused: null, error: null, applied: null }
 
 /** The `/search` route's answer (or the `ui_search` tool's) as state: a page, a refusal, or the error text it was. */
