@@ -1389,8 +1389,9 @@ export const register: Register = on => {
           )}
           {threadRule('rule:head')}
           {own ? (
-            // Bottom-anchored: the newest at the window's foot; `off` rows up from it.
-            <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent="flex-end" flexShrink={0}>
+            // A thread that fits starts under its header, read from the root down (no reply box to sit next to).
+            // One that overflows is bottom-anchored: the newest at the window's foot, `off` rows up from it.
+            <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={layout.total + notes.filter(Boolean).length > room ? 'flex-end' : 'flex-start'} flexShrink={0}>
               <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
                 {notes}
                 {flow}

@@ -1301,12 +1301,16 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   const keys = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
   // Only what meets the window is drawn: 17 rows of 22 leave the root above it (a long thread stays cheap per tick).
   expect(await keys()).toEqual(['s30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
+  // Overflowing: bottom-anchored, the newest at the window's foot.
+  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-end' } })
   await ui.unmount()
   // Room for all 22 rows: every post, in chat order.
   ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } } })
   await clock.settle()
   expect(await keys()).toEqual(['root', 's30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
   expect(await ui.find({ key: `tail:${T_OLD}` })).toBeUndefined()
+  // It fits: the posts start under the header, not pushed to the foot with empty rows above (Jörgen 2026-11-04).
+  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-start' } })
   // Own posts blue with (you); new ones say so in the brand, bold.
   expect(await findRun(ui, 'Bellman (you)')).toMatchObject({ props: { color: PALETTE.blue, weight: 'bold' } })
   // Others in their own colour by id; one without an id (an older plugin) stays plain bold.
