@@ -63,6 +63,8 @@ const RULE = '#3a3d40'
 const PANE_PAD = 1
 /** The mark left on the record the keyboard was on once Escape handed the keyboard back: where it lands on return. */
 const MARK_AWAY = '#4a4a4a'
+/** The keyboard's and the pointer's mark: the light bar the engine's focus inversion draws (TabStates board). */
+const MARK_ON = '#e4e4e4'
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
@@ -808,13 +810,21 @@ export const register: Register = on => {
       }
       const title = r.title ?? [{ text: r.label, weight: 'semibold' as const }]
       const metaLines = [r.meta, r.meta2].filter((m): m is Seg[] => !!m?.length)
+      // The mark: one bar down every row of the record (TabStates board). Light under the keyboard (on the title
+      // row the engine's inversion of the mark's Button draws it) and under the pointer; Escape's grey.
+      const markCell = (row: number) => (
+        <Text {...(row > 0 && hot ? { backgroundColor: MARK_ON } : away ? { backgroundColor: MARK_AWAY } : {})} hover={{ backgroundColor: MARK_ON }}> </Text>
+      )
+      // The record's Box is the ONE keyed Box in it: every hover inside (title, meta, mark, actions) lights while the
+      // pointer is anywhere on the record. A row Box with a key of its own scopes its hovers to that row (kit
+      // BoxProps.key): the meta rows were keyed, so the meta lit only under the pointer on its own line (2026-11-04).
       return (
         <Box key={`rec:${r.id}`} flexDirection="column">
           <Box flexDirection="row" height={1} overflow="hidden">
             {/* Never shrunk: a long title would take the mark's column (seen 2026-10-31). */}
             <Box flexShrink={0} flexDirection="row">
               <Button key={`mark:${r.id}`} plain label={r.label} onPress={r.onOpen}>
-                {away ? <Text backgroundColor={MARK_AWAY}> </Text> : ' '}
+                {markCell(0)}
               </Button>
               <Text> </Text>
             </Box>
@@ -829,14 +839,15 @@ export const register: Register = on => {
             </Button>
           </Box>
           {metaLines.map((segs, line) => (
-            <Box key={`meta${line}:${r.id}`} flexDirection="row" height={1} overflow="hidden">
+            <Box flexDirection="row" height={1} overflow="hidden">
               {/* ONE Text, its runs inline: laid out as a row of Texts, a line wider than the pane gave
                   each Text less than its width, each WRAPPED inside it, and the one-row box showed only
                   each first line ("is being deployed" read "is deplo"; live check 2026-11-04, measured
                   against the kit docs: "a Text holds strings and inline elements"; a tree wider than its
                   columns "wraps or truncates, as its Text props say"). One Text truncates once, at its end. */}
+              {markCell(line + 1)}
               <Text wrap="truncate-end">
-                {'  '}
+                {' '}
                 {segs.map((g, n) =>
                   g.tone === 'dim' && hot ? (
                     <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} color={META_LIT}>

@@ -135,6 +135,11 @@ const shownPill = (b: { props: object; children?: unknown[] } | undefined) => {
  * live check 2026-11-04), so the run carrying a style is found inside it. A plain Text with that one
  * string is found as before.
  */
+/** A record's first meta row: the second child of its keyed Box (the title row first). */
+async function metaRow(ui: { find: (q: any) => Promise<unknown> }, id: string): Promise<any> {
+  return ((await ui.find({ key: `rec:${id}` })) as any)?.children?.[1]
+}
+
 async function findRun(ui: { findAll: (q: { type: 'Text' }) => Promise<unknown[]>; find: (q: any) => Promise<unknown> }, text: any): Promise<any> {
   const walk = (n: any): any => {
     if (!n || typeof n !== 'object') return undefined
@@ -1166,6 +1171,9 @@ test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n Ne
   expect(await findRun(ui, 'addressed to you · unheld')).toMatchObject({ props: { color: '#b8b8b8' } })
   expect((await findRun(ui, 'addressed to you · unheld'))?.props).not.toHaveProperty('dimColor')
   expect(await findRun(ui, 'you took part · holder offline')).toMatchObject({ props: { dimColor: true } })
+  // The keyboard's mark runs down the meta row too (the engine inverts only the title row's Button).
+  expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { backgroundColor: '#e4e4e4' } })
+  expect((await metaRow(ui, T_OLD))?.children?.[0]?.props).not.toHaveProperty('backgroundColor')
   // Onto the footer, the record it acts on stays the keyboard's.
   await focus($, 'foot:take')
   await clock.settle()
@@ -1190,6 +1198,18 @@ test('the keyboard on a channel, which has no actions: the footer still says ent
   await ui.unmount()
 })
 
+test('the pointer anywhere on a record lights all of it: the record\'s Box is its only keyed Box, so the meta row\'s hovers follow it (a keyed row scoped them to that row, 2026-11-04)', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const rec = await ui.find({ key: `rec:${T_NEW}` })
+  expect(rec?.children?.length).toBeGreaterThan(1)
+  for (const row of rec!.children! as { props?: { key?: unknown } }[]) expect(row.props?.key, 'a row with a key of its own scopes its hovers to that row').toBeUndefined()
+  // The meta lights as the title does.
+  expect(await findRun(ui, 'addressed to you · unheld')).toMatchObject({ props: { dimColor: true }, hover: { dimColor: false, color: '#b8b8b8' } })
+  await ui.unmount()
+})
+
 test('Escape hands the keyboard back with no ui.focus: no footer, a grey mark where the keyboard will land again', async ($, on) => {
   ring(on)
   const { clock } = engine(on, { polled: WAITING })
@@ -1199,7 +1219,12 @@ test('Escape hands the keyboard back with no ui.focus: no footer, a grey mark wh
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'foot:take' })).toBeUndefined()
   expect(await ui.find({ key: `mark:${T_NEW}` })).toMatchObject({ children: [{ type: 'Text', props: { backgroundColor: '#4a4a4a' } }] })
-  expect(await ui.find({ key: `mark:${T_OLD}` })).toMatchObject({ children: [' '] })
+  // The grey mark runs down the whole record, its meta row too (TabStates board).
+  expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { backgroundColor: '#4a4a4a' } })
+  // Another record: no mark at rest, the pointer's light mark on every row under hover.
+  expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]).toMatchObject({ type: 'Text', hover: { backgroundColor: '#e4e4e4' } })
+  expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]?.props).not.toHaveProperty('backgroundColor')
+  expect((await metaRow(ui, T_OLD))?.children?.[0]).toMatchObject({ type: 'Text', hover: { backgroundColor: '#e4e4e4' } })
   await ui.unmount()
 })
 
