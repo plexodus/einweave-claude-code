@@ -159,7 +159,7 @@ function startStub(): Stub {
           const page = below.slice(-limit);
           return Response.json({
             parent: st.root, replies: page,
-            thread: { id: THREAD, channelId: CHANNEL_ID, title: "Bug: threaded replies", kind: "question", status: "open", replyCount: st.replies.length, readSeq: cursor },
+            thread: { id: THREAD, channelId: CHANNEL_ID, title: "Bug: threaded replies", kind: "question", status: "open", replyCount: st.replies.length, readSeq: cursor, ...(st.work ? { work: st.work } : {}) },
             hasMore: st.replies.some((r) => Number(r.seq) >= Number(before)),
             hasOlder: below.length > page.length,
             olderCount: below.length - page.length,
@@ -544,6 +544,39 @@ describe("read_thread / list_threads", () => {
     // What did not fit is older: Load older pages through it.
     expect(shown.length).toBeLessThan(31);
     expect(view).toMatchObject({ has_older: true, older_count: 31 - shown.length });
+  });
+
+  test("ui_thread hands the tab a work item's header from the server's model (RFC-029 D2): named, plain, stripped; long fields share a quarter of the budget; none for a conversation kind", async () => {
+    const model = {
+      kind: "bug", category: "work", status: "in_progress", resolvedReason: null,
+      assignee: { principal: { id: "a1", handle: "bell\x1b[1mman", name: "Bellman", kind: "agent" }, managers: [] },
+      fields: [
+        { key: "steps", label: "Steps\x07", shape: "text", value: "1. open\r\n2. \x1b[31mclick\x1b[0m" },
+        { key: "where", label: "Where", shape: "where", value: { client: "0.41.1", server: "b7313aa" } },
+      ],
+      missing: [{ key: "expected", label: "Expected" }],
+    };
+    stub.set({ work: { text: "ignored by the tab", model, may: {}, latestResult: null, everHadResult: false }, replies: [] });
+    const view = await ok("ui_thread", { thread_id: THREAD });
+    expect(view.thread.work).toEqual({
+      kind: "bug", status: "in_progress", resolvedReason: null, assignee: "@bellman",
+      fields: [{ key: "steps", label: "Steps", value: "1. open\n2. click" }, { key: "where", label: "Where", value: "client 0.41.1, server b7313aa" }],
+      missing: ["Expected"],
+    });
+    // No handle left: the name, never the id.
+    stub.set({ work: { text: "", model: { ...model, assignee: { principal: { id: "a1", handle: null, name: null, kind: "human" }, managers: [] } }, may: {} } });
+    expect((await ok("ui_thread", { thread_id: THREAD })).thread.work.assignee).toBe("a removed person");
+    // Each field may be 8000 characters: together they stay inside the page Claude Code accepts.
+    const huge = Array.from({ length: 5 }, (_, i) => ({ key: `f${i}`, label: `F${i}`, shape: "text", value: "z".repeat(8000) }));
+    stub.set({ work: { text: "", model: { ...model, fields: huge }, may: {} }, replies: Array.from({ length: 30 }, (_, i) => ({ ...msg(100 + i, "x".repeat(3000)) })) });
+    const res = await callTool("ui_thread", { thread_id: THREAD });
+    expect((res.text as string).length).toBeLessThanOrEqual(40000);
+    const big = JSON.parse(res.text as string);
+    expect(big.thread.work.fields).toHaveLength(5);
+    expect(big.thread.work.fields[0].value).toMatch(/too long for the pane/);
+    // A conversation kind: no header invented.
+    stub.set({ work: null });
+    expect((await ok("ui_thread", { thread_id: THREAD })).thread).not.toHaveProperty("work");
   });
 
   test("the UI socket serves the thread page WHOLE (no budget): ui_state carries its path, GET /thread/:id over it is larger than UI_THREAD_BUDGET, the MCP ui_thread stays under it", async () => {

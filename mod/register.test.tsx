@@ -848,6 +848,35 @@ test('View opens a thread tab read through ui_thread (never read_thread, which w
   await ui.unmount()
 })
 
+test('a work item\'s tab draws its header (RFC-029 D2): kind · status · assignee under the title, then filed, the fields under their labels, missing; an empty root is no post', async ($, on) => {
+  const thread = {
+    thread: { id: T_OLD, title: 'Search relevance', kind: 'feature', status: 'triage', work: { kind: 'feature', status: 'in_progress', resolvedReason: null, assignee: null, fields: [{ key: 'problem', label: 'Problem', value: 'Ranking is judgment' }], missing: ['Acceptance criteria'] } },
+    channel_id: 'c',
+    messages: [
+      { sender: 'bellman', content: '', type: 'text', ts: '2026-11-03T17:36:00.000Z', seq: 1, root: true, own: true },
+      { sender: 'Brian', content: 'yes', type: 'text', ts: '2026-11-03T18:01:00.000Z', seq: 20 },
+    ],
+    has_older: false,
+    older_count: 0,
+  }
+  const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  expect(await findRun(ui, 'feature · ')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'in progress')).toMatchObject({ props: { weight: 'bold' } })
+  expect(await findRun(ui, 'no assignee')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'filed this')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'Problem')).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ key: `ln:${T_OLD}:f:problem:0` })).toMatchObject({ text: 'Ranking is judgment' })
+  expect(await findRun(ui, 'Missing: Acceptance criteria')).toMatchObject({ props: { color: '#e8b04a' } })
+  // The empty root is not drawn as a post of its own: bellman shows once, on the filed row.
+  expect(await ui.find({ key: `post:${T_OLD}:root` })).toBeUndefined()
+  expect(await ui.find({ key: `post:${T_OLD}:s20` })).toBeDefined()
+  await ui.unmount()
+})
+
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`an opened tab not shown, ${surface}: its label and its × light as one tab under the pointer (terminal only)`, async ($, on) => {
     const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [], has_older: false, older_count: 0 }
