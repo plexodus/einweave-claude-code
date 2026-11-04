@@ -247,11 +247,12 @@ describe("the width guarantee", () => {
 
 describe("linear", () => {
   // Growth, not a stopwatch: an absolute CPU bound passed here and failed on a slower CI runner
-  // (268 ms against 250, 2026-11-03). Each shape is drawn at n and at 4n; linear work grows ~4x,
-  // quadratic ~16x, so more than 10x fails on any machine
-  // (measured locally 1.2x-6.1x). Best of 5 runs damps a GC pause or a
+  // (268 ms against 250, 2026-11-03). Each shape is drawn at n/2 and at 4n: linear work grows ~8x,
+  // quadratic ~64x, so more than 32x fails. A 4x step left too little room: linear measured up to
+  // 9.3x locally under load against a 10x bound, and failed CI on main once (2026-11-04, "tabs in
+  // code"); at 8x linear measured 5-12.7x, idle and under load. Best of 5 runs damps a GC pause or a
   // noisy neighbour; the 5 ms floor keeps a small n from turning jitter into a ratio (quadratic
-  // work still grows ~16x past it).
+  // work still grows ~64x past it).
   const cpu = (f: () => void) => {
     let best = Infinity;
     for (let i = 0; i < 5; i++) {
@@ -263,9 +264,9 @@ describe("linear", () => {
     return best;
   };
   const grows = (name: string, f: (n: number) => void, n: number) => {
-    const small = Math.max(cpu(() => f(n)), 5);
+    const small = Math.max(cpu(() => f(n / 2)), 5);
     const big = cpu(() => f(4 * n));
-    expect({ name, ratio: big / small < 10 }).toEqual({ name, ratio: true });
+    expect({ name, ratio: big / small < 32 }).toEqual({ name, ratio: true });
   };
   const draw = (doc: readonly unknown[]) => docLines(doc, 60);
   const ready = (doc: unknown[]) => docLines(prepareDoc({ content: "c", docV: 1, doc })!, 60);
@@ -285,7 +286,7 @@ describe("linear", () => {
     ["tabs in code, through doc-view", n => ready([["pre", 0, "y\t".repeat(n / 2)]]), 131072],
   ];
   for (const [name, f, n] of shapes) {
-    test(`${name} draws in linear time (n → 4n, up to the server's 512 KB doc)`, () => grows(name, f, n), HANG);
+    test(`${name} draws in linear time (n/2 → 4n, up to the server's 512 KB doc)`, () => grows(name, f, n), HANG);
   }
 
   test("32-deep nesting draws (depth is bounded by the server, so this is shape, not growth)", () => {
