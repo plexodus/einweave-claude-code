@@ -840,13 +840,13 @@ test('New session copies the command that takes the thread in a new window', asy
   await ui.unmount()
 })
 
-test('/einweave take N and /einweave find: take by ref; find is the search (RFC-031), one line per thread with its id', async ($, on) => {
+test('/einweave take N and /einweave search: take by ref; search runs RFC-031 search, one line per thread with its id', async ($, on) => {
   const page = { results: [{ thread_id: 't-9', title: 'Review the PR', channel: 'ops', kind: 'task', status: 'open', matching_replies: 0, snippet_parts: [{ text: 'Review', hit: true }, { text: ' the PR', hit: false }] }], total: { count: 1, capped: false } }
   const { calls, clock } = engine(on, { answer: c => (c.tool === 'ui_search' ? text(JSON.stringify(page)) : c.tool === 'take' ? text('This session now holds Fix the build.') : undefined) })
   await start($, clock)
   expect((await $.command.run({ command: 'einweave', args: 'take 1' })).text).toBe('This session now holds Fix the build.')
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: '1' }])
-  const found = await $.command.run({ command: 'einweave', args: 'find review in:#ops' })
+  const found = await $.command.run({ command: 'einweave', args: 'search review in:#ops' })
   expect(calls.filter(c => c.tool === 'ui_search').map(c => c.args)).toEqual([{ query: 'review in:#ops' }])
   expect(found.text).toBe('1 for "review in:#ops":\n#ops · Review the PR\n   t-9\nTake one with /einweave take <id>.')
 })
@@ -1301,12 +1301,16 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   const keys = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
   // Only what meets the window is drawn: 17 rows of 22 leave the root above it (a long thread stays cheap per tick).
   expect(await keys()).toEqual(['s30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
+  // Overflowing: bottom-anchored, the newest at the window's foot.
+  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-end' } })
   await ui.unmount()
   // Room for all 22 rows: every post, in chat order.
   ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } } })
   await clock.settle()
   expect(await keys()).toEqual(['root', 's30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
   expect(await ui.find({ key: `tail:${T_OLD}` })).toBeUndefined()
+  // It fits: the posts start under the header, not pushed to the foot with empty rows above (Jörgen 2026-11-04).
+  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-start' } })
   // Own posts blue with (you); new ones say so in the brand, bold.
   expect(await findRun(ui, 'Bellman (you)')).toMatchObject({ props: { color: PALETTE.blue, weight: 'bold' } })
   // Others in their own colour by id; one without an id (an older plugin) stays plain bold.
@@ -1639,7 +1643,7 @@ test('Inbox search on mobile (no fields): no search field, the Inbox as before, 
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await ui.find({ key: 'search' })).toBeUndefined()
-  expect(await findRun(ui, 'Search: /einweave find <words>')).toBeDefined()
+  expect(await findRun(ui, 'Search: /einweave search <words>')).toBeDefined()
   expect(await ui.find({ key: 'h:forYou' })).toBeDefined()
   await ui.unmount()
 })

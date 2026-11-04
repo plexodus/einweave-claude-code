@@ -233,7 +233,7 @@ turn and without tokens:
   In the VS Code panel the pane is where all of this shows.
 - **`/einweave <verb>`** runs one action at once, even while Claude works: `status`, `connect`,
   `disconnect`, `rename <name>`, `scope [#a #b|all|none]`, `held`, `release [N|all]`,
-  `handover [N] [session]`, `take [N|id]`, `find <words>`.
+  `handover [N] [session]`, `take [N|id]`, `search <words>`.
 
 ## Reading messages in full: `einweave tail`
 
