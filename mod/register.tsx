@@ -1390,13 +1390,13 @@ export const register: Register = on => {
       const sc = (await read($, scrolls))[id]
       // A desktop draws links itself; a terminal only when it draws OSC 8.
       const links = desk || (await terminalLinks($))
-      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, links)
+      const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, links, th.work ?? null)
       const optionClick = !links && (await isAppleTerminal($))
       // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
-      // rule, the thread's own header (title, hold line, rule) and its key bar under a rule.
+      // rule, the thread's own header (title, a work item's line, hold line, rule) and its key bar under a rule.
       const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
       const openW = t.open.map(o => tabWidth(tabLabel(o.title), true))
-      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 3 + 2
+      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 3 + (th.work ? 1 : 0) + 2
       // A desktop has no hotkeys: there the key bar is labels alone.
       const hot = (key: string) => (desk ? {} : { hotkey: key })
       const threadRule = (key: string) => (
@@ -1442,15 +1442,24 @@ export const register: Register = on => {
       const post = (b: (typeof layout.blocks)[number]) => {
         const m = th.messages[b.n]!
         const tint = m.own ? PALETTE.blue : senderColor(m.senderId)
+        const head = b.head
         return (
-          <Box key={`post:${id}:${b.key}`} flexDirection="column" flexShrink={0} marginTop={b.top ? 1 : 0}>
-            <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
-              <Text weight="bold" {...(tint ? { color: tint } : {})}>{`${m.sender ?? '?'}${m.own ? ' (you)' : ''}`}</Text>
-              {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
-              {m.type !== 'text' ? <Text color={PALETTE.amber}>{m.type}</Text> : null}
-              <Box flexGrow={1} />
-              {m.new ? <Text color={PALETTE.brand} weight="bold">new</Text> : null}
-            </Box>
+          <Box key={`post:${id}:${b.key}`} flexDirection="column" flexShrink={0} marginTop={b.space ? 1 : 0}>
+            {typeof head === 'object' ? (
+              // A work item's field under its label; the required ones still blank in amber, as the web.
+              <Box flexDirection="row" height={1} overflow="hidden">
+                <Text wrap="truncate-end" {...(head.missing ? { color: PALETTE.amber } : { dimColor: true })}>{head.label}</Text>
+              </Box>
+            ) : (
+              <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
+                <Text weight="bold" {...(tint ? { color: tint } : {})}>{`${m.sender ?? '?'}${m.own ? ' (you)' : ''}`}</Text>
+                {head === 'filed' ? <Text dimColor>filed this</Text> : null}
+                {m.ts ? <Text dimColor>{timeOf(m.ts)}</Text> : null}
+                {m.type !== 'text' && head !== 'filed' ? <Text color={PALETTE.amber}>{m.type}</Text> : null}
+                <Box flexGrow={1} />
+                {m.new ? <Text color={PALETTE.brand} weight="bold">new</Text> : null}
+              </Box>
+            )}
             {/* Every surface draws the server's doc as these lines (RFC-034 D6): no Markdown parsed here. A desktop
                 shows the whole post (its surface scrolls), so no cap there. */}
             {(desk && !own ? b.all : b.lines).map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
@@ -1499,6 +1508,16 @@ export const register: Register = on => {
               <Text key="stamp" dimColor>○ reconnecting</Text>
             ) : th.at !== undefined ? <Text key="stamp" dimColor>{`Updated ${clockOf(th.at)}`}</Text> : null}
           </Box>
+          {th.work ? (
+            // A work item's line (RFC-029 D2, Jörgen 2026-11-04: kind · status · assignee, no ticking age).
+            <Box key="work" flexDirection="row" height={1} overflow="hidden">
+              <Text dimColor>{`${th.work.kind} · `}</Text>
+              <Text weight="bold">{th.work.status.replace(/_/g, ' ')}</Text>
+              {th.work.resolvedReason ? <Text dimColor>{` (${th.work.resolvedReason.replace(/_/g, ' ')})`}</Text> : null}
+              <Text dimColor>{' · '}</Text>
+              {th.work.assignee ? <Text wrap="truncate-end">{th.work.assignee}</Text> : <Text dimColor>no assignee</Text>}
+            </Box>
+          ) : null}
           {held ? (
             <Text color={PALETTE.brand} wrap="truncate-end">held by you · replies come here</Text>
           ) : (

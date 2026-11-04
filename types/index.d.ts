@@ -106,12 +106,30 @@ export interface ThreadScroll {
 }
 
 /** `ui_thread`'s answer for one thread tab, or why it is missing. */
+/**
+ * A work item's header as the thread tab draws it, from the server's model (RFC-029 D2): drawn live, never
+ * copied into the root, which holds only what its author wrote and may be empty.
+ */
+export interface ThreadWork {
+  kind: string
+  status: string
+  resolvedReason: string | null
+  /** The assignee as einweave names it (`@handle`); null: none. */
+  assignee: string | null
+  /** The fields present, in the kind's order: the value as plain text, line breaks kept (never Markdown, as the web). */
+  fields: { key: string; label: string; value: string }[]
+  /** Labels of required fields still blank. */
+  missing: string[]
+}
+
 export interface ThreadView {
   title: string | null
   /** Its channel's name, for the tab's header; null when the plugin could not name it. */
   channel?: string | null
   status: string | null
   messages: ThreadMessage[]
+  /** A work item's header; absent for a conversation kind (and from an older plugin). */
+  work?: ThreadWork | null
   /** Replies older than those shown: 0 none, null some (uncounted). */
   older: number | null
   /** A Load older read in flight: the top edge asks once. */

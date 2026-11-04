@@ -3,7 +3,7 @@
  * (test/mod-model.test.ts): what a relay line means, which state the indicator shows, and what each
  * `/einweave` verb calls. mod/register.tsx only wires these to `$`.
  */
-import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, SearchHit, SearchRefused, SearchSort, SearchState, ThreadMessage, ThreadScroll, ThreadView, UiHeld, UiSnapshot, UiWaitingItem, View } from '../types'
+import type { ChannelCounts, ChannelsView, ChannelThread, ChannelView, OpenTab, PaneTabs, SearchHit, SearchRefused, SearchSort, SearchState, ThreadMessage, ThreadScroll, ThreadView, ThreadWork, UiHeld, UiSnapshot, UiWaitingItem, View } from '../types'
 import { cellWidth, docLines, plainLines, type Line } from './text'
 
 /**
@@ -472,10 +472,11 @@ export function takeOutcome(text: string): { kind: 'taken' } | { kind: 'ask'; qu
 /** `ui_thread`'s JSON → a thread tab's content; anything else is an error to show. */
 export function threadView(text: string): ThreadView {
   try {
-    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null }; channel?: string | null; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
+    const o = JSON.parse(text) as { thread?: { title?: string | null; status?: string | null; work?: ThreadWork | null }; channel?: string | null; messages?: ThreadView['messages']; has_older?: boolean; older_count?: number | null }
     if (!o || !Array.isArray(o.messages)) throw new Error('no messages')
     const older = o.has_older !== true ? 0 : typeof o.older_count === 'number' ? o.older_count : null
-    return { title: o.thread?.title ?? null, channel: o.channel ?? null, status: o.thread?.status ?? null, messages: o.messages, older, error: null, loading: false }
+    const work = o.thread?.work && typeof o.thread.work === 'object' && Array.isArray(o.thread.work.fields) ? { work: o.thread.work } : {}
+    return { title: o.thread?.title ?? null, channel: o.channel ?? null, status: o.thread?.status ?? null, messages: o.messages, ...work, older, error: null, loading: false }
   } catch {
     return { title: null, status: null, messages: [], older: 0, error: text || 'ui_thread answered nothing', loading: false }
   }
@@ -499,10 +500,17 @@ export function postKey(m: ThreadMessage, n: number): string {
   return m.root ? 'root' : m.seq != null ? `s${m.seq}` : `i${n}`
 }
 
-/** One post as drawn: its lines (cut at the cap unless opened), how many the cap hid, and its rows from the top. */
+/**
+ * One post as drawn: its lines (cut at the cap unless opened), how many the cap hid, and its rows from the top.
+ * A work item's root draws its header first as blocks of their own (RFC-029 D2): `filed` (who filed it, when),
+ * then a block per field under its label, then the missing ones; absent `head`, a post under its sender row.
+ */
 export interface PostBlock {
   key: string
   n: number
+  head?: 'filed' | { label: string; missing?: true }
+  /** A blank row above it: between posts, never inside an item's header. */
+  space: boolean
   lines: Line[]
   /** Every line, the cap ignored: what a surface that scrolls itself (a desktop) draws. */
   all: Line[]
@@ -524,19 +532,29 @@ export interface ThreadLayout {
  * of them unless `open`), and a "N more lines" row where the cap cut. With replies older than those
  * read, the gap row sits under the root, a blank row above it.
  */
-export function threadLayout(messages: readonly ThreadMessage[], width: number, open: Record<string, true>, older: number | null, links = true): ThreadLayout {
+export function threadLayout(messages: readonly ThreadMessage[], width: number, open: Record<string, true>, older: number | null, links = true, work: ThreadWork | null = null): ThreadLayout {
   const blocks: PostBlock[] = []
   let gap: ThreadLayout['gap'] = null
   let row = 0
-  messages.forEach((m, n) => {
-    const key = postKey(m, n)
-    const all = threadLines(m, width, links)
+  const add = (key: string, n: number, all: Line[], space: boolean, head?: PostBlock['head']) => {
     const cut = !open[key] && all.length > POST_CAP + 1
     const lines = cut ? all.slice(0, POST_CAP) : all
     const more = cut ? all.length - POST_CAP : 0
-    const rows = (blocks.length ? 1 : 0) + 1 + lines.length + (more ? 1 : 0)
-    blocks.push({ key, n, lines, all, more, top: row, rows })
+    const rows = (space ? 1 : 0) + 1 + lines.length + (more ? 1 : 0)
+    blocks.push({ key, n, ...(head ? { head } : {}), space, lines, all, more, top: row, rows })
     row += rows
+  }
+  messages.forEach((m, n) => {
+    const key = postKey(m, n)
+    const all = threadLines(m, width, links)
+    if (m.root && work) {
+      // As the web: the header, then the root. Fields are plain text with their line breaks, each capped as a post.
+      add('filed', n, [], blocks.length > 0, 'filed')
+      for (const f of work.fields) add(`f:${f.key}`, n, plainLines(f.value, width), false, { label: f.label })
+      if (work.missing.length) add('missing', n, [], false, { label: `Missing: ${work.missing.join(', ')}`, missing: true })
+      // An empty root is not a post: `filed` names its author and time.
+      if (all.length) add(key, n, all, true)
+    } else add(key, n, all, blocks.length > 0)
     if (m.root && older !== 0 && n < messages.length - 1) {
       gap = { top: row, rows: 2 }
       row += 2
@@ -553,7 +571,7 @@ export function landOff(l: ThreadLayout, messages: readonly ThreadMessage[], roo
   const first = l.blocks.find(b => messages[b.n]?.new)
   if (!first) return 0
   // Its blank row above it stays out of view.
-  const top = first.top + (first.top ? 1 : 0)
+  const top = first.top + (first.space ? 1 : 0)
   return Math.min(maxOff(l, room), Math.max(0, l.total - room - top))
 }
 

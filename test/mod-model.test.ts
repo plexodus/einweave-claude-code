@@ -269,6 +269,10 @@ describe("the Inbox and thread tabs", () => {
     expect(threadView(JSON.stringify({ messages: [], has_older: true, older_count: null })).older).toBeNull();
     expect(threadView(JSON.stringify({ messages: [], has_older: false, older_count: 0 })).older).toBe(0);
     expect(threadView("einweave is not connected")).toMatchObject({ error: "einweave is not connected", messages: [] });
+    // A work item's header passes through; a conversation kind, or one that is not a header, has none.
+    const work = { kind: "bug", status: "open", resolvedReason: null, assignee: "@bellman", fields: [], missing: [] };
+    expect(threadView(JSON.stringify({ thread: { work }, messages: [] })).work).toEqual(work);
+    expect(threadView(JSON.stringify({ thread: { work: { kind: "bug" } }, messages: [] }))).not.toHaveProperty("work");
   });
 
   test("tabs open once and show; closing the shown one goes back to the Inbox, another keeps what shows", () => {
@@ -410,6 +414,21 @@ describe("thread tab layout (layout A: chat order, own scroll, cap)", () => {
     expect(l.gap).toEqual({ top: 2, rows: 2 });
     expect(l.total).toBe(11);
     expect(threadLayout([root, post(5, "a")], 40, {}, 0).gap).toBeNull();
+  });
+
+  test("a work item's root draws its header as blocks (RFC-029 D2): filed, a block per field under its label, missing; an empty root is no post", () => {
+    const work = { kind: "feature", status: "triage", resolvedReason: null, assignee: null, fields: [{ key: "problem", label: "Problem", value: Array.from({ length: 9 }, (_, i) => `p${i}`).join("\n") }, { key: "proposal", label: "Proposal", value: "do it" }], missing: ["Acceptance criteria"] };
+    const empty = post(1, "", { root: true });
+    const l = threadLayout([empty, post(5, "a")], 40, {}, 0, true, work);
+    // filed: its row; Problem: label + 6 lines + more; Proposal: label + 1; Missing: its row. No blank rows inside the header.
+    expect(l.blocks.map(b => [b.key, b.top, b.rows, b.space])).toEqual([["filed", 0, 1, false], ["f:problem", 1, 8, false], ["f:proposal", 9, 2, false], ["missing", 11, 1, false], ["s5", 12, 3, true]]);
+    expect(l.blocks[1]!.more).toBe(9 - POST_CAP);
+    expect(l.blocks[3]!.head).toEqual({ label: "Missing: Acceptance criteria", missing: true });
+    expect(threadLayout([empty], 40, { "f:problem": true }, 0, true, work).blocks[1]!.lines).toHaveLength(9);
+    // A root its author wrote stays a post, under the header with a blank row above it.
+    const said = threadLayout([root, post(5, "a")], 40, {}, 3, true, { ...work, fields: [], missing: [] });
+    expect(said.blocks.map(b => [b.key, b.top, b.rows, b.space])).toEqual([["filed", 0, 1, false], ["root", 1, 3, true], ["s5", 6, 3, true]]);
+    expect(said.gap).toEqual({ top: 4, rows: 2 });
   });
 
   test(`a post over ${POST_CAP + 1} lines shows ${POST_CAP} and a "more" row until opened; ${POST_CAP + 1} show whole`, () => {

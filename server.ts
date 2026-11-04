@@ -3163,6 +3163,36 @@ async function uiState() {
  * newest replies that fit, the rest counted as older, a post too big alone cut. Without it (the socket)
  * the page comes whole -- every reply, each with its doc -- and `content` is still only set without a doc.
  */
+/**
+ * A work item's header for the thread tab (RFC-029 D2): the server's model, cut to what the tab draws. The
+ * fields are drawn live, never in the root (it holds what its author wrote, and may be empty). With a budget
+ * the fields share a quarter of it: each may be 8000 characters, and the replies need the room.
+ * Null: a conversation kind (the server sends no `work`).
+ */
+function uiWork(model: any, budget?: number) {
+  if (!model || typeof model !== "object" || typeof model.kind !== "string") return null;
+  const fields: any[] = Array.isArray(model.fields) ? model.fields : [];
+  const cap = budget === undefined ? Infinity : Math.floor(budget / 4 / Math.max(1, fields.length));
+  const text = (v: string) => {
+    const cs = [...stripControlChars(v)];
+    return cs.length <= cap ? cs.join("") : `${cs.slice(0, cap).join("")}\n… too long for the pane: open it on the web.`;
+  };
+  // As the server's renderWorkHeader names a principal and a `where` field: never a raw id.
+  const named = (p: any) => (p?.handle ? `@${p.handle}` : (p?.name ?? (p?.kind === "agent" ? "a removed agent" : "a removed person")));
+  const value = (f: any) =>
+    f.shape === "where" && f.value && typeof f.value === "object"
+      ? [f.value.client && `client ${f.value.client}`, f.value.server && `server ${f.value.server}`].filter(Boolean).join(", ")
+      : String(f.value ?? "");
+  return {
+    kind: stripControlChars(model.kind),
+    status: cleanOrNull(model.status) ?? "",
+    resolvedReason: cleanOrNull(model.resolvedReason),
+    assignee: model.assignee?.principal ? stripControlChars(named(model.assignee.principal)) : null,
+    fields: fields.map((f) => ({ key: stripControlChars(String(f.key)), label: stripControlChars(String(f.label ?? f.key)), value: text(value(f)) })),
+    missing: (Array.isArray(model.missing) ? model.missing : []).map((f: any) => stripControlChars(String(f.label ?? f.key))),
+  };
+}
+
 async function uiThread(threadIdArg: string, args: { before_seq?: unknown; limit?: unknown }, o: { budget?: number } = {}) {
   const threadId = threadIdArg.trim();
   if (!threadId) throw new Error("thread_id is required.");
@@ -3202,9 +3232,10 @@ async function uiThread(threadIdArg: string, args: { before_seq?: unknown; limit
     return { ...s, doc: null, content: `${text}\n… too long for the pane: open it on the web.` };
   };
   const root = data.parent ? [sized(shape(data.parent, true), data.parent)] : [];
+  const work = uiWork(data.thread?.work?.model, budget);
   const replies: any[] = data.replies ?? [];
-  // The root always; then replies newest first while they fit the budget (all of them without one). Those left out count as older.
-  let used = JSON.stringify(root).length + 1000;
+  // The root and the item's header always; then replies newest first while they fit the budget (all of them without one). Those left out count as older.
+  let used = JSON.stringify(root).length + JSON.stringify(work).length + 1000;
   const kept: ReturnType<typeof shape>[] = [];
   for (let i = replies.length - 1; i >= 0; i--) {
     const s = sized(shape(replies[i], false), replies[i]);
@@ -3215,7 +3246,7 @@ async function uiThread(threadIdArg: string, args: { before_seq?: unknown; limit
   }
   const dropped = replies.length - kept.length;
   const view = {
-    thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null },
+    thread: { id: data.thread?.id ?? threadId, title: cleanOrNull(data.thread?.title), kind: data.thread?.kind ?? null, status: data.thread?.status ?? null, ...(work ? { work } : {}) },
     channel_id: channelId,
     channel: (channelId && cleanOrNull(channelNameOf(channelId))) || null,
     messages: [...root, ...kept],
