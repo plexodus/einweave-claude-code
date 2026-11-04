@@ -457,6 +457,21 @@ export function focusTarget(stops: readonly string[], last: string, element: str
   return stops[at + 1] ?? element
 }
 
+/**
+ * Where an arrow key (`by` ±1) takes the pane's focus ring on a list: the stop before or after the one the
+ * keyboard is on (a record's action counts as its mark), or down onto the first from the Inbox search field or nowhere.
+ * `undefined` means the arrow scrolls a row as before: a tab with no stops (the thread tab, read, not picked
+ * from), the keyboard off the stops (the footer), or past the first or last stop (the rows beyond stay reachable).
+ */
+export function arrowTarget(stops: readonly string[], last: string, by: number): string | undefined {
+  if (!stops.length) return undefined
+  if (!last || last === SEARCH_FIELD) return by > 0 ? stops[0] : undefined
+  const id = recordOf(last)
+  const at = stops.indexOf(id ? `mark:${id}` : last)
+  if (at < 0) return undefined
+  return stops[at + Math.sign(by)]
+}
+
 /** The opening of `take`'s answer when an online holder must be asked about first (holds.ts; pinned by test/mod-model.test.ts). */
 export const TAKE_ASKS = 'is online and working on this. Take it anyway?'
 

@@ -12,7 +12,7 @@ import type { ButtonProps, EngineInterface, Register, RenderElement } from 'clau
 
 import type { ChannelView, OpenTab, PaneScroll, PaneTabs, ThreadView, UiSnapshot } from '../types'
 import {
-  applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
+  applySnapshot, arrowTarget, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadView, withOlder, BAND_GRACE_MS,
   cueText, hidden, landOff, revealOff, stack, windowOff, type Anchor, type Stack,
@@ -608,6 +608,13 @@ export const register: Register = on => {
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const w = win
     if (!w) return next(e)
+    // An arrow (the person's, a row, no pointer) on a list moves the ring a record, as Tab does; ui.focus then
+    // brings that record into view. Wheel, page keys and the thread tab scroll (arrowTarget).
+    const to = e.origin.kind === 'person' && !e.pointer && Math.abs(e.by) === 1 ? arrowTarget(stops, last, e.by) : undefined
+    if (to) {
+      detach($.ui.focus({ requestId: PANE, key: to }))
+      return {}
+    }
     // The engine's window kept, never committed (as the engine's own docked mods do): a commit, even to
     // row 0, still let it show its window a row or two off the tree drawn (live 2026-11-01). The move
     // reads the place inside update, so ticks crowding in each add to the last.

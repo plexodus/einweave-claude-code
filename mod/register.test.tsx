@@ -1844,6 +1844,29 @@ test('the window follows the keyboard: a record the ring lands on outside it com
   await ui.unmount()
 })
 
+test('on a list an arrow moves the keyboard a record, not the window; the wheel and page keys still scroll', async ($, on) => {
+  ring(on)
+  const { clock } = engine(on, { polled: MANY, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, isFocused: true, scroll: { offset: 0, bodyRows: 20 } } })
+  await focus($, 'mark:t-1')
+  await clock.settle()
+  const top = await listOff(ui)
+  const arrow = (by: number, more: object = {}) =>
+    $.ui.scroll({ component: 'Pane', requestId: 'einweave', offset: 1, by, bodyRows: 20, contentRows: 22, origin: { kind: 'person' }, ...more } as never)
+  expect(await arrow(1)).toEqual({})
+  await clock.settle()
+  expect(await listOff(ui)).toBe(top)
+  // The wheel (a pointer) and a page key scroll as before.
+  await arrow(1, { pointer: { row: 3, column: 2 } })
+  await clock.settle()
+  expect(await listOff(ui)).toBe(top - 1)
+  await arrow(9)
+  await clock.settle()
+  expect(await listOff(ui)).toBe(top - 10)
+  await ui.unmount()
+})
+
 test('a list at its top stays there as rows arrive above; moved down, it stays on the rows it showed', async ($, on) => {
   let polled: UiSnapshot = MANY
   let rev = 1

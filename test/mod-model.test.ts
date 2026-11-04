@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, arrowTarget, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, leadOf, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
 } from "../mod/model";
@@ -247,6 +247,18 @@ describe("the Inbox and thread tabs", () => {
     expect(focusTarget(stops, "open:c", "take:c")).toBe("take:c");
     // Marks, tabs, the footer, the engine's own stops, and records not drawn pass as they came.
     expect([focusTarget(stops, "", "mark:b"), focusTarget(stops, "", "tab:held"), focusTarget(stops, "mark:c", "foot:take"), focusTarget(stops, "", undefined), focusTarget(stops, "", "take:zz")]).toEqual(["mark:b", "tab:held", "foot:take", undefined, "take:zz"]);
+  });
+
+  test("arrowTarget: on a list an arrow moves a stop (an action counts as its record's mark); no stops, off the stops or past either end it scrolls (undefined)", () => {
+    const stops = ["mark:a", "fold:forYou", "mark:b"];
+    expect(arrowTarget(stops, "mark:a", 1)).toBe("fold:forYou");
+    expect(arrowTarget(stops, "fold:forYou", 1)).toBe("mark:b");
+    expect(arrowTarget(stops, "mark:b", -1)).toBe("fold:forYou");
+    expect(arrowTarget(stops, "take:b", -1)).toBe("fold:forYou");
+    expect(arrowTarget(stops, "open:a", 1)).toBe("fold:forYou");
+    expect(arrowTarget(stops, "search", 1)).toBe("mark:a");
+    expect(arrowTarget(stops, "", 1)).toBe("mark:a");
+    expect([arrowTarget(stops, "search", -1), arrowTarget(stops, "mark:a", -1), arrowTarget(stops, "mark:b", 1), arrowTarget(stops, "foot:take", 1), arrowTarget(stops, "", -1), arrowTarget(stops, "mark:zz", 1), arrowTarget([], "mark:a", 1)]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
   });
 
   test("ago: one unit, spaced as the canvas writes it", () => {
