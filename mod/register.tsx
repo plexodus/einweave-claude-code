@@ -501,7 +501,7 @@ export const register: Register = on => {
       }
       case 'take':
         return { text: await takeThread($, action.ref) }
-      case 'find': {
+      case 'search': {
         const r = await uiRead($, '/search', { q: action.words }, 'ui_search', { query: action.words })
         return { text: r.isError ? textOf(r) || 'search failed' : searchText(textOf(r), action.words) }
       }
@@ -1054,7 +1054,7 @@ export const register: Register = on => {
     win = null
     if (tab === 'inbox') {
       // Board Search: the field on top; a query replaces the sections with its results, clearing it
-      // brings them back. No field on mobile (no Input there): `/einweave find` is the way.
+      // brings them back. No field on mobile (no Input there): `/einweave search` is the way.
       const field = Input ? (
         <Box key="search-field" flexDirection="column">
           <Text dimColor>Search threads and messages</Text>
@@ -1095,7 +1095,7 @@ export const register: Register = on => {
       ) : (
         <Box flexDirection="column" rowGap={1}>
           {field}
-          {!Input ? <Text key="find-hint" dimColor>Search: /einweave find &lt;words&gt;</Text> : null}
+          {!Input ? <Text key="find-hint" dimColor>Search: /einweave search &lt;words&gt;</Text> : null}
           {waiting === 0 ? <Text dimColor>Nothing waits for this session.</Text> : null}
           {box.forYou.length ? heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you') : null}
           {box.forYou.map(inboxRecord)}

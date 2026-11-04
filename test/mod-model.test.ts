@@ -392,11 +392,11 @@ describe("the Inbox and thread tabs", () => {
     expect(searchText("This einweave server is too old for search", "x")).toBe("This einweave server is too old for search");
   });
 
-  test("verbs: take [ref], find <words>", () => {
+  test("verbs: take [ref], search <words>", () => {
     expect(parseCommand("take")).toEqual({ kind: "tool", tool: "take", args: {} });
     expect(parseCommand("take 2")).toEqual({ kind: "take", ref: "2" });
-    expect(parseCommand("find release notes")).toEqual({ kind: "find", words: "release notes" });
-    expect(parseCommand("find").kind).toBe("usage");
+    expect(parseCommand("search release notes")).toEqual({ kind: "search", words: "release notes" });
+    expect(parseCommand("search").kind).toBe("usage");
   });
 });
 

@@ -199,7 +199,7 @@ export type Action =
   | { kind: 'status'; full: boolean }
   | { kind: 'usage'; text: string }
   | { kind: 'take'; ref: string }
-  | { kind: 'find'; words: string }
+  | { kind: 'search'; words: string }
 
 export const USAGE = [
   '/einweave                       open or close the pane',
@@ -211,7 +211,7 @@ export const USAGE = [
   '/einweave release [N|all]       let go of a thread',
   '/einweave handover [N] [to]     move a thread to another session of this agent',
   '/einweave take [N|id]           take a thread for this session (no ref: the numbered list)',
-  '/einweave find <words>          search threads and messages (filters: in:#ch from:@who is:open …)',
+  '/einweave search <words>        search threads and messages (filters: in:#ch from:@who is:open …)',
 ].join('\n')
 
 /** `/einweave <verb> <rest>` → what to do. Every tool named here is the plugin's own. */
@@ -241,9 +241,9 @@ export function parseCommand(args: string): Action {
       return { kind: 'tool', tool: 'release', args: rest ? { ref: rest } : {} }
     case 'take':
       return rest ? { kind: 'take', ref: rest } : { kind: 'tool', tool: 'take', args: {} }
-    case 'find':
-      if (!rest) return { kind: 'usage', text: 'Usage: /einweave find <words>' }
-      return { kind: 'find', words: rest }
+    case 'search':
+      if (!rest) return { kind: 'usage', text: 'Usage: /einweave search <words>' }
+      return { kind: 'search', words: rest }
     case 'handover': {
       if (!rest) return { kind: 'tool', tool: 'handover', args: {} }
       const s = rest.search(/\s/)
@@ -812,7 +812,7 @@ export function fitSnippet(parts: { text: string; hit: boolean }[], width: numbe
 export const SEARCH_DEBOUNCE_MS = 250
 
 /**
- * `/einweave find <words>`: the `/search` page (RFC-031) as text: one line per thread with where it
+ * `/einweave search <words>`: the `/search` page (RFC-031) as text: one line per thread with where it
  * matched, its id to take it by. A refusal is its own sentence; a non-JSON answer (an error) passes
  * through. Text, not a list to number: `take N` keeps meaning the takeable list.
  */
