@@ -565,8 +565,15 @@ export function tabRows(widths: readonly number[], width: number): number {
 /** A tab's label cut as the tab row draws it. */
 export const tabLabel = (title: string) => (title.length > 18 ? `${title.slice(0, 17)}…` : title)
 
-/** Cells a tab takes in the row: its label padded a cell each side, an opened tab's × after it. */
-export const tabWidth = (label: string, closable: false | 'shown' | 'rest') => cellWidth(label) + 2 + (closable === 'shown' ? 2 : closable ? 1 : 0)
+/** Cells a tab takes in the row: its label padded a cell each side, an opened tab's `× ` after it (shown or not). */
+export const tabWidth = (label: string, closable: boolean) => cellWidth(label) + 2 + (closable ? 2 : 0)
+
+/**
+ * An opened tab's hover on the terminal, on its label and its × alike: one group per tab, so the pointer on
+ * either draws both as the pointer draws a fixed tab (inverse, full strength) and the × reads as the tab's own.
+ * Their dim is the Texts', never the Buttons': a dimColor Button keeps its lit Text grey (live 2026-11-03).
+ */
+export const tabLit = (id: string) => ({ scope: `tab:${id}`, inverse: true, dimColor: false }) as const
 
 /** Prepend an older page's replies (the root dropped: the tab has it) to what the tab shows. */
 export function withOlder(t: ThreadView, page: ThreadView): ThreadView {
