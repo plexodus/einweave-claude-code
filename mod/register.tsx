@@ -15,7 +15,7 @@ import {
   applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
-  applySuggestion, NO_SEARCH, oneLine, SEARCH_DEBOUNCE_MS, SEARCH_FIELD, SEARCH_FILL, searchAnswer,
+  applySuggestion, fitSnippet, NO_SEARCH, oneLine, SEARCH_DEBOUNCE_MS, searchPlaceholder, SEARCH_FIELD, SEARCH_FILL, searchAnswer,
   type InboxRow, type SearchHit, type SearchState, type Seg, type ThreadLayout, type Tone,
 } from './model'
 import type { Line } from './text'
@@ -44,7 +44,9 @@ const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { sha
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
 /** The Inbox search (board Search): the query, the current answer, and which edit it answers. */
-const search = atom({ plugin: 'einweave', key: 'search' } as const, NO_SEARCH as SearchState, { shape: 'search-1' })
+// shape: bump when SearchState's form changes, so a pane reloaded mid-search drops the old state rather than
+// drawing it without the new fields (search-2: `applied`, live check 2026-11-04).
+const search = atom({ plugin: 'einweave', key: 'search' } as const, NO_SEARCH as SearchState, { shape: 'search-2' })
 /** Each thread tab's own window over its posts, once the person moved it, and the posts opened past the cap. */
 const scrolls = atom({ plugin: 'einweave', key: 'scrolls' } as const, {} as Record<string, ThreadScroll>, { shape: 'scrolls-1' })
 /** A record's dim meta under the pointer: a shade lighter, its only background the pane's. */
@@ -728,22 +730,29 @@ export const register: Register = on => {
           </Box>
           {metaLines.map((segs, line) => (
             <Box key={`meta${line}:${r.id}`} flexDirection="row" height={1} overflow="hidden">
-              <Text>  </Text>
-              {segs.map((g, n) =>
-                g.tone === 'dim' && hot ? (
-                  <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} color={META_LIT}>
-                    {g.text}
-                  </Text>
-                ) : g.tone === 'dim' ? (
-                  <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} dimColor hover={{ dimColor: false, color: META_LIT }}>
-                    {g.text}
-                  </Text>
-                ) : (
-                  <Text key={`m${line}:${r.id}:${n}`} {...paint(g.tone)} weight={g.weight}>
-                    {g.text}
-                  </Text>
-                ),
-              )}
+              {/* ONE Text, its runs inline: laid out as a row of Texts, a line wider than the pane gave
+                  each Text less than its width, each WRAPPED inside it, and the one-row box showed only
+                  each first line ("is being deployed" read "is deplo"; live check 2026-11-04, measured
+                  against the kit docs: "a Text holds strings and inline elements"; a tree wider than its
+                  columns "wraps or truncates, as its Text props say"). One Text truncates once, at its end. */}
+              <Text wrap="truncate-end">
+                {'  '}
+                {segs.map((g, n) =>
+                  g.tone === 'dim' && hot ? (
+                    <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} color={META_LIT}>
+                      {g.text}
+                    </Text>
+                  ) : g.tone === 'dim' ? (
+                    <Text key={`m${line}:${r.id}:${n}`} weight={g.weight} dimColor hover={{ dimColor: false, color: META_LIT }}>
+                      {g.text}
+                    </Text>
+                  ) : (
+                    <Text key={`m${line}:${r.id}:${n}`} {...paint(g.tone)} weight={g.weight}>
+                      {g.text}
+                    </Text>
+                  ),
+                )}
+              </Text>
             </Box>
           ))}
           {r.acts.length ? (
@@ -911,7 +920,10 @@ export const register: Register = on => {
 
     /** A snippet as a record's line: the hits bright and bold, the rest dim (board Search). */
     const snippetSegs = (h: SearchHit): Seg[] =>
-      oneLine(h.snippet_parts).map(p => (p.hit ? { text: p.text, weight: 'bold' as const } : { text: p.text, tone: 'dim' as const }))
+      // Fitted to the line (fitSnippet): a run past the pane's edge was drawn over the one before it.
+      fitSnippet(oneLine(h.snippet_parts), e.props.bodyColumns - 2 * PANE_PAD - 3).map(p =>
+        p.hit ? { text: p.text, weight: 'bold' as const } : { text: p.text, tone: 'dim' as const },
+      )
     const heldHere = (id: string) => s.holds.some(h => h.threadId === id)
     const releaseAct = (id: string): Act => ({ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: id }) })
     const dot = { text: ' · ', tone: 'dim' as const }
@@ -958,24 +970,39 @@ export const register: Register = on => {
         )
       const n = st.total ? `${st.total.count}${st.total.capped ? '+' : ''}` : ''
       const kinds = (
+        <Box key="search-kinds-wrap" flexDirection="column" rowGap={1}>
+        {/* The results' section heading, as the Inbox's ("For you 16  questions…"): bold, a dim note,
+            a blank row under it. Says what was searched, whatever the field shows (Enter empties it). */}
+        {heading('h:results', 'Results', `for \u201C${st.q.trim()}\u201D`)}
         <Box key="search-kinds" flexDirection="row" columnGap={1}>
           {pill('search-threads', st.type === 'threads' && n ? `Threads ${n}` : 'Threads', st.type === 'threads', () => void editSearch($, { type: 'threads' }, true))}
           {pill('search-messages', st.type === 'messages' && n ? `Messages ${n}` : 'Messages', st.type === 'messages', () => void editSearch($, { type: 'messages' }, true))}
           <Box flexGrow={1} />
-          <Text dimColor>{st.sort === 'newest' ? 'newest first ·' : 'best first ·'}</Text>
-          <Button
-            key="search-sort"
-            plain
-            dimColor
-            label={st.sort === 'newest' ? 'Best first' : 'Newest'}
-            onPress={() => void editSearch($, { sort: st.sort === 'newest' ? 'relevance' : 'newest' }, true)}
-          />
+          <Button key="search-clear" plain dimColor label="Clear" onPress={() => void editSearch($, { q: '' }, true)} />
+          <Text dimColor>·</Text>
+          {/* The sort the server USED (its echo): filters alone are newest first, with nothing to rank. */}
+          {st.applied && !st.applied.words ? (
+            <Text key="search-sorted" dimColor>newest first</Text>
+          ) : (
+            [
+              <Text key="search-sorted" dimColor>{(st.applied?.sort ?? st.sort) === 'newest' ? 'newest first ·' : 'best first ·'}</Text>,
+              <Button
+                key="search-sort"
+                plain
+                dimColor
+                label={(st.applied?.sort ?? st.sort) === 'newest' ? 'Best first' : 'Newest'}
+                onPress={() => void editSearch($, { sort: (st.applied?.sort ?? st.sort) === 'newest' ? 'relevance' : 'newest' }, true)}
+              />,
+            ]
+          )}
+        </Box>
         </Box>
       )
       if (st.refused) {
         const r = st.refused
         return (
           <Box key="search-refused" flexDirection="column" rowGap={1}>
+            {kinds}
             <Text color={PALETTE.amber}>{r.message}</Text>
             {r.suggestions.length ? (
               <Box flexDirection="row" columnGap={2} flexWrap="wrap">
@@ -987,7 +1014,13 @@ export const register: Register = on => {
           </Box>
         )
       }
-      if (st.error) return <Text key="search-error" dimColor>{st.error}</Text>
+      if (st.error)
+        return (
+          <Box key="search-error" flexDirection="column" rowGap={1}>
+            {kinds}
+            <Text dimColor>{st.error}</Text>
+          </Box>
+        )
       if (!st.rows.length)
         return (
           <Box key="search-none" flexDirection="column" rowGap={1}>
@@ -1030,7 +1063,7 @@ export const register: Register = on => {
             <Input
               key={SEARCH_FIELD}
               value={st.q}
-              placeholder='words, "a phrase", in:#channel, from:@person, is:open'
+              placeholder={searchPlaceholder(e.props.bodyColumns - 2 * PANE_PAD - 4 - 10)}
               submitLabel="search"
               onInput={q => void editSearch($, { q })}
               onSubmit={q => void editSearch($, { q }, true)}
@@ -1039,7 +1072,12 @@ export const register: Register = on => {
                 in the field, so a click anywhere in the box lands there (live check 2026-11-03). Clipped by the box.
                 A terminal only: a desktop draws every Button native, and its field is a native one. */}
             {desk ? null : (
-              <Button key={SEARCH_FILL} plain dimColor label="Search" hover={{ inverse: false }} onPress={() => void $.ui.focus({ requestId: PANE, key: SEARCH_FIELD })}>
+              <Button key={SEARCH_FILL} plain dimColor label="Search" hover={{ inverse: false }} onPress={() => void (async () => {
+                  // The pane takes the keyboard first: a focus request waits, unanswered, while the
+                  // prompt holds it (measured live 2026-11-04: `$.ui.focus` alone never answered).
+                  await $.ui.open({ id: PANE, title: 'einweave', focus: true })
+                  await $.ui.focus({ requestId: PANE, key: SEARCH_FIELD })
+                })()}>
                 {' '.repeat(Math.max(1, e.props.bodyColumns))}
               </Button>
             )}
