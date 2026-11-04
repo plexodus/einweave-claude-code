@@ -574,6 +574,12 @@ export interface StackBlock {
   key: string
   top: number
   rows: number
+  /** A keyboard stop (a record, a button). */
+  stop?: boolean
+  /** A section's heading ("For you", "Unowned", "Similar titles"): revealed with its first record. */
+  section?: boolean
+  /** A blank row on top of the block (counted in `rows`). */
+  space?: boolean
 }
 export interface Stack {
   blocks: readonly StackBlock[]
@@ -628,12 +634,33 @@ export function scrollBy(off: number, by: number, l: Stack, room: number): { off
   return { off: next, atTop: next >= max }
 }
 
-/** The smallest move that shows block `key` whole (its top, when taller than the window); `off` when it shows or is not there. */
+/**
+ * The heading of the section block `key` opens: up from it over rows that are no stop (Unowned's gateway
+ * line) to a `section` block. None when a stop comes first (not the section's first record) or none is there.
+ */
+export function leadOf(l: Stack, key: string): StackBlock | undefined {
+  const at = l.blocks.findIndex(b => b.key === key)
+  for (let n = at - 1; n >= 0; n--) {
+    const b = l.blocks[n]!
+    if (b.section) return b
+    if (b.stop) return undefined
+  }
+  return undefined
+}
+
+/**
+ * The smallest move that shows block `key` whole (its top, when taller than the window); `off` when it shows
+ * or is not there. A section's first record brings its heading along when both fit (the heading says which
+ * list the record is in; Jörgen 2026-11-04); when they do not, the record alone, as any other.
+ */
 export function revealOff(l: Stack, key: string, off: number, room: number): number {
   const b = l.blocks.find(x => x.key === key)
   if (!b) return off
   const first = l.total - room - off
-  const top = b.top
+  const lead = leadOf(l, key)
+  // The heading's own blank row above it stays out of view.
+  const withLead = lead ? lead.top + (lead.space ? 1 : 0) : undefined
+  const top = withLead !== undefined && b.top + b.rows - withLead <= room ? withLead : b.top
   const bottom = b.top + Math.min(b.rows, room)
   const next = top < first ? l.total - room - top : bottom > first + room ? l.total - bottom : off
   return Math.min(maxOff(l, room), Math.max(0, next))
