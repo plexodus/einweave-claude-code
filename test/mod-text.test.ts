@@ -270,16 +270,23 @@ describe("linear", () => {
   const draw = (doc: readonly unknown[]) => docLines(doc, 60);
   const ready = (doc: unknown[]) => docLines(prepareDoc({ content: "c", docV: 1, doc })!, 60);
 
-  test("pathological shapes draw in linear time (n → 4n, up to the server's 512 KB doc)", () => {
-    grows("one long word", n => draw([p("x".repeat(n))]), 32768);
-    grows("unclosed link syntax as text", n => draw([p("[a](".repeat(n / 4))]), 32768);
-    grows("one long code line", n => draw([["pre", 0, "y".repeat(n)]]), 32768);
-    grows("many list items", n => draw([["ul", 0, ...Array.from({ length: n / 8 }, () => ["li", 0, "item"])]]), 32768);
-    grows("many styled runs", n => draw([p(...Array.from({ length: n / 8 }, () => ["strong", 0, "b "]))]), 32768);
-    grows("words, through doc-view", n => ready([p(..."w ".repeat(n / 2).split(" "))]), 131072);
-    grows("a refused link's many children, through doc-view", n => ready([p(["a", { href: "javascript:x" }, ..."w".repeat(n / 2).split("")])]), 131072);
-    grows("tabs in code, through doc-view", n => ready([["pre", 0, "y\t".repeat(n / 2)]]), 131072);
-  });
+  // One test per shape, each with room to run: the ratio is the guard, the timeout only catches a hang.
+  // The eight shapes as ONE test took 1.9 s locally and passed 5 s (bun's default) on a CI runner under
+  // the suite's load (2026-11-04, PR #72): a stopwatch again, in the timeout.
+  const HANG = 60_000;
+  const shapes: [string, (n: number) => void, number][] = [
+    ["one long word", n => draw([p("x".repeat(n))]), 32768],
+    ["unclosed link syntax as text", n => draw([p("[a](".repeat(n / 4))]), 32768],
+    ["one long code line", n => draw([["pre", 0, "y".repeat(n)]]), 32768],
+    ["many list items", n => draw([["ul", 0, ...Array.from({ length: n / 8 }, () => ["li", 0, "item"])]]), 32768],
+    ["many styled runs", n => draw([p(...Array.from({ length: n / 8 }, () => ["strong", 0, "b "]))]), 32768],
+    ["words, through doc-view", n => ready([p(..."w ".repeat(n / 2).split(" "))]), 131072],
+    ["a refused link's many children, through doc-view", n => ready([p(["a", { href: "javascript:x" }, ..."w".repeat(n / 2).split("")])]), 131072],
+    ["tabs in code, through doc-view", n => ready([["pre", 0, "y\t".repeat(n / 2)]]), 131072],
+  ];
+  for (const [name, f, n] of shapes) {
+    test(`${name} draws in linear time (n → 4n, up to the server's 512 KB doc)`, () => grows(name, f, n), HANG);
+  }
 
   test("32-deep nesting draws (depth is bounded by the server, so this is shape, not growth)", () => {
     let nest: unknown = p("x");
