@@ -8,6 +8,14 @@ export type UiConnection = 'connected' | 'superseded' | 'standby' | 'disconnecte
 export interface UiHeld {
   threadId: string
   title: string | null
+  /** From the server's held list; null until read, absent from an older plugin server. */
+  channel?: string | null
+  /** The thread's last activity (ISO). */
+  quietSince?: string | null
+  /** Posts pushed to this window that its model has not confirmed. */
+  unseenByModel?: number | null
+  /** Who posted last: `@handle`, else the name. */
+  lastBy?: string | null
   /** A Load older read in flight: the top edge asks once. */
   loadingOlder?: boolean
 }
@@ -27,6 +35,8 @@ export interface UiSnapshot {
   connection: { state: UiConnection; detail: string | null }
   session: { agent: string | null; label: string | null; kind: string | null; scope: { mode: string; channelIds: string[]; channelNames?: (string | null)[] } | null }
   holds: UiHeld[]
+  /** This agent's other sessions (Hand over targets), online first; null until read, absent from an older plugin server. */
+  sessions?: { id: string; label: string; online: boolean }[] | null
   waiting: { forYou: number | null; channel: number | null; more: boolean; top: UiWaitingItem[] } | null
   /** The agent's gateway (RFC-028); absent from an older plugin server, null until read. */
   gateway?: { online: boolean; label: string | null } | null
@@ -165,6 +175,51 @@ export interface ChannelView {
   loading: boolean
 }
 
+export type SearchHit = {
+  thread_id: string
+  title?: string | null
+  thread_title?: string | null
+  message_id?: string | null
+  channel: string | null
+  kind: string | null
+  status: string | null
+  sender?: string | null
+  created_at?: string
+  last_activity_at?: string
+  matched_in?: string | null
+  similar_title?: boolean
+  matching_replies?: number
+  snippet_parts: { text: string; hit: boolean }[]
+}
+
+export type SearchType = 'threads' | 'messages'
+export type SearchSort = 'relevance' | 'newest'
+export type SearchRefused = { code: string; token: string | null; suggestions: string[]; message: string }
+
+/**
+ * The Inbox search (RFC-031, board Search): what is typed, which answer is current, and what it said.
+ * `seq` counts edits: an answer for an older `seq` is dropped, so a slow reply never draws over a newer
+ * query. `rows` hold every page loaded for this query (More appends); `next` the server's cursor.
+ */
+export interface SearchState {
+  q: string
+  type: SearchType
+  sort: SearchSort
+  seq: number
+  loading: boolean
+  rows: SearchHit[]
+  total: { count: number; capped: boolean } | null
+  next: string | null
+  refused: SearchRefused | null
+  error: string | null
+  /**
+   * What the server did, from its echo: the sort it used, and whether the query had words. Filters
+   * alone are listed newest first whatever was asked (there is nothing to rank), so the pane says
+   * that and offers no Best first. Null before an answer.
+   */
+  applied: { sort: SearchSort; words: boolean } | null
+}
+
 declare module 'claude-code' {
   interface PluginState {
     einweave: {
@@ -176,7 +231,10 @@ declare module 'claude-code' {
       focused: Shaped<string>
       unfolded: Shaped<Record<string, boolean>>
       paneUp: Shaped<boolean>
+      /** The held thread whose Hand over picker is open ('' when none), and whether it shows the offline sessions. */
+      handover: Shaped<{ id: string; offline: boolean }>
       scrolls: Shaped<Record<string, ThreadScroll>>
+      search: Shaped<SearchState>
     }
   }
 }

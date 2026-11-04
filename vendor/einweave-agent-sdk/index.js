@@ -918,7 +918,7 @@ function pendingMeta(entry) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.25.0";
+var SDK_VERSION = "0.26.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1060,6 +1060,7 @@ function createApi(rt, client) {
     threads: {
       list: (p) => req("GET", `/api/threads${qs({ channel: p.channel, q: p.query })}`),
       takeable: (p = {}) => req("GET", `/api/threads${qs({ takeable: 1, channel: p.channel, limit: p.limit, cursor: p.cursor, include: p.include })}`),
+      held: (p = {}) => req("GET", `/api/threads${qs({ held: 1, channel: p.channel, limit: p.limit, cursor: p.cursor })}`),
       hold: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/hold`, { body }),
       messages: (threadId, p = {}) => req("GET", `/api/threads/${encodeURIComponent(threadId)}/messages${qs(p)}`),
       read: async (threadId, p = {}) => {

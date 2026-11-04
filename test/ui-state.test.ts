@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { buildUiState, mergeRefresh, toWaiting, UiWatch, type UiInputs } from "../ui/ui-state";
+import { buildUiState, mergeRefresh, toHeld, toWaiting, UiWatch, type HeldInfo, type UiInputs } from "../ui/ui-state";
 import { ctlSocketPath } from "../delivery/ctl-path";
 import { openCtlServer, MAX_WATCHERS, type CtlServer, type WatchPort } from "../delivery/ctl-server";
 import { MissedTracker } from "../delivery/missed";
@@ -31,7 +31,8 @@ const INPUTS: UiInputs = {
   kind: "session",
   scope: { mode: "none" },
   holds: ["t1"],
-  titles: new Map([["t1", "Fix the build"]]),
+  held: new Map<string, HeldInfo>([["t1", { title: "Fix the build", channel: "dev", quietSince: "2026-11-03T10:00:00.000Z", unseenByModel: 2, lastBy: "@kevin" }]]),
+  sessions: [{ id: "s2", label: "other", online: true }],
   waiting: { forYou: 2, channel: 0, more: false, top: [] },
   gateway: { online: true, label: "bridge-gw" },
   version: "0.38.0",
@@ -43,7 +44,8 @@ describe("buildUiState", () => {
     const s = buildUiState(INPUTS);
     expect(s.connection).toEqual({ state: "connected", detail: null });
     expect(s.session).toEqual({ agent: "bellman", label: "probe", kind: "session", scope: { mode: "none" } });
-    expect(s.holds).toEqual([{ threadId: "t1", title: "Fix the build" }]);
+    expect(s.holds).toEqual([{ threadId: "t1", title: "Fix the build", channel: "dev", quietSince: "2026-11-03T10:00:00.000Z", unseenByModel: 2, lastBy: "@kevin" }]);
+    expect(s.sessions).toEqual([{ id: "s2", label: "other", online: true }]);
     expect(s.waiting?.forYou).toBe(2);
     expect(s.gateway).toEqual({ online: true, label: "bridge-gw" });
   });
@@ -55,9 +57,28 @@ describe("buildUiState", () => {
     expect(buildUiState({ ...INPUTS, authenticated: false, uiSocket: "/s/ctl/u1.sock" }).uiSocket).toBe("/s/ctl/u1.sock");
   });
 
-  test("a held thread whose title is not known yet (or has none) carries title null, in hold order", () => {
-    const s = buildUiState({ ...INPUTS, holds: ["t2", "t1"] });
-    expect(s.holds).toEqual([{ threadId: "t2", title: null }, { threadId: "t1", title: "Fix the build" }]);
+  // Red: sort ascending → t1 before t3; drop the "not caught up" rank → t2 first (hold order); read titles from
+  // anywhere but the list → t2 gets one; list rows not held → t9 drawn.
+  test("held rows: the live ids, drawn with the server's list, newest activity first; one the list lacks last, fields null", () => {
+    const held = new Map<string, HeldInfo>([
+      ["t1", { title: "Fix the build", channel: "dev", quietSince: "2026-11-03T10:00:00.000Z", unseenByModel: 0, lastBy: null }],
+      ["t3", { title: "Newer", channel: "ops", quietSince: "2026-11-03T12:00:00.000Z", unseenByModel: 1, lastBy: "@kevin" }],
+      ["t9", { title: "Released already", channel: "dev", quietSince: "2026-11-03T13:00:00.000Z", unseenByModel: 0, lastBy: null }],
+    ]);
+    const s = buildUiState({ ...INPUTS, holds: ["t2", "t1", "t3"], held });
+    expect(s.holds.map((h) => h.threadId)).toEqual(["t3", "t1", "t2"]);
+    expect(s.holds[2]).toEqual({ threadId: "t2", title: null, channel: null, quietSince: null, unseenByModel: null, lastBy: null });
+  });
+
+  test("toHeld: the server's rows keyed by thread, the last sender as @handle else name, absent counts null", () => {
+    const m = toHeld([
+      { thread: { id: "a", title: "A", lastActivityAt: "2026-11-03T10:00:00.000Z", unseenByModel: 3, last: { sender: { name: "Kevin", handle: "kevin" } } }, channel: { name: "dev" } },
+      { thread: { id: "b", title: "B", last: { sender: { name: "Jörgen", handle: null } } }, channel: { name: "ops" } },
+      { thread: { id: "c", title: "C", last: null }, channel: { name: "ops" } },
+    ]);
+    expect(m.get("a")).toEqual({ title: "A", channel: "dev", quietSince: "2026-11-03T10:00:00.000Z", unseenByModel: 3, lastBy: "@kevin" });
+    expect(m.get("b")).toEqual({ title: "B", channel: "ops", quietSince: null, unseenByModel: null, lastBy: "Jörgen" });
+    expect(m.get("c")?.lastBy).toBeNull();
   });
 
   test("not connected: no holds, scope or waiting from a socket that is gone, and the reason as detail", () => {
@@ -66,6 +87,7 @@ describe("buildUiState", () => {
     expect(s.holds).toEqual([]);
     expect(s.waiting).toBeNull();
     expect(s.gateway).toBeNull();
+    expect(s.sessions).toBeNull();
     expect(s.session.scope).toBeNull();
   });
 
@@ -413,8 +435,9 @@ describe("mergeRefresh", () => {
   const no: PromiseSettledResult<never> = { status: "rejected", reason: new Error("403") };
 
   test("each side keeps its last good value when only its own read failed", () => {
-    expect(mergeRefresh({ waiting: W, gateway: G }, ok(W2), no)).toEqual({ waiting: W2, gateway: G });
-    expect(mergeRefresh({ waiting: W, gateway: G }, no, ok(G2))).toEqual({ waiting: W, gateway: G2 });
-    expect(mergeRefresh({ waiting: null, gateway: null }, no, no)).toEqual({ waiting: null, gateway: null });
+    type P = { waiting: typeof W | null; gateway: { online: boolean; label: string | null } | null };
+    expect(mergeRefresh<P>({ waiting: W, gateway: G }, { waiting: ok(W2), gateway: no })).toEqual({ waiting: W2, gateway: G });
+    expect(mergeRefresh<P>({ waiting: W, gateway: G }, { waiting: no, gateway: ok(G2) })).toEqual({ waiting: W, gateway: G2 });
+    expect(mergeRefresh<P>({ waiting: null, gateway: null }, { waiting: no, gateway: no })).toEqual({ waiting: null, gateway: null });
   });
 });

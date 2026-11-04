@@ -404,6 +404,91 @@ test('the Held tab lists held threads, the Session tab has the name field; Relea
   await ui.unmount()
 })
 
+// Red: drop the channel title → no '#dev'; unseenByModel from anywhere else (or 0 shown) → no '3 new'; picker unsorted →
+// offline first; handover args wrong → calls differ; the old typed hint kept → found.
+test('board Held: rows as the Inbox (#channel Title, N new · last @x · age), Release and Hand over; the picker lists online first and hands over', async ($, on) => {
+  const NOW = Date.parse('2026-11-03T12:00:00.000Z')
+  const HELD: UiSnapshot = {
+    ...SNAP,
+    holds: [
+      { threadId: 't1', title: 'Fix the build', channel: 'dev', quietSince: '2026-11-03T11:50:00.000Z', unseenByModel: 3, lastBy: '@kevin' },
+      { threadId: 't2', title: 'Old one', channel: 'ops', quietSince: '2026-11-03T09:00:00.000Z', unseenByModel: 0, lastBy: null },
+      { threadId: 't3', title: null },
+    ],
+    sessions: [
+      { id: 's3', label: 'parked one', online: false },
+      { id: 's2', label: 'live one', online: true },
+    ],
+  }
+  const { calls, toasts, clock } = engine(on, { polled: HELD, now: NOW })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  expect(await ui.find({ key: 'open:t1' })).toMatchObject({ type: 'Button', props: { label: 'Fix the build' } })
+  expect(await findRun(ui, '#dev')).toMatchObject({ props: { color: PALETTE.brand } })
+  expect(await findRun(ui, '3 new')).toMatchObject({ props: { color: PALETTE.brand } })
+  expect(await ui.find({ type: 'Text', text: 'last @kevin' })).toBeDefined()
+  expect(await findRun(ui, '10 min')).toBeDefined()
+  // Quiet three hours: the age amber; nothing unseen: no "0 new".
+  expect(await findRun(ui, '3 h')).toMatchObject({ props: { color: PALETTE.amber } })
+  expect(await findRun(ui, '0 new')).toBeUndefined()
+  // Not in the server's list yet: its id, no meta.
+  expect(await ui.find({ key: 'open:t3' })).toMatchObject({ props: { label: 't3' } })
+  expect(await ui.find({ type: 'Text', text: /Hand one over/ })).toBeUndefined()
+
+  await ui.press({ key: 'handover:t1' })
+  const picks = async () => (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('pick'))
+  // Online only; the offline ones folded behind one row (Jörgen 2026-11-04, option C).
+  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick-new:t1', 'pick-cancel:t1'])
+  expect(await ui.find({ key: 'pick-offline:t1' })).toMatchObject({ props: { label: '▸ Show 1 offline', dimColor: true } })
+  expect(await ui.find({ type: 'Text', text: ' · offline' })).toBeUndefined()
+  // Shown, then hidden again from the same row.
+  await ui.press({ key: 'pick-offline:t1' })
+  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick:t1:s3', 'pick-new:t1', 'pick-cancel:t1'])
+  expect(await ui.find({ key: 'pick-offline:t1' })).toMatchObject({ props: { label: '▾ Hide offline' } })
+  expect(await ui.find({ type: 'Text', text: ' · offline' })).toBeDefined()
+  await ui.press({ key: 'pick-offline:t1' })
+  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick-new:t1', 'pick-cancel:t1'])
+  // Shown, then the picker closed: it opens folded again.
+  await ui.press({ key: 'pick-offline:t1' })
+  await ui.press({ key: 'pick-cancel:t1' })
+  await ui.press({ key: 'handover:t1' })
+  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick-new:t1', 'pick-cancel:t1'])
+  await ui.press({ key: 'pick:t1:s2' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'handover')).toEqual([{ tool: 'handover', args: { ref: 't1', to: 's2' } }])
+  expect(toasts.at(-1)).toBe('handover done')
+  // Picked: the picker closes.
+  expect(await ui.find({ key: 'pick:t1:s2' })).toBeUndefined()
+  // Cancel closes it too; Hand over again toggles it.
+  await ui.press({ key: 'handover:t1' })
+  await ui.press({ key: 'pick-cancel:t1' })
+  expect(await ui.find({ key: 'pick:t1:s2' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// Red: no fallback copy → copied empty; the "no other session" line missing → not found.
+test('board Held: with no other session the picker says so and New window copies the command that takes it there', async ($, on) => {
+  const { clock } = engine(on, { polled: { ...SNAP, holds: [{ threadId: 't1', title: 'Fix the build', channel: 'dev', quietSince: null, unseenByModel: 0, lastBy: null }], sessions: [] } })
+  const copied: string[] = []
+  on('ui.copy', ($, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: 'handover:t1' })
+  expect(await ui.find({ type: 'Text', text: 'No other session of @bellman · start one' })).toBeDefined()
+  // No offline session either: no fold row.
+  expect(await ui.find({ key: 'pick-offline:t1' })).toBeUndefined()
+  await ui.press({ key: 'pick-new:t1' })
+  await clock.settle()
+  expect(copied).toEqual(['claude "/einweave:take t1"'])
+  expect(await ui.find({ key: 'pick-new:t1' })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('on mobile, which has no fields, the pane shows the name and scope as text', async ($, on) => {
   const { clock } = engine(on)
   await start($, clock)
@@ -1103,6 +1188,63 @@ test('the Inbox has no "Older" fold (2026-11-03): a thread quiet for decades is 
   await ui.unmount()
 })
 
+// Red: picker drawn after the key bar (the old place) → the posts still drawn, order differs; no row budget → Cancel cut.
+test('a held thread tab, docked: Hand over opens the picker in place of the posts, header and key bar pinned; what does not fit is counted and Cancel stays', async ($, on) => {
+  const HELD: UiSnapshot = {
+    ...WAITING,
+    holds: [{ threadId: T_OLD, title: 'Older ask', channel: 'ops', quietSince: null, unseenByModel: 0, lastBy: null }],
+    sessions: [
+      { id: 'on1', label: 'live one', online: true },
+      { id: 'on2', label: 'live two', online: true },
+      ...[1, 2, 3, 4, 5].map(n => ({ id: `off${n}`, label: `closed ${n}`, online: false })),
+    ],
+  }
+  const { clock } = engine(on, { polled: HELD, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined) })
+  await start($, clock)
+  // Pinned rows 9 (see layout A): 14 rows leave the posts' window 5.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 14 } } })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  const postKeys = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => k.startsWith(`post:${T_OLD}:`))
+  expect((await postKeys()).length).toBeGreaterThan(0)
+  await ui.press({ key: `handover:${T_OLD}` })
+  // The picker is in the posts' window; the posts are gone while it is open; header and key bar where they were.
+  expect(await postKeys()).toEqual([])
+  const order = (await ui.findAll({})).map(n => String(n.key)).filter(k => ['rule:head', `posts:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`].includes(k))
+  expect(order).toEqual(['rule:head', `posts:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
+  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { height: 5 } })
+  const picks = async () => (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('pick'))
+  // Head, 2 online, fold row, foot = 5: it fits.
+  expect(await picks()).toEqual([`pick:${T_OLD}:on1`, `pick:${T_OLD}:on2`, `pick-offline:${T_OLD}`, `pick-new:${T_OLD}`, `pick-cancel:${T_OLD}`])
+  // Shown, 7 rows do not fit 5: one session, a count of the rest, and Cancel still there.
+  await ui.press({ key: `pick-offline:${T_OLD}` })
+  expect(await picks()).toEqual([`pick:${T_OLD}:on1`, `pick-offline:${T_OLD}`, `pick-new:${T_OLD}`, `pick-cancel:${T_OLD}`])
+  expect(await findRun(ui, '6 more · a taller pane shows them')).toMatchObject({ props: { dimColor: true } })
+  // Cancel: the posts come back.
+  await ui.press({ key: `pick-cancel:${T_OLD}` })
+  expect((await postKeys()).length).toBeGreaterThan(0)
+  expect(await ui.find({ key: `picker:${T_OLD}` })).toBeUndefined()
+  // The picker belongs to the tab it opened on (live 2026-11-04): opened on Held, the thread tab shows its
+  // posts, and its first Hand over opens the picker rather than closing Held's.
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `handover:${T_OLD}` })
+  expect(await ui.find({ key: `picker:${T_OLD}` })).toBeDefined()
+  await ui.press({ key: `tab:${T_OLD}` })
+  expect(await ui.find({ key: `picker:${T_OLD}` })).toBeUndefined()
+  expect((await postKeys()).length).toBeGreaterThan(0)
+  // Closed, not hidden: back on Held it does not come back.
+  await ui.press({ key: 'tab:held' })
+  expect(await ui.find({ key: `picker:${T_OLD}` })).toBeUndefined()
+  await ui.press({ key: `tab:${T_OLD}` })
+  await ui.press({ key: `handover:${T_OLD}` })
+  expect(await ui.find({ key: `picker:${T_OLD}` })).toBeDefined()
+  // And back on Held it is closed there.
+  await ui.press({ key: 'tab:held' })
+  expect(await ui.find({ key: `picker:${T_OLD}` })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('a thread tab takes on t and copies the new-session command on n', async ($, on) => {
   const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [], has_older: false, older_count: 0 }
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
@@ -1227,23 +1369,39 @@ test('an ask quiet a day or more leaves the band (it waits in the pane): the ban
 
 test('a held thread\'s tab is live (board ThreadTab): read again every 15 s while shown, and says so; no Refresh', async ($, on) => {
   const thread = { thread: { id: 't1', title: 'Fix the build' }, messages: [], has_older: false, older_count: 0 }
-  const { calls, clock } = engine(on, { answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
+  // Connected, then a drop still retrying (the tabs stay): the stamp says live only while replies can arrive.
+  let dropped = false
+  const { calls, clock } = engine(on, {
+    get polled() {
+      return dropped ? { ...SNAP, connection: { state: 'disconnected', detail: 'disconnected (reconnect attempt 1, in 2s)' } } : SNAP
+    },
+    answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined),
+  })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab:held' })
   await ui.press({ key: 'open:t1' })
   await clock.settle()
   expect(await findRun(ui, 'held by you · replies come here')).toMatchObject({ props: { color: '#4cc3ad' } })
-  expect(await findRun(ui, '● live')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, '● ')).toMatchObject({ props: { color: '#4cc3ad' } })
+  expect(await findRun(ui, 'live')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, '○ reconnecting')).toBeUndefined()
   expect(await ui.find({ key: 'refresh:t1' })).toBeUndefined()
   const reads = () => calls.filter(c => c.tool === 'ui_thread').length
   expect(reads()).toBe(1)
   await clock.advance(15_100)
   expect(reads()).toBe(2)
+  // The connection drops, still retrying: the tab stays, and its stamp stops saying live.
+  // The minute poll (at 60 s) reads the drop; inside the band's grace it is "reconnecting", the tabs kept.
+  dropped = true
+  await clock.advance(45_500)
+  expect(await findRun(ui, '○ reconnecting')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'live')).toBeUndefined()
   // Not shown: not read.
+  const before = reads()
   await ui.press({ key: 'tab:inbox' })
   await clock.advance(30_100)
-  expect(reads()).toBe(2)
+  expect(reads()).toBe(before)
   await ui.unmount()
 })
 

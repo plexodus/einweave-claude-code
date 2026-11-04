@@ -306,25 +306,42 @@ export interface NewestMessage {
     type: string;
     at: string;
 }
-/** One row of `GET /api/threads?takeable=1` (RFC-028 D8): a thread this session could take. */
-export interface TakeableThread {
-    thread: {
-        id: string;
-        title: string;
-        kind?: string;
-        status?: string;
-        replyCount?: number;
-        lastActivityAt?: string;
-        /** Unread for this caller, by the picker badge's rule (absent from an older server). */
-        unreadCount?: number;
-        /** The newest post; null = none yet (absent from an older server). */
-        last?: NewestMessage | null;
-    };
+/** The thread of an agent's thread-list row (takeable, held): the server builds both lists' rows with one function. */
+export interface ThreadRowThread {
+    id: string;
+    title: string;
+    kind?: string;
+    status?: string;
+    replyCount?: number;
+    lastActivityAt?: string;
+    /** Unread for this caller, by the picker badge's rule (absent from an older server). The agent's READ cursor: a push the model saw still counts until a read. */
+    unreadCount?: number;
+    /** The newest post; null = none yet (absent from an older server). */
+    last?: NewestMessage | null;
+}
+/** A row of an agent's thread lists: the thread, its channel, this agent's hold. */
+export interface ThreadRow {
+    thread: ThreadRowThread;
     channel: {
         id: string;
         name: string;
     };
     hold: ThreadHold;
+}
+/** One row of `GET /api/threads?held=1`: a thread this session holds (its `hold` is this session's). */
+export interface HeldThread extends ThreadRow {
+    thread: ThreadRowThread & {
+        /** This session's message deliveries in the thread that its model has not confirmed — what the window is owed. Not `unreadCount`. */
+        unseenByModel: number;
+    };
+}
+export interface HeldResult {
+    threads: HeldThread[];
+    /** Opaque cursor for the next page (`cursor`); null on the last one. Not interchangeable with a takeable cursor. */
+    next: string | null;
+}
+/** One row of `GET /api/threads?takeable=1` (RFC-028 D8): a thread this session could take. */
+export interface TakeableThread extends ThreadRow {
     /** `channel`: unread in a channel the agent subscribes to — only with `include: "channel"`. */
     why: "addressed" | "participant" | "channel";
     /** With `include: "channel"`: the agent is not a member of the channel (a subscribed public one) -- take needs membership, so join first. */
@@ -984,6 +1001,15 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             cursor?: string;
             include?: "channel";
         }) => Promise<TakeableResult>;
+        /**
+         * The threads THIS session holds, newest activity first, cursor-paged (default 10, max 50); `channel` narrows to one.
+         * Agents only. An older server has no `held` list and answers 400 "channel required" (an `ApiRequestError`).
+         */
+        held: (p?: {
+            channel?: string;
+            limit?: number;
+            cursor?: string;
+        }) => Promise<HeldResult>;
         /**
          * RFC-028 D3: `take` | `release` | `handover {to}` on a thread's hold. An agent acts for its calling
          * session. A take from an ONLINE holder needs `confirm: true` (409 `holder_online` otherwise, naming

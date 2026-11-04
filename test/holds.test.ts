@@ -27,6 +27,10 @@ function takeableRow(id: string, title: string, state: "unheld" | "parked" | "he
   };
 }
 
+function heldRow(id: string, title: string, over: Record<string, unknown> = {}) {
+  return { thread: { id, title, lastActivityAt: "2026-11-03T10:00:00.000Z", unseenByModel: 0, last: null, ...over }, channel: { id: CH_A, name: "general" }, hold: { state: "held", holder: { id: ME, label: "me", online: true, parked: false } } };
+}
+
 function fake(routes: (c: Call) => ApiResult | undefined, over: Partial<HoldsDeps> = {}) {
   const calls: Call[] = [];
   let scope: any = null;
@@ -108,7 +112,7 @@ describe("take: N refers to the list this session showed last, and the server is
     // The last list shown was a different kind (held threads): N of THAT is not a thing to take.
     const g = fake((c) =>
       c.path.includes("/sessions") ? { status: 200, body: { sessions: [{ id: ME, label: "me", kind: "session", scope: { mode: "all", channelIds: [] }, state: "live", online: true, holds: [T1] }] } }
-        : c.path.includes("/messages?limit=1") ? { status: 200, body: { thread: { title: "Held thing" } } }
+        : c.path.startsWith("/api/threads?held=1") ? { status: 200, body: { threads: [heldRow(T1, "Held thing")], next: null } }
         : list3(c));
     await g.holds.release({});
     expect(g.holds.memory()?.kind).toBe("held");
@@ -265,24 +269,26 @@ describe("release and handover", () => {
   };
   const routes = (c: Call): ApiResult | undefined => {
     if (c.path.endsWith("/sessions")) return { status: 200, body: sessions };
-    if (c.path.includes("/messages?limit=1")) return { status: 200, body: { thread: { title: c.path.includes(T1) ? "Fix the build" : "Review the PR" } } };
+    if (c.path.startsWith("/api/threads?held=1")) return { status: 200, body: { threads: [heldRow(T1, "Fix the build"), heldRow(T2, "Review the PR")], next: null } };
     if (c.method === "POST") return { status: 200, body: { changed: true, moved: 0, hold: null } };
   };
 
   test("release with no argument lists what this session holds; N releases that id; release all releases each", async () => {
     const f = fake(routes);
-    expect(await f.holds.release({})).toContain("1. Fix the build\n2. Review the PR");
+    expect(await f.holds.release({})).toContain("1. #general · Fix the build\n2. #general · Review the PR");
     await f.holds.release({ ref: "2" });
     expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T2}/hold`, body: { action: "release" } });
     const all = await f.holds.release({ ref: "all" });
     const posts = f.calls.filter((c) => c.method === "POST");
     expect(posts.map((c) => c.path)).toEqual([`/api/threads/${T2}/hold`, `/api/threads/${T1}/hold`, `/api/threads/${T2}/hold`]);
-    expect(all).toContain("Released Fix the build.");
+    expect(all).toContain("Released #general · Fix the build.");
+    // One list read per release (no thread read per held thread, the old N+1).
+    expect(f.calls.filter((c) => c.path.includes("/messages")).length).toBe(0);
   });
 
   test("handover is two steps: the thread, then one of the agent's OTHER sessions (never itself, never an observer)", async () => {
     const f = fake(routes);
-    expect(await f.holds.handover({})).toContain("1. Fix the build");
+    expect(await f.holds.handover({})).toContain("1. #general · Fix the build");
     const step2 = await f.holds.handover({ ref: "1" });
     expect(step2).toContain("1. Bellman #cd34");
     expect(step2).not.toContain("watcher");
@@ -290,7 +296,7 @@ describe("release and handover", () => {
     expect(f.calls.some((c) => c.method === "POST")).toBe(false);
     const done = await f.holds.handover({ to: "1" }); // the thread is the one step 1 left pending
     expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T1}/hold`, body: { action: "handover", to: S2 } });
-    expect(done).toContain("Handed Fix the build to Bellman #cd34");
+    expect(done).toContain("Handed #general · Fix the build to Bellman #cd34");
     // Words pick the session too.
     await f.holds.handover({ ref: T2, to: "cd34" });
     expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T2}/hold`, body: { action: "handover", to: S2 } });
@@ -384,5 +390,36 @@ describe("gateway (the mod's Unowned line)", () => {
     for (const sessions of [[row({ state: "parked", online: false })], [row({ kind: "session" })], []]) {
       expect(await withSessions(sessions).holds.gateway()).toEqual({ online: false, label: null });
     }
+  });
+});
+
+describe("held (the mod's Held tab) and sessionsView (gateway + Hand over picker)", () => {
+  // Red: drop the cursor loop → T2 missing; read per thread → a /messages call; error swallowed → no throw.
+  test("held: one list read per page, cursor followed; an error throws (the snapshot keeps its last good rows)", async () => {
+    const f = fake((c) => {
+      if (!c.path.startsWith("/api/threads?held=1")) return undefined;
+      return c.path.includes("cursor=")
+        ? { status: 200, body: { threads: [heldRow(T2, "Second")], next: null } }
+        : { status: 200, body: { threads: [heldRow(T1, "First")], next: "c1" } };
+    });
+    expect((await f.holds.held()).map((r) => r.thread.id)).toEqual([T1, T2]);
+    expect(f.calls.map((c) => c.path)).toEqual(["/api/threads?held=1&limit=50", "/api/threads?held=1&limit=50&cursor=c1"]);
+    const g = fake(() => ({ status: 400, body: { error: "channel required" } }));
+    await expect(g.holds.held()).rejects.toThrow("400");
+  });
+
+  // Red: keep self or observers → listed; sort dropped → offline first; a second sessions read → 2 calls.
+  test("sessionsView: one sessions read gives the gateway and the other sessions, online first, never itself or an observer", async () => {
+    const S3 = "00000000-0000-7000-8000-00000000dddd";
+    const row = (id: string, over: Record<string, unknown>) => ({ id, label: null, kind: "session", scope: { mode: "all", channelIds: [] }, state: "live", online: true, holds: [], ...over });
+    const f = fake((c) =>
+      c.path === `/api/agents/${AGENT}/sessions`
+        ? { status: 200, body: { sessions: [row(ME, {}), row(S2, { label: "parked one", online: false, state: "parked" }), row(S3, { label: "live one" }), row("o", { kind: "observer" }), row("g", { kind: "gateway", label: "gw" })] } }
+        : undefined
+    );
+    const v = await f.holds.sessionsView();
+    expect(v.gateway).toEqual({ online: true, label: "gw" });
+    expect(v.siblings.map((x) => [x.label, x.online])).toEqual([["live one", true], ["gw", true], ["parked one", false]]);
+    expect(f.calls.length).toBe(1);
   });
 });

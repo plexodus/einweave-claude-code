@@ -84,6 +84,28 @@ export interface TakeableRow {
 /** Unheld + parked threads per tier, from the server (`include=channel`); null from a server that predates it. */
 export type TakeableCounts = { forYou: number; channel: number };
 
+/** One row of `GET /api/threads?held=1` (bridge #351): a thread THIS session holds. */
+export interface HeldRow {
+  thread: {
+    id: string;
+    title: string;
+    lastActivityAt?: string;
+    /** This session's message deliveries in the thread its model has not confirmed. */
+    unseenByModel?: number;
+    last?: { sender: { name: string | null; handle: string | null } } | null;
+  };
+  channel: { id: string; name: string };
+}
+
+/** A sibling session, for the mod's Hand over picker. */
+export interface SiblingSession {
+  id: string;
+  label: string;
+  kind: string | null;
+  /** A socket is open now. */
+  online: boolean;
+}
+
 interface SessionRow {
   id: string;
   label: string | null;
@@ -157,10 +179,24 @@ export function createHolds(deps: HoldsDeps) {
     return (res.body?.sessions ?? []) as SessionRow[];
   }
 
-  /** The threads THIS session holds, with titles: the sessions list names the ids, the thread read names the rest. */
+  /** The threads THIS session holds, newest activity first: one list read per page (bridge #351), never a read per thread. */
+  async function fetchHeld(): Promise<HeldRow[]> {
+    const rows: HeldRow[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < SEARCH_PAGES; page++) {
+      const q = new URLSearchParams({ held: "1", limit: String(SEARCH_PAGE_SIZE) });
+      if (cursor) q.set("cursor", cursor);
+      const res = await deps.api("GET", `/api/threads?${q}`);
+      if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
+      rows.push(...((res.body?.threads ?? []) as HeldRow[]));
+      cursor = typeof res.body?.next === "string" ? res.body.next : null;
+      if (!cursor) break;
+    }
+    return rows;
+  }
+
   async function heldNow(): Promise<ListItem[]> {
-    const me = (await fetchSessions(deps.myAgentId())).find((s) => s.id === deps.mySessionId());
-    return (await titlesOf(me?.holds ?? [])).map((t) => ({ id: t.id, label: t.title ?? t.id }));
+    return (await fetchHeld()).map((r) => ({ id: r.thread.id, label: `#${r.channel.name} · ${r.thread.title || r.thread.id}` }));
   }
 
   /** Each thread's title (null when it has none or cannot be read). */
@@ -172,6 +208,20 @@ export function createHolds(deps: HoldsDeps) {
         return { id, title: typeof title === "string" && title ? title : null };
       })
     );
+  }
+
+  /**
+   * One sessions read, two views: the gateway (above) and the sessions a thread can be handed to (the mod's
+   * picker): this agent's others, observers excluded as `handover` excludes them, online first.
+   */
+  async function sessionsView(): Promise<{ gateway: { online: boolean; label: string | null }; siblings: SiblingSession[] }> {
+    const all = await fetchSessions(deps.myAgentId());
+    const gw = all.find((s) => s.kind === "gateway" && s.state === "live");
+    const siblings = all
+      .filter((s) => s.id !== deps.mySessionId() && s.kind !== "observer")
+      .map((s) => ({ id: s.id, label: nameOf(s.label, s.id), kind: s.kind, online: s.online }))
+      .sort((a, b) => Number(b.online) - Number(a.online));
+    return { gateway: gw ? { online: true, label: nameOf(gw.label, gw.id) } : { online: false, label: null }, siblings };
   }
 
   async function showHeld(lead?: string, verb = "release"): Promise<string> {
@@ -340,6 +390,8 @@ export function createHolds(deps: HoldsDeps) {
     },
 
     titlesOf,
+    /** The mod's Held tab: this session's held threads, as the server lists them. */
+    held: fetchHeld,
 
     /** Step 1 picks the thread, step 2 (`to`) the session. */
     async handover(p: { ref?: unknown; to?: unknown }): Promise<string> {
@@ -429,9 +481,10 @@ export function createHolds(deps: HoldsDeps) {
      * that dropped inside the grace -- since that is when the server's lease still routes to it.
      */
     async gateway(): Promise<{ online: boolean; label: string | null }> {
-      const gw = (await fetchSessions(deps.myAgentId())).find((s) => s.kind === "gateway" && s.state === "live");
-      return gw ? { online: true, label: nameOf(gw.label, gw.id) } : { online: false, label: null };
+      return (await sessionsView()).gateway;
     },
+
+    sessionsView,
 
     /** `list_sessions`: the agent's sessions (its own, or its managers' view). */
     async listSessions(p: { agentId?: string }): Promise<string> {
