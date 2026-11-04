@@ -97,7 +97,44 @@ export interface CtlServer {
 
 const MAX_LINE = 4096;
 
-type Conn = { buf: string; unwatch?: () => void };
+/** A watcher this far behind is not reading: end it (its relay reconnects) rather than queue without bound. */
+const MAX_OUT = 8 * 1024 * 1024;
+
+/** `out`: bytes the socket has not taken yet; `ending`: end once they are out. */
+type Conn = { buf: string; unwatch?: () => void; out?: Uint8Array; ending?: boolean };
+
+const enc = new TextEncoder();
+
+/**
+ * Every write to a client goes through here. A Bun socket write takes what fits in its buffer and returns
+ * how much (about 8 KB here): the rest waits in `out` for `drain`. A bare `s.write` dropped the tail, so a
+ * snapshot past 8 KB reached the mod cut in half and was never drawn (live 2026-11-04).
+ */
+function put(s: Socket<Conn>, line: string, end = false): void {
+  const add = enc.encode(line);
+  const prev = s.data.out;
+  if (prev?.length) {
+    const both = new Uint8Array(prev.length + add.length);
+    both.set(prev);
+    both.set(add, prev.length);
+    s.data.out = both;
+  } else s.data.out = add;
+  if (end) s.data.ending = true;
+  if (s.data.out.length > MAX_OUT) {
+    s.data.out = undefined;
+    return void s.end();
+  }
+  flush(s);
+}
+
+function flush(s: Socket<Conn>): void {
+  const out = s.data.out;
+  if (out?.length) {
+    const n = s.write(out);
+    s.data.out = n >= out.length ? undefined : out.subarray(Math.max(0, n));
+  }
+  if (!s.data.out?.length && s.data.ending) s.end();
+}
 
 /** Probe an existing socket file: is a live server behind it? */
 function socketAnswers(path: string): Promise<boolean> {
@@ -189,13 +226,12 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
   const startWatch = (s: Socket<Conn>): void => {
     const send = (rev: number, state: unknown): void => {
       try {
-        s.write(JSON.stringify({ ok: true, op: "watch", rev, state } satisfies CtlResponse) + "\n");
+        put(s, JSON.stringify({ ok: true, op: "watch", rev, state } satisfies CtlResponse) + "\n");
       } catch {}
     };
     if (!o.watch || watchers.size >= MAX_WATCHERS) {
       try {
-        s.write(JSON.stringify({ ok: false, error: o.watch ? "too many watchers" : "watch unavailable" } satisfies CtlResponse) + "\n");
-        s.end();
+        put(s, JSON.stringify({ ok: false, error: o.watch ? "too many watchers" : "watch unavailable" } satisfies CtlResponse) + "\n", true);
       } catch {}
       return;
     }
@@ -231,6 +267,9 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
         open(s) {
           s.data = { buf: "" };
         },
+        drain(s) {
+          flush(s);
+        },
         close(s) {
           dropWatch(s);
         },
@@ -255,8 +294,7 @@ export async function openCtlServer<E extends { id: string }>(o: CtlServerOption
             .then((res) => {
               // The `session` op answers after an await: the hook may have given up and closed by now.
               try {
-                s.write(JSON.stringify(res) + "\n");
-                s.end();
+                put(s, JSON.stringify(res) + "\n", true);
               } catch {}
             });
         },
