@@ -8,23 +8,26 @@
  * Every action calls one of the plugin's tools: no model turn, no tokens.
  */
 import { atom, read, update } from 'claude-code'
-import type { ButtonProps, EngineInterface, Register } from 'claude-code'
+import type { ButtonProps, EngineInterface, Register, RenderElement } from 'claude-code'
 
-import type { ChannelView, OpenTab, PaneTabs, ThreadMessage, ThreadScroll, ThreadView, UiSnapshot } from '../types'
+import type { ChannelView, OpenTab, PaneScroll, PaneTabs, ThreadView, UiSnapshot } from '../types'
 import {
   applySnapshot, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
-  scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadOff, threadView, withOlder, BAND_GRACE_MS,
+  scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadView, withOlder, BAND_GRACE_MS,
+  cueText, hidden, landOff, revealOff, stack, windowOff, type Anchor, type Stack,
   applySuggestion, fitSnippet, NO_SEARCH, oneLine, SEARCH_DEBOUNCE_MS, searchPlaceholder, SEARCH_FIELD, SEARCH_FILL, searchAnswer,
-  type InboxRow, type SearchHit, type SearchState, type Seg, type ThreadLayout, type Tone,
+  type InboxRow, type SearchHit, type SearchState, type Seg, type Tone,
   heldRow,
   pickerSessions,
 } from './model'
-import type { Line } from './text'
+import { cellWidth, plainLines, type Line } from './text'
 import { hyperlinks } from './links'
 
 const SERVER = 'plugin:einweave:einweave'
 const PANE = 'einweave'
+/** The Inbox's search results: a list of their own, with their own window place. */
+const SEARCH_TAB = 'inbox:search'
 const RELAY_BACKOFF_MS = [2_000, 10_000, 30_000, 60_000]
 const POLL_MS = 60_000
 const SETTLE_MS = 10_000
@@ -53,12 +56,14 @@ const handover = atom({ plugin: 'einweave', key: 'handover' } as const, NO_HANDO
 // shape: bump when SearchState's form changes, so a pane reloaded mid-search drops the old state rather than
 // drawing it without the new fields (search-2: `applied`, live check 2026-11-04).
 const search = atom({ plugin: 'einweave', key: 'search' } as const, NO_SEARCH as SearchState, { shape: 'search-2' })
-/** Each thread tab's own window over its posts, once the person moved it, and the posts opened past the cap. */
-const scrolls = atom({ plugin: 'einweave', key: 'scrolls' } as const, {} as Record<string, ThreadScroll>, { shape: 'scrolls-1' })
+/** Each tab's own window over its body, once the person moved it, and a thread's posts opened past the cap. */
+const scrolls = atom({ plugin: 'einweave', key: 'scrolls' } as const, {} as Record<string, PaneScroll>, { shape: 'scrolls-1' })
 /** A record's dim meta under the pointer: a shade lighter, its only background the pane's. */
 const META_LIT = '#b8b8b8'
 /** The pane's subtle rules: under the tabs, over the footer. */
 const RULE = '#3a3d40'
+/** The fewest body rows the pane's own window shows; a pane shorter than its pinned parts and these flows instead. */
+const MIN_ROOM = 3
 /** The pane's side margin, a column each side: the band's own inside its border (Jörgen 2026-10-31). */
 const PANE_PAD = 1
 /** The mark left on the record the keyboard was on once Escape handed the keyboard back: where it lands on return. */
@@ -118,6 +123,16 @@ async function uiTool($: EngineInterface, tool: string, args: Record<string, unk
   return $.mcp.call(SERVER, tool, args)
 }
 
+/**
+ * Work a press, a timer or a scroll starts runs on its own: nothing awaits it. Every loader keeps its own
+ * errors in state; what is left is the module unloading under it (a reload, or the kit ending a test), when its
+ * state calls are refused and there is nobody to tell. So a detached chain never ends as an unhandled
+ * rejection (seen in the kit, 2026-11-04). Every fire-and-forget in this module goes through here.
+ */
+function detach(p: Promise<unknown>): void {
+  p.catch(() => {})
+}
+
 /** Take a snapshot into the view; a drop that starts now redraws once its grace period has passed. */
 async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, restart: boolean, live?: boolean): Promise<void> {
   const now = await $.clock.now()
@@ -125,7 +140,7 @@ async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, 
   // While the relay is live it is the truth (the plugin pushes every change on it): a poll's answer, however
   // late it lands, never overwrites it. A restarted plugin's relay counts from rev 1 under a higher polled rev.
   await update($, view, v => (live === undefined && v.live ? v : { ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
-  if (!wasDown && got.snap.connection.state === 'disconnected') $.clock.after(BAND_GRACE_MS + 50, () => void update($, view, v => ({ ...v })))
+  if (!wasDown && got.snap.connection.state === 'disconnected') $.clock.after(BAND_GRACE_MS + 50, () => detach(update($, view, v => ({ ...v }))))
 }
 
 /** Read ui_state once: first draw, after /clear, and while the relay is down. */
@@ -139,7 +154,10 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
     if (got) await take($, got, restart)
     else await update($, view, v => ({ ...v, error: r.isError ? textOf(r) || 'ui_state failed' : 'ui_state answered no snapshot' }))
   } catch (err) {
-    await update($, view, v => ({ ...v, error: String(err).slice(0, 200) }))
+    // A read the module's unload aborted fails here too, and then the module's state is gone as well: nothing
+    // to report. Every caller voids poll, so it must never reject (seen as an unhandled rejection in the kit,
+    // a reload test whose server never answers, 2026-11-04).
+    await update($, view, v => ({ ...v, error: String(err).slice(0, 200) })).catch(() => {})
   }
 }
 
@@ -297,9 +315,9 @@ async function runSearch($: EngineInterface, more = false): Promise<void> {
   let got: ReturnType<typeof searchAnswer>
   try {
     const r = await uiRead($, '/search', query, 'ui_search', { query: q, type: st.type, sort: st.sort, ...(cursor ? { cursor } : {}) })
-    got = r.isError ? { rows: [], total: null, next: null, refused: null, error: textOf(r) || 'search failed' } : searchAnswer(textOf(r))
+    got = r.isError ? { rows: [], total: null, next: null, refused: null, applied: null, error: textOf(r) || 'search failed' } : searchAnswer(textOf(r))
   } catch (err) {
-    got = { rows: [], total: null, next: null, refused: null, error: String(err).slice(0, 200) }
+    got = { rows: [], total: null, next: null, refused: null, applied: null, error: String(err).slice(0, 200) }
   }
   await update($, search, x => (x.seq !== seq ? x : { ...x, ...got, rows: more ? [...x.rows, ...got.rows] : got.rows, loading: false }))
 }
@@ -313,9 +331,11 @@ async function editSearch($: EngineInterface, change: Partial<Pick<SearchState, 
     // Cleared: back to the Inbox, nothing kept.
     return next.q.trim() ? { ...next, loading: true } : { ...NO_SEARCH, type: next.type, sort: next.sort, seq }
   })
+  // A new answer is a new list: its window starts at its top again.
+  if (change.q !== undefined || change.type !== undefined || change.sort !== undefined) await update($, scrolls, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== SEARCH_TAB)))
   if (!(await read($, search)).q.trim()) return
   if (now) return void (await runSearch($))
-  $.clock.after(SEARCH_DEBOUNCE_MS, () => void read($, search).then(x => (x.seq === seq ? runSearch($) : undefined)))
+  $.clock.after(SEARCH_DEBOUNCE_MS, () => detach(read($, search).then(x => (x.seq === seq ? runSearch($) : undefined))))
 }
 
 /** Read the Channels tab with `ui_channels`: GET only, nothing marked. */
@@ -328,7 +348,8 @@ async function loadChannels($: EngineInterface): Promise<void> {
   } catch (err) {
     got = { ...NO_CHANNELS, loading: false, error: String(err).slice(0, 200) }
   }
-  await update($, channels, () => got)
+  const at = await $.clock.now()
+  await update($, channels, () => ({ ...got, at }))
 }
 
 /** Read a channel tab with `ui_channel`: its threads and their holds, nothing marked. */
@@ -343,7 +364,8 @@ async function loadChannel($: EngineInterface, id: string): Promise<void> {
   }
   // Closed (×) while it loaded, as a thread tab.
   if (!(await read($, tabs)).open.some(x => x.id === id)) return
-  await update($, channel, m => ({ ...m, [id]: got }))
+  const at = await $.clock.now()
+  await update($, channel, m => ({ ...m, [id]: { ...got, at } }))
 }
 
 async function viewChannel($: EngineInterface, id: string, name: string): Promise<void> {
@@ -439,26 +461,64 @@ type Press = Parameters<NonNullable<ButtonProps['onPress']>>[0]
 
 /** One action of a record: drawn on hover, and in the footer, on its hotkey, while the keyboard is on the record. */
 interface Act {
-  key: 'take' | 'new' | 'release' | 'join'
+  key: 'take' | 'new' | 'release' | 'join' | 'handover'
   label: string
   hotkey: string
   onPress: (press: Press) => void
 }
 
-/** The thread tab drawn last with its own window: what ui.scroll moves, at the room and width it was drawn at. */
-interface ThreadWindow {
+/**
+ * One block of a tab's body: its rows exact (the pane's one window scrolls by them), `space` a blank row
+ * above it. `stop`: it holds a keyboard stop, so it is drawn even outside the window (Tab must reach it;
+ * ui.focus then brings it into view). `focus`: the element keys inside it, what ui.focus reveals it by.
+ */
+interface Block {
+  key: string
+  rows: number
+  space?: boolean
+  stop?: boolean
+  focus?: readonly string[]
+  draw: () => RenderElement
+}
+
+/**
+ * What every tab hands the shell (plan 2026-11-04-mod-pinned-every-tab-plan.md): its head (pinned under the
+ * tabs), its body as blocks (the window scrolls them), its key bar's left side (null: the resting hint) and
+ * right side, and how its window lands: a thread at its first new post, anchored at the end; a list at its top.
+ */
+interface Frame {
   id: string
-  layout: ThreadLayout
-  messages: readonly ThreadMessage[]
+  head: { rows: number; node: RenderElement }[]
+  blocks: Block[]
+  keys: RenderElement | null
+  right?: RenderElement[]
+  anchor: Anchor
+  land?: (s: Stack, room: number) => number
+  onTop?: () => void
+}
+
+/** The tab drawn last with its own window: what ui.scroll and ui.focus move, at the room it was drawn at. */
+interface PaneWindow {
+  id: string
+  stack: Stack
   room: number
-  older: boolean
+  land: number
+  anchor: Anchor
+  /** Element key → the key of the block holding it. */
+  reveal: Map<string, string>
+  onTop?: () => void
+}
+
+/** A window's place once moved: its offset, the body's last block (rows after it keep the place), a list at its top kept there. */
+function placed(off: number, atTop: boolean, w: PaneWindow, sc: PaneScroll | undefined): PaneScroll {
+  return { off, newest: newestKey(w.stack), open: sc?.open ?? {}, ...(w.anchor === 'top' && atTop ? { top: true as const } : {}) }
 }
 
 export const register: Register = on => {
   // The stops the pane's records drew last, top to bottom, and where the ring was: ui.focus reads both.
   let stops: string[] = []
   let last = ''
-  let win: ThreadWindow | null = null
+  let win: PaneWindow | null = null
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // The command first: a reload runs this again while the plugin's server may be slow to answer,
@@ -473,19 +533,21 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`/einweave not registered: ${String(err)}`, { to: 'debug' })
     }
-    void poll($)
+    detach(poll($))
     // The relay ends when the module unloads (its sleep or spawn is aborted): nothing to report then.
-    void runRelay($).catch(() => {})
+    detach(runRelay($))
     $.clock.every(POLL_MS, () => {
-      void read($, view).then(v => (v.live ? undefined : poll($))).catch(() => {})
+      detach(read($, view).then(v => (v.live ? undefined : poll($))))
     })
     // Board ThreadTab: a held thread's tab is live. Read it again while it is the one shown.
     $.clock.every(HELD_TAB_MS, () => {
-      void (async () => {
-        const [t, v] = [await read($, tabs), await read($, view)]
-        const shown = shownTab(t)
-        if (t.open.some(o => o.id === shown && o.kind === 'thread') && v.snap?.holds.some(h => h.threadId === shown)) await loadThread($, shown)
-      })().catch(() => {})
+      detach(
+        (async () => {
+          const [t, v] = [await read($, tabs), await read($, view)]
+          const shown = shownTab(t)
+          if (t.open.some(o => o.id === shown && o.kind === 'thread') && v.snap?.holds.some(h => h.threadId === shown)) await loadThread($, shown)
+        })(),
+      )
     })
     return started
   })
@@ -493,11 +555,11 @@ export const register: Register = on => {
   // /clear, /resume and /branch reset $.state and do not run session.start again: read the snapshot
   // anew. classic.SessionStart does not run where the built-in guard loads, so session.end backs it.
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
-    void poll($, true)
+    detach(poll($, true))
     return next(e)
   }).catch(($, e, next) => next(e))
   on('session.end', { reason: ['clear', 'resume'] }, async ($, e, next) => {
-    $.clock.after(1_000, () => void poll($, true))
+    $.clock.after(1_000, () => detach(poll($, true)))
     return next(e)
   })
 
@@ -537,9 +599,10 @@ export const register: Register = on => {
     return r
   })
 
-  // A thread tab scrolls its posts itself, under a pinned header (layout A): the wheel and keys move its
-  // window; the engine's is held at row 0, its two spare rows below, so the arrows fire both ways and a
-  // fast wheel never shows the engine a row off the tree last drawn (a flicker, Jörgen 2026-11-01).
+  // Every tab scrolls its body itself, under its pinned head and over its pinned key bar (the thread tab's
+  // layout A, made the pane's one window): the wheel and keys move it; the engine's is held at row 0, its two
+  // spare rows below, so the arrows fire both ways and a fast wheel never shows the engine a row off the tree
+  // last drawn (a flicker, Jörgen 2026-11-01).
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const w = win
     if (!w) return next(e)
@@ -547,22 +610,32 @@ export const register: Register = on => {
     // row 0, still let it show its window a row or two off the tree drawn (live 2026-11-01). The move
     // reads the place inside update, so ticks crowding in each add to the last.
     let atTop = false
-    void update($, scrolls, m => {
+    detach(update($, scrolls, m => {
       const sc = m[w.id]
-      const moved = scrollBy(threadOff(sc, w.layout, w.messages, w.room), e.by, w.layout, w.room)
+      const moved = scrollBy(windowOff(sc, w.stack, w.room, w.land, w.anchor), e.by, w.stack, w.room)
       atTop = moved.atTop
-      return { ...m, [w.id]: { off: moved.off, newest: newestKey(w.layout), open: sc?.open ?? {} } }
+      return { ...m, [w.id]: placed(moved.off, moved.atTop, w, sc) }
     }).then(() => {
-      if (atTop && e.by < 0 && w.older) void loadOlder($, w.id)
-    })
+      if (atTop && e.by < 0) w.onTop?.()
+    }))
     return {}
   })
 
-  // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on.
+  // Marks are the records' only keyboard stops (focusTarget); the footer keeps the record it acts on. The
+  // window follows the ring: a stop outside it is drawn all the same, and landing there brings it into view.
   on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const element = focusTarget(stops, last, e.element)
     last = element ?? ''
     if (!element?.startsWith('foot:')) await update($, focused, () => recordOf(element))
+    const w = win
+    const block = element && w ? w.reveal.get(element) : undefined
+    if (w && block)
+      await update($, scrolls, m => {
+        const sc = m[w.id]
+        const off = windowOff(sc, w.stack, w.room, w.land, w.anchor)
+        const to = revealOff(w.stack, block, off, w.room)
+        return to === off ? m : { ...m, [w.id]: placed(to, to >= Math.max(0, w.stack.total - w.room), w, sc) }
+      })
     return next(element === e.element ? e : { ...e, element })
   })
 
@@ -603,17 +676,17 @@ export const register: Register = on => {
           {/* No hotkey: a bare digit in an empty composer would press it, and taking back evicts the other window's live session.
               Plain, its brackets drawn in the brand too: the pointer's inversion is then one colour, not two. */}
           {!back ? null : i.kind === 'superseded' ? (
-            <Button key="take-back" plain label="Take it back" onPress={() => void takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
+            <Button key="take-back" plain label="Take it back" onPress={() => detach(takeBack($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting')))}>
               <Text color={PALETTE.brand} weight="bold">[ Take it back ]</Text>
             </Button>
           ) : (
-            <Button key="connect" plain label="Connect" onPress={() => void connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting'))}>
+            <Button key="connect" plain label="Connect" onPress={() => detach(connect($).then(t => $.ui.toast(t.split('\n')[0] ?? 'Connecting')))}>
               <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
             </Button>
           )}
           <Box flexGrow={1} />
           {/* No hotkey: a bare letter in an empty composer would press it. */}
-          <Button key="pane" label={up ? '[ Hide pane ]' : '[ Show pane ]'} plain dimColor onPress={() => void togglePane($)} />
+          <Button key="pane" label={up ? '[ Hide pane ]' : '[ Show pane ]'} plain dimColor onPress={() => detach(togglePane($))} />
         </Box>
         {forYou.slice(0, BAND_ROWS).map(r => (
           <Box key={`band:${r.threadId}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
@@ -623,8 +696,8 @@ export const register: Register = on => {
               <Text weight="semibold" wrap="truncate-end">{r.title}</Text>
             </Box>
             <Text color={PALETTE.amber}>{r.meta}</Text>
-            <Button key={`band-view:${r.threadId}`} label="View" onPress={() => void showThread($, r.threadId, r.title)} />
-            <Button key={`band-take:${r.threadId}`} label="Take" onPress={() => void takeThread($, r.threadId).then(toastFirst($))} />
+            <Button key={`band-view:${r.threadId}`} label="View" onPress={() => detach(showThread($, r.threadId, r.title))} />
+            <Button key={`band-take:${r.threadId}`} label="Take" onPress={() => detach(takeThread($, r.threadId).then(toastFirst($)))} />
           </Box>
         ))}
         {forYou.length > BAND_ROWS ? <Text dimColor>{`${forYou.length - BAND_ROWS} more aimed at you in the pane`}</Text> : null}
@@ -650,6 +723,8 @@ export const register: Register = on => {
     const fields = e.surface !== 'mobile'
     const Input = fields && 'Input' in els ? els.Input : null
     const Select = fields && 'Select' in els ? els.Select : null
+    // Set again by the shell when this draw has its own window.
+    win = null
     const v = await read($, view)
     const now = await $.clock.now()
     const i = indicator(v, now)
@@ -657,17 +732,19 @@ export const register: Register = on => {
     const t = await read($, tabs)
     const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     const act = (tool: string, args: Record<string, unknown>) => () =>
-      void uiTool($, tool, args).then(
+      detach(uiTool($, tool, args).then(
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
         err => $.ui.toast(`${tool} failed: ${String(err).slice(0, 120)}`),
-      )
+      ))
     const take = (ref: string, after?: () => Promise<void>) => () =>
-      void takeThread($, ref)
-        .then(async t => {
-          toastFirst($)(t)
-          await after?.()
-        })
-        .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`))
+      detach(
+        takeThread($, ref)
+          .then(async t => {
+            toastFirst($)(t)
+            await after?.()
+          })
+          .catch(err => $.ui.toast(`take failed: ${String(err).slice(0, 120)}`)),
+      )
     const connected = s?.connection.state === 'connected'
     const box = connected ? inbox(s.waiting, now) : { forYou: [], open: [] }
     const waiting = box.forYou.length + box.open.length
@@ -680,12 +757,14 @@ export const register: Register = on => {
     // tab, the way back, shows; the tabs opened stay in state and return on connecting (Jörgen 2026-10-31).
     const gated = !!s && !connected && i.kind !== 'reconnecting'
     const tab = gated ? 'session' : shownTab(t)
-    const show = (to: string) => () => void setTabs($, x => ({ ...x, tab: to }))
+    const show = (to: string) => () => detach(setTabs($, x => ({ ...x, tab: to })))
     // Channels and channel tabs load each time they are shown: nothing pushes them.
-    const showChannels = () => void setTabs($, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($))
-    const showOpen = (o: OpenTab) => () => void setTabs($, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id)))
+    const showChannels = () => detach(setTabs($, x => ({ ...x, tab: 'channels' })).then(() => loadChannels($)))
+    const showOpen = (o: OpenTab) => () => detach(setTabs($, x => ({ ...x, tab: o.id })).then(() => (o.kind === 'channel' ? loadChannel($, o.id) : loadThread($, o.id))))
     const ch = await read($, channels)
     const st = await read($, search)
+    // Every tab's window place, read with the rest of the state before anything is drawn.
+    const places = await read($, scrolls)
 
     // Escape hands the keyboard back without a ui.focus: the record stays, drawn as where the keyboard was.
     const f = await read($, focused)
@@ -697,7 +776,7 @@ export const register: Register = on => {
     const drawn: string[] = []
     const newSession = (id: string) => (press: Press) => {
       const cmd = newSessionCommand(id)
-      void $.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`))
+      detach($.ui.copy({ text: cmd, surface: press.surface }).then(c => $.ui.toast(c.isCopied ? `Copied: ${cmd} (paste it in a new terminal)` : `Not copied (${c.reason}): ${cmd}`)))
     }
     const takeAct = (id: string, after?: () => Promise<void>, asks = false): Act => ({ key: 'take', label: asks ? 'Ask to take' : 'Take', hotkey: 't', onPress: take(id, after) })
     const newAct = (id: string): Act => ({ key: 'new', label: 'New session', hotkey: 'n', onPress: newSession(id) })
@@ -706,7 +785,7 @@ export const register: Register = on => {
     const ho = await read($, handover)
     const picking = ho.on === tab ? ho.id : ''
     const offlineOpen = ho.offline
-    const togglePicker = (id: string) => () => void update($, handover, open => (open.on === tab && open.id === id ? NO_HANDOVER : { id, offline: false, on: tab }))
+    const togglePicker = (id: string) => () => detach(update($, handover, open => (open.on === tab && open.id === id ? NO_HANDOVER : { id, offline: false, on: tab })))
     const handoverAct = (id: string): Act => ({ key: 'handover', label: 'Hand over', hotkey: 'h', onPress: togglePicker(id) })
 
     /**
@@ -714,10 +793,11 @@ export const register: Register = on => {
      * the offline ones behind `▸ Show N offline`, which turns into `▾ Hide offline` in the same row; then
      * New window, which copies the command that starts one and takes the thread there (also the way when
      * there is no other session); then Cancel. `rows` bounds it where it has a fixed area (the thread tab's
-     * posts window): what does not fit is counted, so Cancel always shows.
+     * posts window): what does not fit is counted, so Cancel always shows. Hands back its rows and the keys
+     * of what it draws (the window reveals it by them).
      */
     const picker = (threadId: string, rows = Infinity) => {
-      const close = () => void update($, handover, () => NO_HANDOVER)
+      const close = () => detach(update($, handover, () => NO_HANDOVER))
       const { online, offline } = pickerSessions(s?.sessions)
       const showOff = offlineOpen && offline.length > 0
       const agent = s?.session.agent ? `@${s.session.agent}` : 'this agent'
@@ -750,9 +830,13 @@ export const register: Register = on => {
           </Button>
         </Box>
       )
-      return (
+      const keys = [...[...shownOn, ...shownOff].map(o => `pick:${threadId}:${o.id}`), ...(offline.length ? [`pick-offline:${threadId}`] : []), `pick-new:${threadId}`, `pick-cancel:${threadId}`]
+      const rowsDrawn = 1 + shownOn.length + (offline.length ? 1 : 0) + shownOff.length + (cut > 0 ? 1 : 0) + 1
+      const node = (
         <Box key={`picker:${threadId}`} flexDirection="column" paddingLeft={2} flexShrink={0}>
-          <Text dimColor>{head}</Text>
+          <Box key={`pick-head:${threadId}`} height={1} overflow="hidden">
+            <Text dimColor wrap="truncate-end">{head}</Text>
+          </Box>
           {shownOn.map(row)}
           {offline.length ? (
             <Button
@@ -760,12 +844,16 @@ export const register: Register = on => {
               plain
               dimColor
               label={showOff ? '▾ Hide offline' : `▸ Show ${offline.length} offline`}
-              onPress={() => void update($, handover, h => ({ ...h, offline: !h.offline }))}
+              onPress={() => detach(update($, handover, h => ({ ...h, offline: !h.offline })))}
             />
           ) : null}
           {shownOff.map(row)}
-          {cut > 0 ? <Text key={`pick-cut:${threadId}`} dimColor>{`${cut} more · a taller pane shows them`}</Text> : null}
-          <Box key={`pick-foot:${threadId}`} flexDirection="row" columnGap={1}>
+          {cut > 0 ? (
+            <Box key={`pick-cut:${threadId}`} height={1} overflow="hidden">
+              <Text dimColor wrap="truncate-end">{`${cut} more · a taller pane shows them`}</Text>
+            </Box>
+          ) : null}
+          <Box key={`pick-foot:${threadId}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
             <Button
               key={`pick-new:${threadId}`}
               plain
@@ -780,6 +868,7 @@ export const register: Register = on => {
           </Box>
         </Box>
       )
+      return { node, rows: rowsDrawn, keys }
     }
 
     // A desktop draws every Button as its native button, `plain` or not, and draws no hover (both seen in
@@ -893,42 +982,31 @@ export const register: Register = on => {
       )
     }
 
-    /** A list's records, those quiet over a week under an "Older (n)" fold that opens in place. */
-    const folded = <T extends { old: boolean }>(name: string, rows: T[], draw: (r: T) => ReturnType<typeof record>) => {
-      const { recent, older } = fold(rows)
-      const shown = recent.map(draw)
-      if (!older.length) return shown
-      const key = `fold:${name}`
-      drawn.push(key)
-      const isOpen = !!open[name]
-      return [
-        ...shown,
-        <Button key={key} plain dimColor label={`${isOpen ? '▾' : '▸'} Older (${older.length})`} onPress={() => void update($, unfolded, u => ({ ...u, [name]: !isOpen }))} />,
-        ...(isOpen ? older.map(draw) : []),
-      ]
-    }
-
     /** Board Unowned: `#channel` and the title, then why and the hold, the age amber once it is stale. */
-    const inboxRecord = (r: InboxRow) =>
-      record({
+    const inboxRecordOf = (r: InboxRow): Parameters<typeof record>[0] => ({
         id: r.threadId,
         label: r.title,
         title: [{ text: `#${r.channel}`, tone: 'brand' }, { text: ' ' }, { text: r.title, weight: 'semibold' }],
-        onOpen: () => void viewThread($, r.threadId, r.title),
+        onOpen: () => detach(viewThread($, r.threadId, r.title)),
         meta: [{ text: r.meta, tone: 'dim' }, ...(r.age ? [{ text: ' · ', tone: 'dim' as const }, r.stale ? { text: r.age, tone: 'amber' as const, weight: 'semibold' as const } : { text: r.age, tone: 'dim' as const }] : [])],
         acts: [takeAct(r.threadId), newAct(r.threadId)],
       })
 
     /** A section's heading: bold, its count, and a dim note (boards FindTake, Unowned). */
     const heading = (key: string, title: string, note: string) => (
-      <Box key={key} flexDirection="row" columnGap={1}>
+      <Box key={key} flexDirection="row" columnGap={1} height={1} overflow="hidden">
         <Text weight="bold">{title}</Text>
         <Text dimColor wrap="truncate-end">{note}</Text>
       </Box>
     )
 
     // Board Main: the pane's own name in the brand colour, what went wrong beside it and the way back at
-    // the line's right end (wrapping when the pane is narrow); the detail under it.
+    // the line's right end (wrapping when the pane is narrow); the detail under it, wrapped here so its rows are known.
+    const paneWidth = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
+    const detailLines = s && !connected && s.connection.detail ? plainLines(s.connection.detail, paneWidth).map(l => l.map(r => r.text).join('')) : []
+    const stateCells = !s || !connected ? stateLine(v, now).reduce((a, g) => a + cellWidth(g.text), 0) : 0
+    const backCells = s && !connected ? (i.kind === 'superseded' ? '[ Take it back ]' : '[ Connect ]').length : 0
+    const headRowsOf = tabRows([8, ...(stateCells ? [stateCells] : []), ...(backCells ? [backCells] : [])], paneWidth, 2)
     const header = (
       <Box flexDirection="column">
         <Box flexDirection="row" columnGap={2} flexWrap="wrap">
@@ -939,17 +1017,21 @@ export const register: Register = on => {
           <Box flexGrow={1} />
           {s && !connected ? (
             i.kind === 'superseded' ? (
-              <Button key="take-back" plain label="Take it back" onPress={() => void takeBack($).then(toastFirst($))}>
+              <Button key="take-back" plain label="Take it back" onPress={() => detach(takeBack($).then(toastFirst($)))}>
                 <Text color={PALETTE.brand} weight="bold">[ Take it back ]</Text>
               </Button>
             ) : (
-              <Button key="connect" plain label="Connect" onPress={() => void connect($).then(toastFirst($))}>
+              <Button key="connect" plain label="Connect" onPress={() => detach(connect($).then(toastFirst($)))}>
                 <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
               </Button>
             )
           ) : null}
         </Box>
-        {s && !connected && s.connection.detail ? <Text dimColor>{s.connection.detail}</Text> : null}
+        {detailLines.map((l, n) => (
+          <Box key={`detail:${n}`} height={1} overflow="hidden">
+            <Text dimColor wrap="truncate-end">{l || ' '}</Text>
+          </Box>
+        ))}
         {!s && v.error ? <Text dimColor>{v.error}</Text> : null}
       </Box>
     )
@@ -1009,12 +1091,12 @@ export const register: Register = on => {
                 plain
                 {...(shown && !desk ? { hover: { inverse: false } } : lit ? {} : { dimColor: true })}
                 onPress={() => {
-                  void setTabs($, x => closeTab(x, o.id))
-                  if (o.kind === 'channel') void update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
-                  else void update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
+                  detach(setTabs($, x => closeTab(x, o.id)))
+                  if (o.kind === 'channel') detach(update($, channel, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id))))
+                  else detach(update($, threads, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id))))
                   // Its place goes too: View opens it again where it lands (first new, else newest), not where it was
                   // left (Jörgen 2026-11-01).
-                  void update($, scrolls, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id)))
+                  detach(update($, scrolls, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== o.id))))
                 }}
               >
                 {shown && !desk ? (
@@ -1046,31 +1128,137 @@ export const register: Register = on => {
       const title = h.title ?? h.thread_id
       const age = quietFor(h.last_activity_at ?? null, now).age
       const meta2 = [whereText(h), h.kind ?? '', h.status ?? '', heldHere(h.thread_id) ? 'held by you' : '', age ? `${age} ago` : ''].filter(Boolean)
-      return record({
+      return {
         id: h.thread_id,
         label: title,
         title: [{ text: `#${h.channel ?? ''}`, tone: 'brand' }, { text: ' ' }, { text: title, weight: 'semibold' }],
-        onOpen: () => void viewThread($, h.thread_id, title),
+        onOpen: () => detach(viewThread($, h.thread_id, title)),
         meta: snippetSegs(h),
         meta2: meta2.flatMap((t, n) => (n ? [dot, dim(t)] : [dim(t)])),
         acts: [heldHere(h.thread_id) ? releaseAct(h.thread_id) : takeAct(h.thread_id)],
-      })
+      } satisfies Parameters<typeof record>[0]
     }
     const messageHit = (h: SearchHit) => {
       const title = h.thread_title ?? h.thread_id
       const age = quietFor(h.created_at ?? null, now).age
-      return record({
+      return {
         id: `msg-${h.message_id}`,
         label: title,
         title: [{ text: `#${h.channel ?? ''}`, tone: 'brand' }, { text: ' ' }, { text: title, weight: 'semibold' }],
-        onOpen: () => void viewThread($, h.thread_id, title),
+        onOpen: () => detach(viewThread($, h.thread_id, title)),
         meta: snippetSegs(h),
         meta2: [h.sender ?? '', age ? `${age} ago` : ''].filter(Boolean).flatMap((t, n) => (n ? [dot, dim(t)] : [dim(t)])),
         acts: [],
-      })
+      } satisfies Parameters<typeof record>[0]
     }
-    /** Board Search: Threads | Messages, the sort, then the rows, "Similar titles", More; or why nothing came. */
-    const searchBody = () => {
+    // ── The pane's one shell (plan 2026-11-04-mod-pinned-every-tab-plan.md) ─────────────────────────────
+    // Every tab draws the same way: the pane's chrome and the tab's head pinned at the top, its body in the
+    // pane's one window, a rule and the key bar pinned as the pane's last rows. A tab only says what goes in
+    // each part; how it is laid out, scrolled and followed by the keyboard is the shell's alone.
+    const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
+    const one = (key: string, node: RenderElement | RenderElement[] | string, o: { space?: boolean } = {}): Block => ({
+      key,
+      rows: 1,
+      ...o,
+      draw: () => (
+        <Box key={`row:${key}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+          {node}
+        </Box>
+      ),
+    })
+    /** Free text as rows of its own, wrapped here (mod/text.ts) so the window knows its height to the row. */
+    const proseLines = (text: string) => plainLines(text, width).map(l => l.map(r => r.text).join(''))
+    const prose = (key: string, text: string | string[], tone: Tone | 'red' = 'dim', o: { space?: boolean } = {}): Block => {
+      const lines = (Array.isArray(text) ? text : [text]).flatMap(proseLines)
+      const props = tone === 'red' ? { color: PALETTE.red } : paint(tone)
+      return {
+        key,
+        rows: Math.max(1, lines.length),
+        ...o,
+        draw: () => (
+          <Box key={`prose:${key}`} flexDirection="column" flexShrink={0}>
+            {lines.map((l, n) => (
+              <Box key={`prose:${key}:${n}`} height={1} overflow="hidden">
+                <Text {...props} wrap="truncate-end">{l || ' '}</Text>
+              </Box>
+            ))}
+          </Box>
+        ),
+      }
+    }
+    /** A record as a body block: its rows, its stop, the keys it draws (a held one with its picker under it). */
+    const recordBlock = (r: Parameters<typeof record>[0], o: { space?: boolean; picker?: ReturnType<typeof picker> | null } = {}): Block => {
+      const metaRows = [r.meta, r.meta2].filter(m => !!m?.length).length
+      const p = o.picker ?? null
+      return {
+        key: `rec:${r.id}`,
+        rows: 1 + metaRows + (p ? p.rows : 0),
+        space: o.space,
+        stop: true,
+        focus: [`mark:${r.id}`, `open:${r.id}`, ...r.acts.map(a => `${a.key}:${r.id}`), ...(p ? p.keys : [])],
+        draw: () =>
+          p ? (
+            <Box key={`recp:${r.id}`} flexDirection="column" flexShrink={0}>
+              {record(r)}
+              {p.node}
+            </Box>
+          ) : (
+            record(r)
+          ),
+      }
+    }
+    /** Blocks after the first get a blank row above them: a list's breathing room, counted. */
+    const spaced = (blocks: Block[]) => blocks.map((b, n) => (n && b.space === undefined ? { ...b, space: true } : b))
+    /** A head's title row: what the tab is on the left, how fresh it is on the right (thread chrome A, every tab). */
+    // Only the title gives way when the row is short: what leads it (a thread's #channel), what follows it (a
+    // channel's count) and the stamp keep their cells (live 2026-11-04: "#einweave-bac", "Updated" without its time).
+    const titleRow = (key: string, parts: { lead?: RenderElement[]; title: RenderElement; tail?: RenderElement[]; right: RenderElement | null }) => ({
+      rows: 1,
+      node: (
+        <Box key={key} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+          {(parts.lead ?? []).map((n, i) => (
+            <Box key={`${key}:lead:${i}`} flexShrink={0}>
+              {n}
+            </Box>
+          ))}
+          <Box key={`${key}:title`} flexShrink={1} overflow="hidden">
+            {parts.title}
+          </Box>
+          {(parts.tail ?? []).map((n, i) => (
+            <Box key={`${key}:tail:${i}`} flexShrink={0}>
+              {n}
+            </Box>
+          ))}
+          <Box flexGrow={1} />
+          {parts.right ? (
+            <Box key={`${key}:right`} flexShrink={0}>
+              {parts.right}
+            </Box>
+          ) : null}
+        </Box>
+      ),
+    })
+    const headLine = (key: string, text: string, props: Record<string, unknown>) => ({
+      rows: 1,
+      node: (
+        <Box key={key} height={1} overflow="hidden">
+          <Text {...props} wrap="truncate-end">{text}</Text>
+        </Box>
+      ),
+    })
+    const live = (key: string, lit: boolean, word: string, off: string) =>
+      lit ? (
+        <Box key={key} flexDirection="row">
+          <Text color={PALETTE.brand}>● </Text>
+          <Text dimColor>{word}</Text>
+        </Box>
+      ) : (
+        <Text key={key} dimColor>{off}</Text>
+      )
+    const updated = (key: string, at: number | undefined) => (at !== undefined ? <Text key={key} dimColor>{`Updated ${clockOf(at)}`}</Text> : null)
+
+    /** Board Search: Threads | Messages and the sort, pinned under the field while a query runs. */
+    const searchKinds = () => {
       const pill = (key: string, label: string, shown: boolean, onPress: () => void) =>
         shown ? (
           <Button key={key} label={label} plain hover={{ inverse: false }} onPress={onPress}>
@@ -1080,206 +1268,248 @@ export const register: Register = on => {
           <Button key={key} label={` ${label} `} plain dimColor onPress={onPress} />
         )
       const n = st.total ? `${st.total.count}${st.total.capped ? '+' : ''}` : ''
-      const kinds = (
-        <Box key="search-kinds-wrap" flexDirection="column" rowGap={1}>
-        {/* The results' section heading, as the Inbox's ("For you 16  questions…"): bold, a dim note,
-            a blank row under it. Says what was searched, whatever the field shows (Enter empties it). */}
-        {heading('h:results', 'Results', `for \u201C${st.q.trim()}\u201D`)}
-        <Box key="search-kinds" flexDirection="row" columnGap={1}>
-          {pill('search-threads', st.type === 'threads' && n ? `Threads ${n}` : 'Threads', st.type === 'threads', () => void editSearch($, { type: 'threads' }, true))}
-          {pill('search-messages', st.type === 'messages' && n ? `Messages ${n}` : 'Messages', st.type === 'messages', () => void editSearch($, { type: 'messages' }, true))}
-          <Box flexGrow={1} />
-          <Button key="search-clear" plain dimColor label="Clear" onPress={() => void editSearch($, { q: '' }, true)} />
-          <Text dimColor>·</Text>
-          {/* The sort the server USED (its echo): filters alone are newest first, with nothing to rank. */}
-          {st.applied && !st.applied.words ? (
-            <Text key="search-sorted" dimColor>newest first</Text>
-          ) : (
-            [
-              <Text key="search-sorted" dimColor>{(st.applied?.sort ?? st.sort) === 'newest' ? 'newest first ·' : 'best first ·'}</Text>,
-              <Button
-                key="search-sort"
-                plain
-                dimColor
-                label={(st.applied?.sort ?? st.sort) === 'newest' ? 'Best first' : 'Newest'}
-                onPress={() => void editSearch($, { sort: (st.applied?.sort ?? st.sort) === 'newest' ? 'relevance' : 'newest' }, true)}
-              />,
-            ]
-          )}
-        </Box>
-        </Box>
-      )
+      return [
+        // The results' section heading, as the Inbox's ("For you 16  questions…"): bold, a dim note. Says what
+        // was searched, whatever the field shows (Enter empties it).
+        { rows: 1, node: heading('h:results', 'Results', `for “${st.q.trim()}”`) },
+        {
+          rows: 1,
+          node: (
+            <Box key="search-kinds" flexDirection="row" columnGap={1} height={1} overflow="hidden">
+              {pill('search-threads', st.type === 'threads' && n ? `Threads ${n}` : 'Threads', st.type === 'threads', () => detach(editSearch($, { type: 'threads' }, true)))}
+              {pill('search-messages', st.type === 'messages' && n ? `Messages ${n}` : 'Messages', st.type === 'messages', () => detach(editSearch($, { type: 'messages' }, true)))}
+              <Box flexGrow={1} />
+              <Button key="search-clear" plain dimColor label="Clear" onPress={() => detach(editSearch($, { q: '' }, true))} />
+              <Text dimColor>·</Text>
+              {/* The sort the server USED (its echo): filters alone are newest first, with nothing to rank. */}
+              {st.applied && !st.applied.words ? (
+                <Text key="search-sorted" dimColor>newest first</Text>
+              ) : (
+                [
+                  <Text key="search-sorted" dimColor>{(st.applied?.sort ?? st.sort) === 'newest' ? 'newest first ·' : 'best first ·'}</Text>,
+                  <Button
+                    key="search-sort"
+                    plain
+                    dimColor
+                    label={(st.applied?.sort ?? st.sort) === 'newest' ? 'Best first' : 'Newest'}
+                    onPress={() => detach(editSearch($, { sort: (st.applied?.sort ?? st.sort) === 'newest' ? 'relevance' : 'newest' }, true))}
+                  />,
+                ]
+              )}
+            </Box>
+          ),
+        },
+      ]
+    }
+    /** Board Search: the rows, "Similar titles", More; or why nothing came. */
+    const searchBlocks = (): Block[] => {
       if (st.refused) {
         const r = st.refused
-        return (
-          <Box key="search-refused" flexDirection="column" rowGap={1}>
-            {kinds}
-            <Text color={PALETTE.amber}>{r.message}</Text>
-            {r.suggestions.length ? (
-              <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-                {r.suggestions.map(sg => (
-                  <Button key={`suggest:${sg}`} label={sg} onPress={() => void editSearch($, { q: applySuggestion(st.q, r.token, sg) }, true)} />
-                ))}
-              </Box>
-            ) : null}
-          </Box>
-        )
+        const sugs = r.suggestions
+        return spaced([
+          prose('search-refused', r.message, 'amber'),
+          ...(sugs.length
+            ? [
+                {
+                  key: 'search-suggest',
+                  // A Button draws `[ label ]`: its cells, two between, wrapped as flex-wrap lays them out.
+                  rows: tabRows(sugs.map(sg => cellWidth(sg) + 4), width, 2),
+                  focus: sugs.map(sg => `suggest:${sg}`),
+                  draw: () => (
+                    <Box key="search-suggest" flexDirection="row" columnGap={2} flexWrap="wrap">
+                      {sugs.map(sg => (
+                        <Button key={`suggest:${sg}`} label={sg} onPress={() => detach(editSearch($, { q: applySuggestion(st.q, r.token, sg) }, true))} />
+                      ))}
+                    </Box>
+                  ),
+                },
+              ]
+            : []),
+        ])
       }
-      if (st.error)
-        return (
-          <Box key="search-error" flexDirection="column" rowGap={1}>
-            {kinds}
-            <Text dimColor>{st.error}</Text>
-          </Box>
-        )
+      if (st.error) return [prose('search-error', st.error)]
       if (!st.rows.length)
-        return (
-          <Box key="search-none" flexDirection="column" rowGap={1}>
-            {kinds}
-            {st.loading ? (
-              <Text dimColor>Searching…</Text>
-            ) : (
-              <Box flexDirection="column">
-                <Text>{`Nothing matches ${st.q.trim()}.`}</Text>
-                <Text dimColor>Fewer words, or drop a filter. Archived threads: add is:archived.</Text>
-              </Box>
-            )}
-          </Box>
-        )
+        return st.loading
+          ? [one('search-loading', <Text dimColor>Searching…</Text>)]
+          : [prose('search-none', `Nothing matches ${st.q.trim()}.`, undefined), prose('search-none-hint', 'Fewer words, or drop a filter. Archived threads: add is:archived.', 'dim', { space: false })]
       const text = st.rows.filter(h => !h.similar_title)
       const similar = st.rows.filter(h => h.similar_title)
-      return (
-        <Box key="search-rows" flexDirection="column" rowGap={1}>
-          {kinds}
-          {(st.type === 'messages' ? text.map(messageHit) : text.map(threadHit))}
-          {similar.length ? heading('h:similar', 'Similar titles', 'no word matched exactly') : null}
-          {similar.map(threadHit)}
-          {st.next ? <Button key="search-more" plain dimColor label={st.loading ? 'Loading…' : 'More'} onPress={() => void runSearch($, true)} /> : null}
-        </Box>
-      )
+      return spaced([
+        ...(st.type === 'messages' ? text.map(messageHit) : text.map(threadHit)).map(r => recordBlock(r)),
+        ...(similar.length ? [one('h:similar', heading('h:similar', 'Similar titles', 'no word matched exactly'))] : []),
+        ...similar.map(threadHit).map(r => recordBlock(r)),
+        ...(st.next ? [{ ...one('search-more', <Button key="search-more" plain dimColor label={st.loading ? 'Loading…' : 'More'} onPress={() => detach(runSearch($, true))} />), stop: true, focus: ['search-more'] }] : []),
+      ])
     }
 
-    let body
-    // The thread tab scrolls its own posts (set there); every other tab leaves the window to the engine.
-    let own = false
-    win = null
+    /** A list's records, those quiet over a week under an "Older (n)" fold that opens in place. */
+    const foldedBlocks = <T extends { old: boolean }>(name: string, rows: T[], draw: (r: T) => Block): Block[] => {
+      const { recent, older } = fold(rows)
+      const shown = recent.map(draw)
+      if (!older.length) return shown
+      const key = `fold:${name}`
+      const isOpen = !!open[name]
+      return [
+        ...shown,
+        {
+          key,
+          rows: 1,
+          stop: true,
+          focus: [key],
+          draw: () => {
+            drawn.push(key)
+            return <Button key={key} plain dimColor label={`${isOpen ? '▾' : '▸'} Older (${older.length})`} onPress={() => detach(update($, unfolded, u => ({ ...u, [name]: !isOpen })))} />
+          },
+        },
+        ...(isOpen ? older.map(draw) : []),
+      ]
+    }
+
+    // The pane's chrome, the same on every tab: its header (the name, what is wrong and the way back, wrapping as
+    // flex-wrap does; the detail under it while down), the gap, the tabs (wrapping) and their rule.
+    const headerRows = headRowsOf + detailLines.length
+    const tabsW = gated ? [tabWidth('Session', false)] : [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
+    const openW = gated ? [] : t.open.map(o => tabWidth(tabLabel(o.title), true))
+    const chromeRows = headerRows + 1 + tabRows([...tabsW, ...openW], width) + 1
+
+    let frame: Frame
     if (tab === 'inbox') {
-      // Board Search: the field on top; a query replaces the sections with its results, clearing it
-      // brings them back. No field on mobile (no Input there): `/einweave search` is the way.
-      const field = Input ? (
-        <Box key="search-field" flexDirection="column">
-          <Text dimColor>Search threads and messages</Text>
-          {/* Bordered, as the board's field and Claude Code's own prompt box: bare, it read as a line of hint text (live check 2026-11-03). */}
-          <Box key="search-box" flexDirection="row" borderStyle="round" borderColor={RULE} paddingX={1} height={3} overflow="hidden">
-            <Input
-              key={SEARCH_FIELD}
-              value={st.q}
-              placeholder={searchPlaceholder(e.props.bodyColumns - 2 * PANE_PAD - 4 - 10)}
-              submitLabel="search"
-              onInput={q => void editSearch($, { q })}
-              onSubmit={q => void editSearch($, { q }, true)}
-            />
-            {/* An Input is as wide as its text: the rest of the box is this blank, which puts the keyboard
-                in the field, so a click anywhere in the box lands there (live check 2026-11-03). Clipped by the box.
-                A terminal only: a desktop draws every Button native, and its field is a native one. */}
-            {desk ? null : (
-              <Button key={SEARCH_FILL} plain dimColor label="Search" hover={{ inverse: false }} onPress={() => void (async () => {
-                  // The pane takes the keyboard first: a focus request waits, unanswered, while the
-                  // prompt holds it (measured live 2026-11-04: `$.ui.focus` alone never answered).
-                  await $.ui.open({ id: PANE, title: 'einweave', focus: true })
-                  await $.ui.focus({ requestId: PANE, key: SEARCH_FIELD })
-                })()}>
-                {' '.repeat(Math.max(1, e.props.bodyColumns))}
-              </Button>
-            )}
-          </Box>
-        </Box>
-      ) : null
+      // Board Search: the field is the Inbox's head; a query replaces the sections with its results (their kinds
+      // and sort pinned under it), clearing it brings them back. No field on mobile (no Input there): `/einweave search` is the way.
       const searching = !!Input && st.q.trim() !== ''
-      body = !connected ? (
-        <Text dimColor>Not connected: what waits shows once this session is.</Text>
-      ) : searching ? (
-        <Box flexDirection="column" rowGap={1}>
-          {field}
-          {searchBody()}
-        </Box>
-      ) : (
-        <Box flexDirection="column" rowGap={1}>
-          {field}
-          {!Input ? <Text key="find-hint" dimColor>Search: /einweave search &lt;words&gt;</Text> : null}
-          {waiting === 0 ? <Text dimColor>Nothing waits for this session.</Text> : null}
-          {box.forYou.length ? heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you') : null}
-          {box.forYou.map(inboxRecord)}
-          {box.open.length ? heading('h:open', `Unowned ${openCount}`, 'nobody holds these · newest first') : null}
-          {/* Board Unowned: whether the gateway routes these, brand when it does, amber while they wait for a take. */}
-          {box.open.length && s.gateway ? (
-            s.gateway.online ? (
-              <Text key="gateway" color={PALETTE.brand} wrap="truncate-end">{`● gateway ${s.gateway.label ?? ''} online · routing, usually picked within a minute`}</Text>
-            ) : (
-              <Text key="gateway" color={PALETTE.amber} wrap="truncate-end">○ no gateway online · unheld work goes to sessions in scope, or waits for a take</Text>
-            )
-          ) : null}
-          {box.open.map(inboxRecord)}
-          {s.waiting?.more ? <Text dimColor>More wait than shown: search, or /einweave take lists them all.</Text> : null}
-          {box.open.length ? (
-            <Box key="unowned-notes" flexDirection="column">
-              <Text dimColor>{`Every session of ${s.session.agent ? `@${s.session.agent}` : 'this agent'} sees this list. The band stays for things aimed at you.`}</Text>
-              <Text dimColor>Take brings it here. New session copies a command that starts another window and takes it there.</Text>
-            </Box>
-          ) : null}
-        </Box>
-      )
-    } else if (tab === 'held') {
-      body = !connected ? (
-        <Text dimColor>Not connected.</Text>
-      ) : (
-        <Box flexDirection="column" rowGap={1}>
-          {s.holds.length === 0 ? <Text dimColor>None. Take one from the Inbox.</Text> : null}
-          {/* Board Held (Jörgen 2026-11-03): rows as the Inbox's, Release and Hand over on the row. */}
-          {s.holds.map(held => {
-            const r = heldRow(held, now)
-            return (
-              <Box key={`held:${r.threadId}`} flexDirection="column">
-                {record({
-                  id: r.threadId,
-                  label: r.title,
-                  title: r.channel ? [{ text: `#${r.channel}`, tone: 'brand' }, { text: ' ' }, { text: r.title, weight: 'semibold' }] : undefined,
-                  onOpen: () => void viewThread($, r.threadId, r.title),
-                  meta: r.meta.length ? r.meta : undefined,
-                  acts: [releaseAct(r.threadId), handoverAct(r.threadId)],
-                })}
-                {picking === r.threadId && !desk ? picker(r.threadId) : null}
+      const field = Input
+        ? {
+            rows: 4,
+            node: (
+              <Box key="search-field" flexDirection="column" flexShrink={0}>
+                <Box height={1} overflow="hidden">
+                  <Text dimColor>Search threads and messages</Text>
+                </Box>
+                {/* Bordered, as the board's field and Claude Code's own prompt box: bare, it read as a line of hint text (live check 2026-11-03). */}
+                <Box key="search-box" flexDirection="row" borderStyle="round" borderColor={RULE} paddingX={1} height={3} overflow="hidden">
+                  <Input
+                    key={SEARCH_FIELD}
+                    value={st.q}
+                    placeholder={searchPlaceholder(e.props.bodyColumns - 2 * PANE_PAD - 4 - 10)}
+                    submitLabel="search"
+                    onInput={q => detach(editSearch($, { q }))}
+                    onSubmit={q => detach(editSearch($, { q }, true))}
+                  />
+                  {/* An Input is as wide as its text: the rest of the box is this blank, which puts the keyboard
+                      in the field, so a click anywhere in the box lands there (live check 2026-11-03). Clipped by the box.
+                      A terminal only: a desktop draws every Button native, and its field is a native one. */}
+                  {desk ? null : (
+                    <Button key={SEARCH_FILL} plain dimColor label="Search" hover={{ inverse: false }} onPress={() => detach((async () => {
+                        // The pane takes the keyboard first: a focus request waits, unanswered, while the
+                        // prompt holds it (measured live 2026-11-04: `$.ui.focus` alone never answered).
+                        await $.ui.open({ id: PANE, title: 'einweave', focus: true })
+                        await $.ui.focus({ requestId: PANE, key: SEARCH_FIELD })
+                      })())}>
+                      {' '.repeat(Math.max(1, e.props.bodyColumns))}
+                    </Button>
+                  )}
+                </Box>
               </Box>
-            )
-          })}
-        </Box>
-      )
+            ),
+          }
+        : headLine('find-hint', 'Search: /einweave search <words>', { dimColor: true })
+      const sections = (): Block[] => {
+        const agent = s.session.agent ? `@${s.session.agent}` : 'this agent'
+        return spaced([
+          ...(waiting === 0 ? [prose('nothing', 'Nothing waits for this session.')] : []),
+          ...(box.forYou.length ? [one('h:forYou', heading('h:forYou', `For you ${forYouCount}`, 'questions and messages aimed at you'))] : []),
+          ...box.forYou.map(r => recordBlock(inboxRecordOf(r))),
+          ...(box.open.length ? [one('h:open', heading('h:open', `Unowned ${openCount}`, 'nobody holds these · newest first'))] : []),
+          // Board Unowned: whether the gateway routes these, brand when it does, amber while they wait for a take.
+          ...(box.open.length && s.gateway
+            ? [
+                one(
+                  'gateway',
+                  s.gateway.online ? (
+                    <Text key="gateway" color={PALETTE.brand} wrap="truncate-end">{`● gateway ${s.gateway.label ?? ''} online · routing, usually picked within a minute`}</Text>
+                  ) : (
+                    <Text key="gateway" color={PALETTE.amber} wrap="truncate-end">○ no gateway online · unheld work goes to sessions in scope, or waits for a take</Text>
+                  ),
+                ),
+              ]
+            : []),
+          ...box.open.map(r => recordBlock(inboxRecordOf(r))),
+          ...(s.waiting?.more ? [prose('more', 'More wait than shown: search, or /einweave take lists them all.')] : []),
+          ...(box.open.length
+            ? [prose('unowned-notes', [`Every session of ${agent} sees this list. The band stays for things aimed at you.`, 'Take brings it here. New session copies a command that starts another window and takes it there.'])]
+            : []),
+        ])
+      }
+      frame = {
+        id: searching ? SEARCH_TAB : 'inbox',
+        head: [field, ...(searching ? searchKinds() : [])],
+        blocks: !connected ? [prose('not-connected', 'Not connected: what waits shows once this session is.')] : searching ? searchBlocks() : sections(),
+        keys: null,
+        anchor: 'top',
+      }
+    } else if (tab === 'held') {
+      frame = {
+        id: 'held',
+        head: [
+          titleRow('head:held', { title: <Text key="t" weight="bold" wrap="truncate-end">{`Held ${s.holds.length}`}</Text>, right: live('stamp', connected, 'live', '○ not connected') }),
+          headLine('head:held:line', 'held by you · replies to these come here', { color: PALETTE.brand }),
+        ],
+        blocks: !connected
+          ? [prose('not-connected', 'Not connected.')]
+          : s.holds.length === 0
+            ? [prose('none', 'None. Take one from the Inbox.')]
+            : spaced(
+                // Board Held (Jörgen 2026-11-03): rows as the Inbox's, Release and Hand over on the row, the picker under it.
+                s.holds.map(held => {
+                  const r = heldRow(held, now)
+                  return recordBlock(
+                    {
+                      id: r.threadId,
+                      label: r.title,
+                      title: r.channel ? [{ text: `#${r.channel}`, tone: 'brand' }, { text: ' ' }, { text: r.title, weight: 'semibold' }] : undefined,
+                      onOpen: () => detach(viewThread($, r.threadId, r.title)),
+                      meta: r.meta.length ? r.meta : undefined,
+                      acts: [releaseAct(r.threadId), handoverAct(r.threadId)],
+                    },
+                    { picker: picking === r.threadId && !desk ? picker(r.threadId) : null },
+                  )
+                }),
+              ),
+        keys: null,
+        anchor: 'top',
+      }
     } else if (tab === 'channels') {
       const who = ch.agent ? `@${ch.agent}` : 'This agent'
-      body = (
-        <Box flexDirection="column" rowGap={1}>
-          {ch.error ? <Text color={PALETTE.red}>{ch.error}</Text> : null}
-          {ch.loading && !ch.channels.length ? <Text dimColor>Loading…</Text> : null}
-          {!ch.loading && !ch.error && !ch.channels.length ? <Text dimColor>{`${who} isn't in any channels · set up in the web app`}</Text> : null}
-          {ch.channels.length ? <Text dimColor>{`${who} is in ${ch.channels.length} ${ch.channels.length === 1 ? 'channel' : 'channels'}. Every session of the agent shares them.`}</Text> : null}
-          {ch.channels.map(c =>
-            record({
+      const n = ch.channels.length
+      frame = {
+        id: 'channels',
+        head: [
+          titleRow('head:channels', { title: <Text key="t" weight="bold" wrap="truncate-end">{ch.loading && !n ? 'Channels' : `Channels ${n}`}</Text>, right: updated('stamp', ch.at) }),
+          headLine('head:channels:line', ch.loading && !n ? 'Loading…' : `${who} is in ${n} · every session of the agent shares them`, { dimColor: true }),
+        ],
+        blocks: spaced([
+          ...(ch.error ? [prose('error', ch.error, 'red')] : []),
+          ...(!ch.loading && !ch.error && !n ? [prose('empty', `${who} isn't in any channels · set up in the web app`)] : []),
+          ...ch.channels.map(c =>
+            recordBlock({
               id: `ch:${c.id}`,
               label: `#${c.name}`,
               title: [{ text: `#${c.name}`, tone: 'brand' }],
-              onOpen: () => void viewChannel($, c.id, c.name),
+              onOpen: () => detach(viewChannel($, c.id, c.name)),
               meta: [{ text: [channelMeta(c.threads, now), c.role ? null : 'following, not a member'].filter(Boolean).join(' · '), tone: 'dim' }],
               acts: [],
             }),
-          )}
-          <Text dimColor>Join, leave and private channels: in the web app.</Text>
-        </Box>
-      )
+          ),
+          prose('outro', 'Join, leave and private channels: in the web app.'),
+        ]),
+        keys: null,
+        anchor: 'top',
+      }
     } else if (tab === 'session') {
       const sess = s.session
-      // Board Main: a label / value grid, the labels dim.
+      // Board Main: a label / value grid, the labels dim; each one row.
       const row = (key: string, label: string, value: ReturnType<typeof Text> | ReturnType<typeof Text>[] | null) => (
-        <Box key={`row:${key}`} flexDirection="row">
+        <Box key={`row:${key}`} flexDirection="row" height={1} overflow="hidden">
           <Box width={10} flexShrink={0}>
             <Text dimColor>{label}</Text>
           </Box>
@@ -1288,57 +1518,80 @@ export const register: Register = on => {
           </Box>
         </Box>
       )
-      body = (
-        <Box flexDirection="column" rowGap={1}>
-          {gated ? <Text key="gate" dimColor>Connect to see the Inbox, held threads and channels.</Text> : null}
-          <Box flexDirection="column">
-            {row('state', 'State', connected ? <Text color={PALETTE.brand}>● connected</Text> : runs('state', stateLine(v, now)))}
-            {row('agent', 'Agent', <Text>{sess.agent ? `@${sess.agent}` : '-'}</Text>)}
-            {Input && connected
-              ? row('label', 'Session', <Input key="label" value={sess.label ?? ''} placeholder="this session's name" submitLabel="Rename" onSubmit={(label: string) => act('set_session_label', { label })()} />)
-              : row('label', 'Session', <Text>{sess.label ?? '-'}</Text>)}
-            {row('kind', 'Kind', <Text>{sess.kind ?? 'session'}</Text>)}
-            {sess.scope && Select
-              ? row(
-                  'scope',
-                  'Scope',
-                  <Select
-                    key="scope"
-                    value={sess.scope.mode}
-                    options={[
-                      { value: 'none', label: scopeText({ mode: 'none', channelIds: [] }) },
-                      { value: 'all', label: scopeText({ mode: 'all', channelIds: [] }) },
-                      ...(sess.scope.mode === 'channels' ? [{ value: 'channels', label: scopeText(sess.scope) }] : []),
-                    ]}
-                    onSelect={(mode: string) => {
-                      if (mode !== 'channels') act('scope', { channels: mode })()
-                    }}
-                  />,
-                )
-              : sess.scope
-                ? row('scope', 'Scope', <Text>{scopeText(sess.scope)}</Text>)
-                : null}
-            {row(
-              'plugin',
-              'Plugin',
-              s.staleSince ? [<Text key="v">{s.version}</Text>, <Text key="st" color={PALETTE.amber}>· updated on disk: restart Claude Code to use it</Text>] : <Text>{s.version}</Text>,
-            )}
-          </Box>
-          {/* Said once here, not on every thread tab (Jörgen 2026-11-01). */}
-          <Text dimColor>Thread tabs are read-only and cost no tokens. new stays new until it reaches Claude.</Text>
-          <Box flexDirection="row" columnGap={1}>
-            {connected ? (
-              <Button key="disconnect" label="Disconnect" onPress={act('disconnect', {})} />
-            ) : (
-              // The header's way back, drawn the same: plain, bold brand brackets (Jörgen 2026-10-31).
-              <Button key="connect-s" plain label="Connect" onPress={() => void connect($).then(toastFirst($))}>
-                <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
-              </Button>
-            )}
-            <Button key="logout" label="Sign out" dimColor onPress={act('logout', {})} />
-          </Box>
-        </Box>
-      )
+      const grid = [
+        row('state', 'State', connected ? <Text color={PALETTE.brand}>● connected</Text> : runs('state', stateLine(v, now))),
+        row('agent', 'Agent', <Text>{sess.agent ? `@${sess.agent}` : '-'}</Text>),
+        Input && connected
+          ? row('label', 'Session', <Input key="label" value={sess.label ?? ''} placeholder="this session's name" submitLabel="Rename" onSubmit={(label: string) => act('set_session_label', { label })()} />)
+          : row('label', 'Session', <Text>{sess.label ?? '-'}</Text>),
+        row('kind', 'Kind', <Text>{sess.kind ?? 'session'}</Text>),
+        sess.scope && Select
+          ? row(
+              'scope',
+              'Scope',
+              <Select
+                key="scope"
+                value={sess.scope.mode}
+                options={[
+                  { value: 'none', label: scopeText({ mode: 'none', channelIds: [] }) },
+                  { value: 'all', label: scopeText({ mode: 'all', channelIds: [] }) },
+                  ...(sess.scope.mode === 'channels' ? [{ value: 'channels', label: scopeText(sess.scope) }] : []),
+                ]}
+                onSelect={(mode: string) => {
+                  if (mode !== 'channels') act('scope', { channels: mode })()
+                }}
+              />,
+            )
+          : sess.scope
+            ? row('scope', 'Scope', <Text>{scopeText(sess.scope)}</Text>)
+            : null,
+        row(
+          'plugin',
+          'Plugin',
+          s.staleSince ? [<Text key="v">{s.version}</Text>, <Text key="st" color={PALETTE.amber}>· updated on disk: restart Claude Code to use it</Text>] : <Text>{s.version}</Text>,
+        ),
+      ].filter((x): x is NonNullable<typeof x> => !!x)
+      frame = {
+        id: 'session',
+        head: [
+          titleRow('head:session', { title: <Text key="t" weight="bold" wrap="truncate-end">Session</Text>, right: connected ? live('stamp', true, 'connected', '') : <Box key="stamp" flexDirection="row">{runs('stamp', stateLine(v, now))}</Box> }),
+          headLine('head:session:line', `${sess.agent ? `@${sess.agent}` : 'this agent'} · this window's einweave`, { dimColor: true }),
+        ],
+        blocks: spaced([
+          ...(gated ? [prose('gate', 'Connect to see the Inbox, held threads and channels.')] : []),
+          {
+            key: 'grid',
+            rows: grid.length,
+            stop: true,
+            focus: ['label', 'scope'],
+            draw: () => (
+              <Box key="grid" flexDirection="column" flexShrink={0}>
+                {grid}
+              </Box>
+            ),
+          },
+          // Said once here, not on every thread tab (Jörgen 2026-11-01).
+          prose('note', 'Thread tabs are read-only and cost no tokens. new stays new until it reaches Claude.'),
+          {
+            ...one(
+              'session-acts',
+              connected
+                ? [<Button key="disconnect" label="Disconnect" onPress={act('disconnect', {})} />, <Button key="logout" label="Sign out" dimColor onPress={act('logout', {})} />]
+                : [
+                    // The header's way back, drawn the same: plain, bold brand brackets (Jörgen 2026-10-31).
+                    <Button key="connect-s" plain label="Connect" onPress={() => detach(connect($).then(toastFirst($)))}>
+                      <Text color={PALETTE.brand} weight="bold">[ Connect ]</Text>
+                    </Button>,
+                    <Button key="logout" label="Sign out" dimColor onPress={act('logout', {})} />,
+                  ],
+            ),
+            stop: true,
+            focus: ['disconnect', 'connect-s', 'logout'],
+          },
+        ]),
+        keys: null,
+        anchor: 'top',
+      }
     } else if (t.open.find(x => x.id === tab)?.kind === 'channel') {
       const id = tab
       const cv = (await read($, channel))[id] ?? NO_CHANNEL
@@ -1346,85 +1599,71 @@ export const register: Register = on => {
       // Take is refused outside membership; a row not (yet) in the Channels list is not judged here.
       const member = row ? row.role !== null : true
       const { rows, more } = channelRows(cv.threads)
-      body = (
-        <Box flexDirection="column">
-          <Box flexDirection="row" columnGap={1}>
-            <Text color={PALETTE.brand} weight="bold" wrap="truncate-end">{t.open.find(x => x.id === id)?.title ?? id}</Text>
-            {row?.threads ? <Text dimColor>{`${row.threads.open} open`}</Text> : null}
-          </Box>
-          <Text dimColor>{member ? 'Open threads, latest activity first.' : 'Following, not a member: join in the web app to take.'}</Text>
-          {cv.error ? <Text color={PALETTE.red}>{cv.error}</Text> : null}
-          {cv.loading && !cv.threads.length ? <Text dimColor>Loading…</Text> : null}
-          {!cv.loading && !cv.error && !cv.threads.length ? <Text dimColor>No threads yet.</Text> : null}
-          <Box flexDirection="column" rowGap={1} marginTop={1}>
-            {folded(
-              `ch:${id}`,
-              rows.map(th => ({ ...th, ...quietFor(th.lastActivityAt, now) })),
-              th => {
-                const here = s.holds.some(h => h.threadId === th.id)
-                const badge = holdBadge(th.hold, here)
-                // `open` is every live thread's status: only the others are said.
-                const status = th.resolved ? 'resolved' : th.status === 'open' ? null : th.status
-                const rest = [status, th.kind, th.age].filter(Boolean).join(' · ')
-                return record({
-                  id: th.id,
-                  label: th.title || th.id,
-                  dim: th.resolved,
-                  onOpen: () => void viewThread($, th.id, th.title || th.id),
-                  meta: [
-                    ...(badge ? [{ text: badge.text, tone: th.resolved ? ('dim' as const) : badge.tone }] : []),
-                    ...(badge && rest ? [{ text: ' · ', tone: 'dim' as const }] : []),
-                    ...(rest ? [{ text: rest, tone: 'dim' as const }] : []),
-                  ],
-                  acts: here || !member || th.resolved ? [newAct(th.id)] : [takeAct(th.id, () => loadChannel($, id), badge?.asks), newAct(th.id)],
-                })
-              },
-            )}
-          </Box>
-          {more ? <Text dimColor>{`${more} more in the web app.`}</Text> : null}
-          <Box marginTop={1}>
-            <Text dimColor>View opens the Thread tab. Take from an online holder asks first.</Text>
-          </Box>
-        </Box>
-      )
+      const name = t.open.find(x => x.id === id)?.title ?? id
+      frame = {
+        id,
+        head: [
+          titleRow('head:channel', {
+            title: <Text key="n" color={PALETTE.brand} weight="bold" wrap="truncate-end">{name}</Text>,
+            tail: row?.threads ? [<Text key="c" dimColor>{`${row.threads.open} open`}</Text>] : [],
+            right: updated('stamp', cv.at),
+          }),
+          headLine('head:channel:line', member ? 'Open threads, latest activity first.' : 'Following, not a member: join in the web app to take.', { dimColor: true }),
+        ],
+        blocks: spaced([
+          ...(cv.error ? [prose('error', cv.error, 'red')] : []),
+          ...(cv.loading && !cv.threads.length ? [one('loading', <Text dimColor>Loading…</Text>)] : []),
+          ...(!cv.loading && !cv.error && !cv.threads.length ? [prose('empty', 'No threads yet.')] : []),
+          ...foldedBlocks(
+            `ch:${id}`,
+            rows.map(th => ({ ...th, ...quietFor(th.lastActivityAt, now) })),
+            th => {
+              const here = s.holds.some(h => h.threadId === th.id)
+              const badge = holdBadge(th.hold, here)
+              // `open` is every live thread's status: only the others are said.
+              const status = th.resolved ? 'resolved' : th.status === 'open' ? null : th.status
+              const rest = [status, th.kind, th.age].filter(Boolean).join(' · ')
+              return recordBlock({
+                id: th.id,
+                label: th.title || th.id,
+                dim: th.resolved,
+                onOpen: () => detach(viewThread($, th.id, th.title || th.id)),
+                meta: [
+                  ...(badge ? [{ text: badge.text, tone: th.resolved ? ('dim' as const) : badge.tone }] : []),
+                  ...(badge && rest ? [{ text: ' · ', tone: 'dim' as const }] : []),
+                  ...(rest ? [{ text: rest, tone: 'dim' as const }] : []),
+                ],
+                acts: here || !member || th.resolved ? [newAct(th.id)] : [takeAct(th.id, () => loadChannel($, id), badge?.asks), newAct(th.id)],
+              })
+            },
+          ),
+          ...(more ? [prose('more', `${more} more in the web app.`)] : []),
+          prose('hint', 'View opens the Thread tab. Take from an online holder asks first.'),
+        ]),
+        keys: null,
+        anchor: 'top',
+      }
     } else {
       const id = tab
       const th = (await read($, threads))[id] ?? NO_THREAD
       const title = th.title ?? t.open.find(x => x.id === id)?.title ?? id
       const held = s.holds.some(h => h.threadId === id)
       const picks = held && picking === id
-      // Board ThreadTab, layout A: header and footer pinned, the posts in chat order scrolled between them
-      // by the mod itself (docked in a terminal, where the window is known to the row). Elsewhere the
-      // frame fits the tree, so the posts flow and the surface scrolls.
-      own = e.surface === 'terminal' && e.props.placement === 'dock'
-      const width = Math.max(10, e.props.bodyColumns - 2 * PANE_PAD)
-      const sc = (await read($, scrolls))[id]
       // A desktop draws links itself; a terminal only when it draws OSC 8.
       const links = desk || (await terminalLinks($))
+      const sc = places[id]
       const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, links, th.work ?? null)
       const optionClick = !links && (await isAppleTerminal($))
-      // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs, the
-      // rule, the thread's own header (title, a work item's line, hold line, rule) and its key bar under a rule.
-      const tabsW = [`Inbox ${connected ? total : 0}`, `Held ${s.holds.length}`, 'Channels', 'Session'].map(l => tabWidth(l, false))
-      const openW = t.open.map(o => tabWidth(tabLabel(o.title), true))
-      const pinned = 1 + (!connected && s.connection.detail ? 1 : 0) + 1 + tabRows([...tabsW, ...openW], width) + 1 + 3 + (th.work ? 1 : 0) + 2
       // A desktop has no hotkeys: there the key bar is labels alone.
       const hot = (key: string) => (desk ? {} : { hotkey: key })
-      const threadRule = (key: string) => (
-        <Box key={key} height={1} flexShrink={0}>
-          <Text color={RULE}>{'─'.repeat(width)}</Text>
-        </Box>
-      )
-      const room = Math.max(3, e.props.scroll.bodyRows - pinned)
-      const off = own ? threadOff(sc, layout, th.messages, room) : 0
-      win = own ? { id, layout, messages: th.messages, room, older: th.older !== 0 && !th.loadingOlder } : null
       const expand = (key: string, more: number) => () =>
-        void update($, scrolls, m => {
+        detach(update($, scrolls, m => {
           const was = m[id]
+          const w = win
           // Opened in place: the rows it gains push what is under it down, so its first line stays where it was.
-          const from = was ? threadOff(was, layout, th.messages, room) : off
-          return { ...m, [id]: { off: from + (from > 0 ? more - 1 : 0), newest: newestKey(layout), open: { ...(was?.open ?? {}), [key]: true as const } } }
-        })
+          const from = w && w.id === id ? windowOff(was, w.stack, w.room, w.land, w.anchor) : 0
+          return { ...m, [id]: { off: from + (from > 0 ? more - 1 : 0), newest: w && w.id === id ? newestKey(w.stack) : '', open: { ...(was?.open ?? {}), [key]: true as const } } }
+        }))
       const line = (key: string, l: Line) => (
         <Box key={key} flexDirection="row" height={1} overflow="hidden">
           {l.length
@@ -1445,11 +1684,6 @@ export const register: Register = on => {
             : <Text> </Text>}
         </Box>
       )
-      // Docked, only what meets the window: a long thread drawn whole made each wheel tick slow enough for
-      // the engine to show its own window a row or two off the tree meanwhile (a flicker, live 2026-11-01).
-      const foot = layout.total - off
-      const meets = (top: number, rows: number) => !own || (top < foot && top + rows > foot - room)
-      const shown = layout.blocks.filter(b => meets(b.top, b.rows))
       const post = (b: (typeof layout.blocks)[number]) => {
         const m = th.messages[b.n]!
         const tint = m.own ? PALETTE.blue : senderColor(m.senderId)
@@ -1473,94 +1707,78 @@ export const register: Register = on => {
             )}
             {/* Every surface draws the server's doc as these lines (RFC-034 D6): no Markdown parsed here. A desktop
                 shows the whole post (its surface scrolls), so no cap there. */}
-            {(desk && !own ? b.all : b.lines).map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
-            {b.more && !(desk && !own) ? (
+            {(desk ? b.all : b.lines).map((l, n) => line(`ln:${id}:${b.key}:${n}`, l))}
+            {b.more && !desk ? (
               <Button key={`more:${id}:${b.key}`} plain dimColor label={`▸ ${b.more} more ${b.more === 1 ? 'line' : 'lines'}`} onPress={expand(b.key, b.more)} />
             ) : null}
           </Box>
         )
       }
       // Under the root: how many older replies the tab has not read, and the way to them.
-      const gap = layout.gap && meets(layout.gap.top, layout.gap.rows) ? (
-        <Box key={`gap:${id}`} flexDirection="row" columnGap={1} marginTop={1} height={1} overflow="hidden" flexShrink={0}>
-          <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'}`}</Text>
-          {th.loadingOlder ? (
-            <Text dimColor>Loading…</Text>
-          ) : (
-            <Button key={`older:${id}`} plain dimColor label={`Load ${OLDER_PAGE} older ↑`} onPress={() => void loadOlder($, id)} />
-          )}
-        </Box>
-      ) : null
-      const flow = [...shown.slice(0, 1).map(post), ...(gap ? [gap] : []), ...shown.slice(1).map(post)]
-      // The rows under the last one drawn, as one empty box: the window's foot stays `off` rows up.
-      const last = Math.max(0, ...shown.map(b => b.top + b.rows), gap && layout.gap ? layout.gap.top + layout.gap.rows : 0)
-      const tail = own && shown.length ? layout.total - last : 0
+      const gapBlock: Block | null = layout.gap
+        ? {
+            key: 'gap',
+            rows: layout.gap.rows,
+            draw: () => (
+              <Box key={`gap:${id}`} flexDirection="row" columnGap={1} marginTop={1} height={1} overflow="hidden" flexShrink={0}>
+                <Text dimColor>{`${th.older ?? 'Some'} older ${th.older === 1 ? 'reply' : 'replies'}`}</Text>
+                {th.loadingOlder ? (
+                  <Text dimColor>Loading…</Text>
+                ) : (
+                  <Button key={`older:${id}`} plain dimColor label={`Load ${OLDER_PAGE} older ↑`} onPress={() => detach(loadOlder($, id))} />
+                )}
+              </Box>
+            ),
+          }
+        : null
+      // The posts in the layout's own order (the gap under the root), each block its rows; the notes above them.
+      const postBlocks: Block[] = layout.blocks.map(b => ({ key: b.key, rows: b.rows, draw: () => post(b) }))
+      const gapAt = layout.gap ? layout.blocks.findIndex(b => b.top >= layout.gap!.top) : -1
+      const ordered = gapBlock ? (gapAt < 0 ? [...postBlocks, gapBlock] : [...postBlocks.slice(0, gapAt), gapBlock, ...postBlocks.slice(gapAt)]) : postBlocks
       const notes = [
-        th.error ? <Text key="err" color={PALETTE.red} wrap="truncate-end">{th.error}</Text> : null,
-        th.loading && !th.messages.length ? <Text key="loading" dimColor>Loading…</Text> : null,
+        ...(th.error ? [prose('err', th.error, 'red')] : []),
+        ...(th.loading && !th.messages.length ? [one('loading', <Text dimColor>Loading…</Text>)] : []),
       ]
-      body = (
-        <Box flexDirection="column">
-          {/* Board ThreadTab, chrome A (Jörgen 2026-11-01): #channel and title, how fresh at the right; the hold
-              line; a rule, so the posts start below the header, not under its buttons. */}
-          <Box flexDirection="row" columnGap={1} height={1} overflow="hidden">
-            {th.channel ? <Text key="ch" color={PALETTE.brand}>{`#${th.channel}`}</Text> : null}
-            <Box flexShrink={1} overflow="hidden">
-              <Text weight="bold" wrap="truncate-end">{title}</Text>
-            </Box>
-            <Box flexGrow={1} />
-            {/* Live only while it is: held AND connected, else replies are not arriving (Jörgen 2026-11-04: brand dot, dim word, no pulse). */}
-            {held && connected ? (
-              <Box key="stamp" flexDirection="row">
-                <Text color={PALETTE.brand}>● </Text>
-                <Text dimColor>live</Text>
-              </Box>
-            ) : held ? (
-              <Text key="stamp" dimColor>○ reconnecting</Text>
-            ) : th.at !== undefined ? <Text key="stamp" dimColor>{`Updated ${clockOf(th.at)}`}</Text> : null}
-          </Box>
-          {th.work ? (
-            // A work item's line (RFC-029 D2, Jörgen 2026-11-04: kind · status · assignee, no ticking age).
-            <Box key="work" flexDirection="row" height={1} overflow="hidden">
-              <Text dimColor>{`${th.work.kind} · `}</Text>
-              <Text weight="bold">{th.work.status.replace(/_/g, ' ')}</Text>
-              {th.work.resolvedReason ? <Text dimColor>{` (${th.work.resolvedReason.replace(/_/g, ' ')})`}</Text> : null}
-              <Text dimColor>{' · '}</Text>
-              {th.work.assignee ? <Text wrap="truncate-end">{th.work.assignee}</Text> : <Text dimColor>no assignee</Text>}
-            </Box>
-          ) : null}
-          {held ? (
-            <Text color={PALETTE.brand} wrap="truncate-end">held by you · replies come here</Text>
-          ) : (
-            <Text color={PALETTE.amber} wrap="truncate-end">not held here · Claude has not seen it · Take brings it here</Text>
-          )}
-          {threadRule('rule:head')}
-          {own ? (
-            // A thread that fits starts under its header, read from the root down (no reply box to sit next to).
-            // One that overflows is bottom-anchored: the newest at the window's foot, `off` rows up from it.
-            // Hand over's picker takes the posts' window while open (Jörgen 2026-11-04, option B): the header
-            // and key bar stay pinned, and Cancel brings the posts back where they were.
-            picks ? (
-              <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" flexShrink={0}>
-                {picker(id, room)}
-              </Box>
-            ) : (
-              <Box key={`posts:${id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={layout.total + notes.filter(Boolean).length > room ? 'flex-end' : 'flex-start'} flexShrink={0}>
-                <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
-                  {notes}
-                  {flow}
-                  {tail ? <Box key={`tail:${id}`} height={tail} flexShrink={0} /> : null}
-                </Box>
-              </Box>
-            )
-          ) : (
-            <Box key={`posts:${id}`} flexDirection="column">
-              {picks ? picker(id) : [notes, flow]}
-            </Box>
-          )}
-          {threadRule('rule:foot')}
-          {/* The key bar: the thread's actions on their keys (`t: Take`), drawn as the pane's footer for a record. */}
-          <Box key={`keys:${id}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+      // The picker fits the body's window: the room left under the thread's head (title, work line, hold line).
+      const pick = picks ? picker(id, Math.max(3, e.props.scroll.bodyRows - chromeRows - (2 + (th.work ? 1 : 0)) - 3)) : null
+      frame = {
+        id,
+        head: [
+          // Board ThreadTab, chrome A (Jörgen 2026-11-01): #channel and title, how fresh at the right; a work
+          // item's line; the hold line. The shell's rule under it, so the posts start below the header.
+          titleRow('head:thread', {
+            lead: th.channel ? [<Text key="ch" color={PALETTE.brand}>{`#${th.channel}`}</Text>] : [],
+            title: <Text key="title" weight="bold" wrap="truncate-end">{title}</Text>,
+            // Live only while it is: held AND connected, else replies are not arriving (Jörgen 2026-11-04: brand dot, dim word, no pulse).
+            right: held ? live('stamp', connected, 'live', '○ reconnecting') : updated('stamp', th.at),
+          }),
+          ...(th.work
+            ? [
+                {
+                  rows: 1,
+                  node: (
+                    // A work item's line (RFC-029 D2, Jörgen 2026-11-04: kind · status · assignee, no ticking age).
+                    <Box key="work" flexDirection="row" height={1} overflow="hidden">
+                      <Text dimColor>{`${th.work.kind} · `}</Text>
+                      <Text weight="bold">{th.work.status.replace(/_/g, ' ')}</Text>
+                      {th.work.resolvedReason ? <Text dimColor>{` (${th.work.resolvedReason.replace(/_/g, ' ')})`}</Text> : null}
+                      <Text dimColor>{' · '}</Text>
+                      {th.work.assignee ? <Text wrap="truncate-end">{th.work.assignee}</Text> : <Text dimColor>no assignee</Text>}
+                    </Box>
+                  ),
+                },
+              ]
+            : []),
+          held
+            ? headLine('head:thread:line', 'held by you · replies come here', { color: PALETTE.brand })
+            : headLine('head:thread:line', 'not held here · Claude has not seen it · Take brings it here', { color: PALETTE.amber }),
+        ],
+        // Hand over's picker takes the body while open (Jörgen 2026-11-04, option B): the head and key bar stay
+        // pinned, and Cancel brings the posts back where they were.
+        blocks: pick ? [{ key: 'picker', rows: pick.rows, stop: true, focus: pick.keys, draw: () => pick.node }] : [...notes, ...ordered],
+        // The key bar: the thread's actions on their keys (`t: Take`), whatever has the keyboard.
+        keys: (
+          <Box key={`acts:${id}`} flexDirection="row" columnGap={1}>
             {held ? (
               <Box key={`held-acts:${id}`} flexDirection="row" columnGap={1}>
                 <Button key={`release:${id}`} plain {...hot('r')} label="Release" dimColor onPress={act('release', { ref: id })} />
@@ -1573,62 +1791,150 @@ export const register: Register = on => {
             <Text dimColor>·</Text>
             <Button key={`new:${id}`} plain {...hot('n')} label="New session" dimColor onPress={newSession(id)} />
             {held ? null : <Text key="sep:refresh" dimColor>·</Text>}
-            {held ? null : <Button key={`refresh:${id}`} plain label="↻ Refresh" dimColor onPress={() => void loadThread($, id)} />}
-            <Box flexGrow={1} />
-            {optionClick ? <Text key="hint:links" dimColor>⌥-click a URL to open it ·</Text> : null}
-            <Text dimColor>read-only</Text>
+            {held ? null : <Button key={`refresh:${id}`} plain label="↻ Refresh" dimColor onPress={() => detach(loadThread($, id))} />}
           </Box>
-        </Box>
-      )
+        ),
+        right: [...(optionClick ? [<Text key="hint:links" dimColor>⌥-click a URL to open it ·</Text>] : []), <Text key="ro" dimColor>read-only</Text>],
+        anchor: 'end',
+        land: (stk, room) => (pick ? stk.total : landOff(layout, th.messages, room)),
+        onTop: th.older !== 0 && !th.loadingOlder && !pick ? () => detach(loadOlder($, id)) : undefined,
+      }
     }
 
-    stops = drawn
-    const rule = (key: string) => <Text key={key} color={RULE}>{'─'.repeat(Math.max(1, e.props.bodyColumns - 2 * PANE_PAD))}</Text>
-    // The keyboard's record's actions, on their hotkeys: one place to look, as a TUI's key bar.
-    const footer = footOn ? (
-      <Box key="footer" flexDirection="row">
-        {footActs.map((a, n) => (
-          <Box key={`footact:${a.key}`} flexDirection="row">
-            {n ? <Text dimColor> · </Text> : null}
-            <Button key={`foot:${a.key}`} plain hotkey={a.hotkey} label={a.label} onPress={a.onPress} />
+    // ── The shell draws the frame ──────────────────────────────────────────────────────────────────
+    // Rows the pinned parts take: the pane's header (+ the detail under it while down), the gap, the tabs and
+    // their rule; the tab's head and its rule; the key bar under its rule.
+    const headRows = frame.head.reduce((a, h) => a + h.rows, 0)
+    const pinned = chromeRows + headRows + 1 + 2
+    const blocks = frame.blocks.map(b => ({ ...b, rows: b.rows + (b.space ? 1 : 0) }))
+    const body = stack(blocks)
+    const bodyRows = e.props.scroll.bodyRows
+    // The terminal scrolls the body itself: docked, the pane is the frame's height, its key bar on the last row;
+    // inline the frame fits the tree, so there the window is needed only once the tree does not fit. A pane too
+    // short for its pinned parts and MIN_ROOM rows of body flows instead, and the engine scrolls all of it (inline
+    // above the prompt on a short terminal, live 2026-11-04). A desktop scrolls its own surface: there the parts
+    // flow, in the same order. The same rule on every tab.
+    const dock = e.props.placement === 'dock'
+    const own = !desk && bodyRows >= pinned + MIN_ROOM && (dock || pinned + body.total > bodyRows)
+    const room = own ? bodyRows - pinned : body.total
+    const sc = places[frame.id]
+    const land = frame.land ? frame.land(body, room) : Math.max(0, body.total - room)
+    const off = own ? windowOff(sc, body, room, land, frame.anchor) : 0
+    const reveal = new Map<string, string>()
+    for (const b of blocks) for (const k of b.focus ?? []) reveal.set(k, b.key)
+    win = own ? { id: frame.id, stack: body, room, land, anchor: frame.anchor, reveal, onTop: frame.onTop } : null
+    // Only what meets the window is drawn, and every block holding a keyboard stop (Tab must reach it): a long
+    // thread drawn whole made each wheel tick slow enough for the engine to show its own window a row or two off
+    // the tree meanwhile (a flicker, live 2026-11-01). What is not drawn is one empty box per run, so every
+    // block keeps its row.
+    const foot = body.total - off
+    const nodes: RenderElement[] = []
+    let skipped = 0
+    const flush = () => {
+      if (skipped) nodes.push(<Box key={`skip:${frame.id}:${nodes.length}`} height={skipped} flexShrink={0} />)
+      skipped = 0
+    }
+    for (const b of body.blocks) {
+      const meets = !own || (b.top < foot && b.top + b.rows > foot - room)
+      if (!meets && !b.stop) {
+        skipped += b.rows
+        continue
+      }
+      flush()
+      nodes.push(
+        b.space ? (
+          <Box key={`blk:${frame.id}:${b.key}`} flexDirection="column" marginTop={1} flexShrink={0}>
+            {b.draw()}
           </Box>
-        ))}
-        <Text dimColor>{`${footActs.length ? ' · ' : ''}enter open · esc back`}</Text>
+        ) : (
+          b.draw()
+        ),
+      )
+    }
+    if (own) flush()
+    stops = drawn
+    const rule = (key: string) => (
+      <Box key={key} height={1} flexShrink={0}>
+        <Text color={RULE}>{'─'.repeat(width)}</Text>
       </Box>
-    ) : null
+    )
+    // The key bar, the pane's last row on every tab: the actions of what is selected, on their keys (the thread,
+    // or the record the keyboard is on); else the keys that work now. At its right end, the rows the window hides.
+    const resting = desk ? null : keys ? (
+      <Text key="rest" dimColor>{tab === 'session' ? 'tab: next · esc: back' : 'tab: next · enter: open · esc: back'}</Text>
+    ) : (
+      <Text key="rest" dimColor>ctrl+x tab: keys</Text>
+    )
+    const left =
+      frame.keys ??
+      (footOn ? (
+        <Box key="footacts" flexDirection="row">
+          {footActs.map((a, n) => (
+            <Box key={`footact:${a.key}`} flexDirection="row">
+              {n ? <Text dimColor> · </Text> : null}
+              <Button key={`foot:${a.key}`} plain hotkey={a.hotkey} label={a.label} onPress={a.onPress} />
+            </Box>
+          ))}
+          <Text dimColor>{`${footActs.length ? ' · ' : ''}enter: open · esc: back`}</Text>
+        </Box>
+      ) : (
+        resting
+      ))
+    const cue = own ? cueText(hidden(body, off, room)) : ''
+    const bar = (
+      <Box key={`keys:${frame.id}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+        {left}
+        <Box flexGrow={1} />
+        {cue ? <Text key="cue" dimColor>{cue}</Text> : null}
+        {cue && frame.right?.length ? <Text key="cue-sep" dimColor>·</Text> : null}
+        {frame.right ?? null}
+      </Box>
+    )
+    const parts = [
+      header,
+      gap,
+      tabRow,
+      rule('rule:tabs'),
+      ...frame.head.map(h => h.node),
+      rule('rule:head'),
+      own ? (
+        // Bottom-anchored once it overflows: the window's foot `off` rows up from the body's end. One that fits
+        // starts under the head.
+        <Box key={`body:${frame.id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={body.total > room ? 'flex-end' : 'flex-start'} flexShrink={0}>
+          <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
+            {nodes}
+          </Box>
+        </Box>
+      ) : (
+        <Box key={`body:${frame.id}`} flexDirection="column" flexGrow={1}>
+          {nodes}
+        </Box>
+      ),
+      rule('rule:foot'),
+      bar,
+    ]
     // Spacer rows above as many as the engine's window is down, the rest below: at row 0, where ui.scroll
-    // holds it, both below; on a row the engine reached itself (a clamp from a longer tab) it still shows
-    // exactly the pane. A fixed top spacer showed until the first scroll (Jörgen 2026-11-01).
-    const lead = Math.min(2, Math.max(0, e.props.scroll.offset))
+    // holds it, both below; on a row the engine reached itself (a clamp, a held element kept in view) it still
+    // shows exactly the pane. A fixed top spacer showed until the first scroll (Jörgen 2026-11-01).
+    // Docked only: inline the engine draws rows past the frame as its own "n more" (live 2026-11-04), so there
+    // the tree is exactly the frame; the wheel, page keys and the ring still move the window, the arrows do not.
+    const spare = dock ? 2 : 0
+    const lead = Math.min(spare, Math.max(0, e.props.scroll.offset))
     if (own)
       return (
-        // Exactly the window and two spacer rows: the engine always has rows to scroll, so its wheel and
+        // Exactly the window and (docked) two spacer rows: the engine always has rows to scroll, so its wheel and
         // arrows fire (live 2026-11-01: at row 0, up and down).
-        <Box key="pane" flexDirection="column" paddingX={PANE_PAD} height={e.props.scroll.bodyRows + 2}>
+        <Box key="pane" flexDirection="column" paddingX={PANE_PAD} height={bodyRows + spare}>
           {lead ? <Box key="spacer:top" height={lead} flexShrink={0} /> : null}
-          {header}
-          {gap}
-          {tabRow}
-          {rule('rule:tabs')}
-          <Box flexDirection="column" flexShrink={0}>
-            {body}
-          </Box>
-          {lead < 2 ? <Box key="spacer:end" height={2 - lead} flexShrink={0} /> : null}
+          {parts}
+          {lead < spare ? <Box key="spacer:end" height={spare - lead} flexShrink={0} /> : null}
         </Box>
       )
     return (
-      // Docked, at least the pane's height, the body growing into it: the footer sits on the pane's last
-      // row. Inline the frame fits the tree, so there it would only take rows from the transcript.
-      <Box key="pane" flexDirection="column" paddingX={PANE_PAD} minHeight={e.props.placement === 'dock' ? e.props.scroll.bodyRows : undefined}>
-        {header}
-        {gap}
-        {tabRow}
-        {rule('rule:tabs')}
-        <Box flexDirection="column" flexGrow={1}>
-          {body}
-        </Box>
-        {footer ? rule('rule:footer') : null}
-        {footer}
+      // Flowing (a desktop, or inline where it fits): docked, at least the pane's height, the body growing into it,
+      // so the key bar sits on the pane's last row there too.
+      <Box key="pane" flexDirection="column" paddingX={PANE_PAD} minHeight={e.props.placement === 'dock' ? bodyRows : undefined}>
+        {parts}
       </Box>
     )
   })

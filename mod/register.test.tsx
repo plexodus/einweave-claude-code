@@ -140,6 +140,17 @@ async function metaRow(ui: { find: (q: any) => Promise<unknown> }, id: string): 
   return ((await ui.find({ key: `rec:${id}` })) as any)?.children?.[1]
 }
 
+/**
+ * A prose block's text, its rows joined, and its first row's Text props: the shell wraps free text into rows
+ * of its own (so the window knows its height), each row one Text.
+ */
+async function proseOf(ui: { find: (q: any) => Promise<unknown> }, key: string): Promise<{ text: string; props: Record<string, unknown> } | undefined> {
+  const box = (await ui.find({ key: `prose:${key}` })) as { children?: { children?: { type?: string; props?: Record<string, unknown>; children?: unknown[] }[] }[] } | undefined
+  if (!box) return undefined
+  const texts = (box.children ?? []).flatMap(row => (row.children ?? []).filter(c => c.type === 'Text'))
+  return { text: texts.map(t => String(t.children?.[0] ?? '')).join(' ').trim(), props: texts[0]?.props ?? {} }
+}
+
 async function findRun(ui: { findAll: (q: { type: 'Text' }) => Promise<unknown[]>; find: (q: any) => Promise<unknown> }, text: any): Promise<any> {
   const walk = (n: any): any => {
     if (!n || typeof n !== 'object') return undefined
@@ -645,8 +656,10 @@ test('board Unowned: the gateway line says whether unheld work is routed (brand)
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await findRun(ui, '○ no gateway online · unheld work goes to sessions in scope, or waits for a take')).toMatchObject({ props: { color: '#e8b04a' } })
-  expect(await findRun(ui, 'Every session of @bellman sees this list. The band stays for things aimed at you.')).toMatchObject({ props: { dimColor: true } })
-  expect(await findRun(ui, 'Take brings it here. New session copies a command that starts another window and takes it there.')).toMatchObject({ props: { dimColor: true } })
+  expect(await proseOf(ui, 'unowned-notes')).toEqual({
+    text: 'Every session of @bellman sees this list. The band stays for things aimed at you. Take brings it here. New session copies a command that starts another window and takes it there.',
+    props: expect.objectContaining({ dimColor: true }),
+  })
   await ui.unmount()
 })
 
@@ -1003,15 +1016,16 @@ for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
     await ui.press({ key: 'tab:channels' })
     await clock.settle()
     expect(calls.filter(c => c.tool === 'ui_channels').map(c => c.args)).toEqual([{}])
-    // Board ChannelsTab: the tab has no count; an intro line; `#name` brand, its counts under it.
+    // Board ChannelsTab: the tab has no count; the head counts them and says who shares them; `#name` brand, its counts under it.
     expect(await ui.find({ key: 'tab:channels' })).toMatchObject({ props: { label: 'Channels' } })
     shownPill(await ui.find({ key: 'tab:channels' }))
-    expect(await findRun(ui, '@bellman is in 3 channels. Every session of the agent shares them.')).toBeDefined()
+    expect(await findRun(ui, 'Channels 3')).toMatchObject({ props: { weight: 'bold' } })
+    expect(await findRun(ui, '@bellman is in 3 · every session of the agent shares them')).toMatchObject({ props: { dimColor: true } })
     expect(await findRun(ui, /^4 open · 2 unowned · oldest waiting \d+ (s|min|h|d)$/)).toBeDefined()
     expect(await findRun(ui, '2 open · 2 unowned · following, not a member')).toBeDefined()
     // Joining is the web app's (decision Q4, 2026-10-31): no Join anywhere here.
     expect((await ui.findAll({ type: 'Button' })).some(b => String(b.key).startsWith('join'))).toBe(false)
-    expect(await findRun(ui, 'Join, leave and private channels: in the web app.')).toBeDefined()
+    expect((await proseOf(ui, 'outro'))?.text).toBe('Join, leave and private channels: in the web app.')
     expect(await findRun(ui, 'counts unknown')).toBeDefined()
     // The record standard (as Inbox's `#channel`): regular at rest, so the pointer's bold shows.
     if (surface === 'terminal') {
@@ -1184,17 +1198,19 @@ test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n Ne
   await ui.unmount()
 })
 
-test('the keyboard on a channel, which has no actions: the footer still says enter open · esc back', async ($, on) => {
+test('the keyboard on a channel, which has no actions: the key bar still says enter: open · esc: back', async ($, on) => {
   ring(on)
   const { clock } = engine(on, { answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : undefined) })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
   await ui.press({ key: 'tab:channels' })
   await clock.settle()
-  expect(await findRun(ui, 'enter open · esc back')).toBeUndefined()
+  // Focused, nothing selected: the keys that work now.
+  expect(await findRun(ui, /^enter: open · esc: back$/)).toBeUndefined()
+  expect(await findRun(ui, 'tab: next · enter: open · esc: back')).toMatchObject({ props: { dimColor: true } })
   await focus($, `mark:ch:${CH_OPS}`)
   await clock.settle()
-  expect(await findRun(ui, 'enter open · esc back'), 'no footer on a record with no actions').toBeDefined()
+  expect(await findRun(ui, /^enter: open · esc: back$/), 'no key bar actions on a record with no actions').toBeDefined()
   await ui.unmount()
 })
 
@@ -1265,9 +1281,9 @@ test('a held thread tab, docked: Hand over opens the picker in place of the post
   await ui.press({ key: `handover:${T_OLD}` })
   // The picker is in the posts' window; the posts are gone while it is open; header and key bar where they were.
   expect(await postKeys()).toEqual([])
-  const order = (await ui.findAll({})).map(n => String(n.key)).filter(k => ['rule:head', `posts:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`].includes(k))
-  expect(order).toEqual(['rule:head', `posts:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
-  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { height: 5 } })
+  const order = (await ui.findAll({})).map(n => String(n.key)).filter(k => ['rule:head', `body:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`].includes(k))
+  expect(order).toEqual(['rule:head', `body:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
+  expect(await ui.find({ key: `body:${T_OLD}` })).toMatchObject({ props: { height: 5 } })
   const picks = async () => (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('pick'))
   // Head, 2 online, fold row, foot = 5: it fits.
   expect(await picks()).toEqual([`pick:${T_OLD}:on1`, `pick:${T_OLD}:on2`, `pick-offline:${T_OLD}`, `pick-new:${T_OLD}`, `pick-cancel:${T_OLD}`])
@@ -1427,7 +1443,7 @@ test('a held thread\'s tab is live (board ThreadTab): read again every 15 s whil
   let dropped = false
   const { calls, clock } = engine(on, {
     get polled() {
-      return dropped ? { ...SNAP, connection: { state: 'disconnected', detail: 'disconnected (reconnect attempt 1, in 2s)' } } : SNAP
+      return dropped ? { ...SNAP, connection: { state: 'disconnected' as const, detail: 'disconnected (reconnect attempt 1, in 2s)' } } : SNAP
     },
     answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined),
   })
@@ -1494,9 +1510,9 @@ const THREAD_A = {
   has_older: true,
   older_count: 25,
 }
-/** The posts window's inner Box: its negative bottom margin is how far up the window is. */
+/** The body window's inner Box: its negative bottom margin is how far up the window is (any tab). */
 const offOf = async (ui: { find(q: object): Promise<{ children: unknown[] } | undefined> }) =>
-  -Number(((await ui.find({ key: `posts:${T_OLD}` }))?.children[0] as { props: { marginBottom: number } }).props.marginBottom)
+  -Number(((await ui.find({ key: `body:${T_OLD}` }))?.children[0] as { props: { marginBottom: number } }).props.marginBottom)
 // `offset` where the engine would put its window (moved by `by`): the mod holds it one row in instead.
 const scrollEv = (by: number) => ({ component: 'Pane', requestId: 'einweave', offset: Math.max(0, 1 + by), by, bodyRows: 30, contentRows: 32, origin: { kind: 'person' } }) as never
 
@@ -1514,7 +1530,7 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   // Only what meets the window is drawn: 17 rows of 22 leave the root above it (a long thread stays cheap per tick).
   expect(await keys()).toEqual(['s30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
   // Overflowing: bottom-anchored, the newest at the window's foot.
-  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-end' } })
+  expect(await ui.find({ key: `body:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-end' } })
   await ui.unmount()
   // Room for all 22 rows: every post, in chat order.
   ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } } })
@@ -1522,7 +1538,7 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   expect(await keys()).toEqual(['root', 's30', 's31', 's32', 's33'].map(k => `post:${T_OLD}:${k}`))
   expect(await ui.find({ key: `tail:${T_OLD}` })).toBeUndefined()
   // It fits: the posts start under the header, not pushed to the foot with empty rows above (Jörgen 2026-11-04).
-  expect(await ui.find({ key: `posts:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-start' } })
+  expect(await ui.find({ key: `body:${T_OLD}` })).toMatchObject({ props: { justifyContent: 'flex-start' } })
   // Own posts blue with (you); new ones say so in the brand, bold.
   expect(await findRun(ui, 'Bellman (you)')).toMatchObject({ props: { color: PALETTE.blue, weight: 'bold' } })
   // Others in their own colour by id; one without an id (an older plugin) stays plain bold.
@@ -1546,12 +1562,12 @@ test('layout A, docked: posts in chat order under a pinned header and footer, th
   // Chrome A (Jörgen 2026-11-01): #channel in the brand before the title; a rule under the header and over the
   // key bar, the posts between; the key bar ends read-only. The long sentence lives on the Session tab.
   expect(await findRun(ui, '#ops')).toMatchObject({ props: { color: PALETTE.brand } })
-  const order = (await ui.findAll({})).map(n => String(n.key)).filter(k => ['rule:head', `posts:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`].includes(k))
-  expect(order).toEqual(['rule:head', `posts:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
+  const order = (await ui.findAll({})).map(n => String(n.key)).filter(k => ['rule:head', `body:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`].includes(k))
+  expect(order).toEqual(['rule:head', `body:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
   expect(await findRun(ui, 'read-only')).toMatchObject({ props: { dimColor: true } })
   expect(await findRun(ui, /Read-only · no tokens/)).toBeUndefined()
   await ui.press({ key: 'tab:session' })
-  expect(await findRun(ui, 'Thread tabs are read-only and cost no tokens. new stays new until it reaches Claude.')).toMatchObject({ props: { dimColor: true } })
+  expect(await proseOf(ui, 'note')).toEqual({ text: 'Thread tabs are read-only and cost no tokens. new stays new until it reaches Claude.', props: expect.objectContaining({ dimColor: true }) })
   await ui.unmount()
 })
 
@@ -1617,11 +1633,29 @@ test('layout A: "more" opens a capped post in place; inline (or on a desktop) th
   expect((await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith(`ln:${T_OLD}:s30:`))).toHaveLength(10)
   expect(await ui.find({ key: `more:${T_OLD}:s30` })).toBeUndefined()
   await ui.unmount()
-  const inline = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, placement: 'inline' } })
+  // Inline the frame fits the tree: while everything fits it flows (no window, no spare rows); once it does not,
+  // the same window as docked, the head and key bar pinned (one shell).
+  const inline = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, placement: 'inline', scroll: { offset: 0, bodyRows: 40 } } })
   expect((await inline.find({ key: 'pane' }))?.props).not.toHaveProperty('height')
-  expect((await inline.find({ key: `posts:${T_OLD}` }))?.props).not.toHaveProperty('height')
+  expect((await inline.find({ key: `body:${T_OLD}` }))?.props).not.toHaveProperty('height')
   expect(await inline.find({ key: `ln:${T_OLD}:root:0` })).toBeDefined()
   await inline.unmount()
+  // Inline the tree is exactly the frame: rows past it the engine draws as its own "n more" (live 2026-11-04),
+  // so no spare rows there.
+  const short = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, placement: 'inline', scroll: { offset: 0, bodyRows: 14 } } })
+  expect(await short.find({ key: 'pane' })).toMatchObject({ props: { height: 14 } })
+  expect(await short.find({ key: 'spacer:end' })).toBeUndefined()
+  expect(await short.find({ key: `body:${T_OLD}` })).toMatchObject({ props: { height: 14 - 9 } })
+  expect(await short.find({ key: `keys:${T_OLD}` })).toBeDefined()
+  await short.unmount()
+  // Shorter than the pinned parts (9) and 3 rows of body: it flows, and the engine scrolls all of it, docked or not.
+  for (const placement of ['inline', 'dock'] as const) {
+    const tiny = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, placement, scroll: { offset: 0, bodyRows: 11 } } })
+    expect((await tiny.find({ key: 'pane' }))?.props, placement).not.toHaveProperty('height')
+    expect((await tiny.find({ key: `body:${T_OLD}` }))?.props, placement).not.toHaveProperty('height')
+    expect(await tiny.find({ key: `keys:${T_OLD}` }), placement).toBeDefined()
+    await tiny.unmount()
+  }
   const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
   // A desktop draws the same lines from the doc, never the kit's Markdown over `content` (RFC-034 D6); links are the kit's Link.
   expect(await desk.find({ key: `md:${T_OLD}:root` })).toBeUndefined()
@@ -1651,6 +1685,228 @@ test('layout A: the spacers follow the window, so whatever row it opens on it sh
     expect(offsets).toEqual([])
     await ui.unmount()
   }
+})
+
+// ── The pane's one shell: every tab the same (plan 2026-11-04-mod-pinned-every-tab-plan.md) ──────────────
+
+/** The keys of the shell's parts, top to bottom, as drawn. */
+const shellOrder = async (ui: { findAll(q: object): Promise<{ key?: unknown }[]> }, id: string) =>
+  (await ui.findAll({})).map(n => String(n.key)).filter(k => ['rule:tabs', 'rule:head', `body:${id}`, 'rule:foot', `keys:${id}`].includes(k))
+
+test('every tab, docked, draws through the one shell: chrome and its head pinned, its body in the window, the key bar the last row', async ($, on) => {
+  const HELD: UiSnapshot = { ...WAITING, holds: [{ threadId: T_OLD, title: 'Older ask', channel: 'ops', quietSince: null, unseenByModel: 0, lastBy: null }] }
+  const { clock } = engine(on, {
+    polled: HELD,
+    now: Date.parse('2026-10-30T10:00:00.000Z'),
+    answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool === 'ui_channel' ? text(JSON.stringify(OPS_THREADS)) : c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined),
+  })
+  await start($, clock)
+  const rows = 24
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: rows } } })
+  // Pinned: chrome 4 (name, gap, tabs, rule) + the tab's head + its rule 1 + the key bar 2 (rule, keys).
+  const tabs: [string, string, number][] = [
+    ['tab:inbox', 'inbox', 4],
+    ['tab:held', 'held', 2],
+    ['tab:channels', 'channels', 2],
+    ['tab:session', 'session', 2],
+  ]
+  for (const [press, id, head] of tabs) {
+    await ui.press({ key: press })
+    await clock.settle()
+    expect(await ui.find({ key: 'pane' }), id).toMatchObject({ props: { height: rows + 2 } })
+    expect(await shellOrder(ui, id), id).toEqual(['rule:tabs', 'rule:head', `body:${id}`, 'rule:foot', `keys:${id}`])
+    expect(await ui.find({ key: `body:${id}` }), id).toMatchObject({ props: { height: rows - (4 + head + 1 + 2), overflow: 'hidden' } })
+  }
+  // A channel tab and a thread tab: the same parts, in the same places.
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  await ui.press({ key: `open:ch:${CH_OPS}` })
+  await clock.settle()
+  expect(await shellOrder(ui, CH_OPS)).toEqual(['rule:tabs', 'rule:head', `body:${CH_OPS}`, 'rule:foot', `keys:${CH_OPS}`])
+  expect(await ui.find({ key: `body:${CH_OPS}` })).toMatchObject({ props: { height: rows - (4 + 2 + 1 + 2) } })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  expect(await shellOrder(ui, T_OLD)).toEqual(['rule:tabs', 'rule:head', `body:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
+  // A thread's #channel and its stamp keep their cells; the title gives way (live 2026-11-04: "#einweave-bac").
+  expect(await ui.find({ key: 'head:thread:lead:0' })).toMatchObject({ props: { flexShrink: 0 } })
+  expect(await ui.find({ key: 'head:thread:right' })).toMatchObject({ props: { flexShrink: 0 } })
+  // Two opened tabs wrap the tab row to two rows at 58 cells (Inbox 29, Held 1, Channels, Session, #ops ×,
+  // Older ask × = 63): the chrome takes 5, and the window one row less.
+  expect(await ui.find({ key: `body:${T_OLD}` })).toMatchObject({ props: { height: rows - (5 + 2 + 1 + 2) } })
+  await ui.unmount()
+})
+
+test('each tab\'s head: a title row (what it is, how fresh on the right) and a status line, as the thread tab\'s', async ($, on) => {
+  const at = Date.parse('2026-10-30T10:00:00.000Z')
+  const HELD: UiSnapshot = { ...WAITING, holds: [{ threadId: T_OLD, title: 'Older ask', channel: 'ops', quietSince: null, unseenByModel: 0, lastBy: null }] }
+  const { clock } = engine(on, { polled: HELD, now: at, answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : c.tool === 'ui_channel' ? text(JSON.stringify(OPS_THREADS)) : undefined) })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  expect(await findRun(ui, 'Held 1')).toMatchObject({ props: { weight: 'bold' } })
+  expect(await findRun(ui, 'live')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'held by you · replies to these come here')).toMatchObject({ props: { color: PALETTE.brand } })
+  await ui.press({ key: 'tab:session' })
+  expect(await findRun(ui, 'Session')).toMatchObject({ props: { weight: 'bold' } })
+  expect(await findRun(ui, 'connected')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, "@bellman · this window's einweave")).toMatchObject({ props: { dimColor: true } })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  const clock2 = (ms: number) => `${String(new Date(ms).getHours()).padStart(2, '0')}:${String(new Date(ms).getMinutes()).padStart(2, '0')}`
+  expect(await findRun(ui, `Updated ${clock2(at)}`)).toMatchObject({ props: { dimColor: true } })
+  await ui.press({ key: `open:ch:${CH_OPS}` })
+  await clock.settle()
+  expect(await findRun(ui, '#ops')).toMatchObject({ props: { color: PALETTE.brand, weight: 'bold' } })
+  expect(await findRun(ui, '4 open')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'Open threads, latest activity first.')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, `Updated ${clock2(at)}`)).toBeDefined()
+  // Only the title gives way in a short row: the count and the stamp keep their cells (live 2026-11-04).
+  expect(await ui.find({ key: 'head:channel:title' })).toMatchObject({ props: { flexShrink: 1 } })
+  expect(await ui.find({ key: 'head:channel:tail:0' })).toMatchObject({ props: { flexShrink: 0 } })
+  expect(await ui.find({ key: 'head:channel:right' })).toMatchObject({ props: { flexShrink: 0 } })
+  await ui.unmount()
+})
+
+test('the key bar at rest says the keys that work now: unfocused how to reach them, focused how to move; Session claims no enter', async ($, on) => {
+  const { clock } = engine(on, { polled: WAITING })
+  await start($, clock)
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await findRun(ui, 'ctrl+x tab: keys')).toMatchObject({ props: { dimColor: true } })
+  await ui.unmount()
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, isFocused: true } })
+  expect(await findRun(ui, 'tab: next · enter: open · esc: back')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, 'ctrl+x tab: keys')).toBeUndefined()
+  await ui.press({ key: 'tab:session' })
+  expect(await findRun(ui, 'tab: next · esc: back')).toMatchObject({ props: { dimColor: true } })
+  await ui.unmount()
+  // A desktop has no keyboard ring and no hotkeys: no hint there.
+  const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  expect(await findRun(desk, 'ctrl+x tab: keys')).toBeUndefined()
+  await desk.unmount()
+})
+
+/** Eight threads aimed at the person: the Inbox's body is the heading and 8 records of 3 rows (a blank, title, meta) = 25. */
+const EIGHT = Array.from({ length: 8 }, (_, n) => ({ threadId: `t-${n + 1}`, title: `Ask ${n + 1}`, channel: 'ops', why: 'addressed' as const, hold: 'unheld' as const, quietSince: '2026-10-30T09:50:00.000Z' }))
+const MANY: UiSnapshot = { ...SNAP, waiting: { forYou: 8, channel: 0, more: false, top: EIGHT } }
+/** The Inbox's window: 20 rows less pinned 11 (chrome 4, field 4, rule, key bar 2) = 9 over 25 rows. */
+const listOff = async (ui: { find(q: object): Promise<{ children: unknown[] } | undefined> }, id = 'inbox') =>
+  -Number(((await ui.find({ key: `body:${id}` }))?.children[0] as { props: { marginBottom: number } }).props.marginBottom)
+
+test('a list lands at its top, says what it hides at the key bar\'s right end, and the wheel moves it as it moves a thread', async ($, on) => {
+  const { clock } = engine(on, { polled: MANY, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 20 } } })
+  expect(await ui.find({ key: 'body:inbox' })).toMatchObject({ props: { height: 9, justifyContent: 'flex-end' } })
+  expect(await listOff(ui)).toBe(25 - 9)
+  expect(await findRun(ui, '↓ 16')).toMatchObject({ props: { dimColor: true } })
+  // Every record is drawn, in the window or not: the keyboard's stops must all be there for Tab.
+  expect(await ui.find({ key: 'open:t-8' })).toBeDefined()
+  await $.ui.scroll({ component: 'Pane', requestId: 'einweave', offset: 4, by: 3, bodyRows: 20, contentRows: 22, origin: { kind: 'person' } } as never)
+  expect(await listOff(ui)).toBe(25 - 9 - 3)
+  expect(await findRun(ui, '↑ 3 · ↓ 13')).toBeDefined()
+  await ui.unmount()
+  // Everything fits: no cue, the body under the head.
+  const tall = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 40 } } })
+  expect(await tall.find({ key: 'body:inbox' })).toMatchObject({ props: { justifyContent: 'flex-start' } })
+  expect(await findRun(tall, /^↓|^↑/)).toBeUndefined()
+  await tall.unmount()
+})
+
+test('the window follows the keyboard: a record the ring lands on outside it comes into view, the least move that shows it', async ($, on) => {
+  ring(on)
+  const { clock } = engine(on, { polled: MANY, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, isFocused: true, scroll: { offset: 0, bodyRows: 20 } } })
+  expect(await listOff(ui)).toBe(16)
+  // t-8: rows 22-24, the body's last: its foot at the window's foot.
+  await focus($, 'mark:t-8')
+  await clock.settle()
+  expect(await listOff(ui)).toBe(0)
+  expect(await findRun(ui, '↑ 16')).toBeDefined()
+  // t-1: rows 1-3: its top at the window's top.
+  await focus($, 'mark:t-1')
+  await clock.settle()
+  expect(await listOff(ui)).toBe(25 - 9 - 1)
+  // One already in view does not move it.
+  await focus($, 'mark:t-2')
+  await clock.settle()
+  expect(await listOff(ui)).toBe(25 - 9 - 1)
+  await ui.unmount()
+})
+
+test('a list at its top stays there as rows arrive above; moved down, it stays on the rows it showed', async ($, on) => {
+  let polled: UiSnapshot = MANY
+  let rev = 1
+  const { clock } = engine(on, { get polled() { return polled }, get polledRev() { return rev }, now: Date.parse('2026-10-30T10:00:00.000Z') })
+  await start($, clock)
+  const mount = () => $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 20 } } })
+  let ui = await mount()
+  // At its top, moved there by the person: the new row shows.
+  await $.ui.scroll({ component: 'Pane', requestId: 'einweave', offset: 0, by: -1, bodyRows: 20, contentRows: 22, origin: { kind: 'person' } } as never)
+  expect(await listOff(ui)).toBe(16)
+  await ui.unmount()
+  const NEWER = { threadId: 't-0', title: 'Ask 0', channel: 'ops', why: 'addressed' as const, hold: 'unheld' as const, quietSince: '2026-10-30T09:55:00.000Z' }
+  polled = { ...MANY, waiting: { forYou: 9, channel: 0, more: false, top: [NEWER, ...EIGHT] } }
+  rev = 2
+  await clock.advance(61_000)
+  ui = await mount()
+  expect(await listOff(ui)).toBe(28 - 9)
+  // Moved down 6 rows: a row arriving above leaves it on the same records (counted from the end).
+  await $.ui.scroll({ component: 'Pane', requestId: 'einweave', offset: 4, by: 6, bodyRows: 20, contentRows: 22, origin: { kind: 'person' } } as never)
+  const before = await listOff(ui)
+  expect(before).toBe(28 - 9 - 6)
+  await ui.unmount()
+  polled = { ...MANY, waiting: { forYou: 10, channel: 0, more: false, top: [{ ...NEWER, threadId: 't-00', title: 'Ask 00' }, NEWER, ...EIGHT] } }
+  rev = 3
+  await clock.advance(61_000)
+  ui = await mount()
+  expect(await listOff(ui)).toBe(before)
+  await ui.unmount()
+})
+
+test('a new search starts its list at the top again; the thread tab\'s cue sits before read-only', async ($, on) => {
+  const { clock } = engine(on, {
+    polled: WAITING,
+    answer: c => (c.tool === 'ui_search' ? searchPageOf(Array.from({ length: 6 }, (_, n) => hitRow(`h-${n}`, `Hit ${n}`))) : c.tool === 'ui_thread' ? text(JSON.stringify(THREAD_A)) : undefined),
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 20 } } })
+  await ui.input({ key: 'search', text: 'deploy' })
+  await clock.settle()
+  const top = await listOff(ui, 'inbox:search')
+  await $.ui.scroll({ component: 'Pane', requestId: 'einweave', offset: 4, by: 3, bodyRows: 20, contentRows: 22, origin: { kind: 'person' } } as never)
+  expect(await listOff(ui, 'inbox:search')).toBe(top - 3)
+  await ui.input({ key: 'search', text: 'deploy again' })
+  await clock.settle()
+  expect(await listOff(ui, 'inbox:search')).toBe(top)
+  await ui.press({ key: 'search-clear' })
+  await clock.settle()
+  // The thread tab: the cue, a dot, read-only.
+  await ui.press({ key: `open:${T_OLD}` })
+  await clock.settle()
+  const bar = await ui.find({ key: `keys:${T_OLD}` })
+  const texts = JSON.stringify(bar)
+  expect(texts.indexOf('↑')).toBeGreaterThan(-1)
+  expect(texts.indexOf('↑')).toBeLessThan(texts.indexOf('read-only'))
+  await ui.unmount()
+})
+
+test('free text wrapped in a narrow pane counts every row it takes: the window and its cue stay exact', async ($, on) => {
+  const { clock } = engine(on, { answer: c => (c.tool === 'ui_channels' ? text(JSON.stringify(CHANNELS)) : undefined) })
+  await start($, clock)
+  // 30 columns, 28 inside: the tabs wrap to 2 rows (chrome 5), head 2, rule, key bar 2 = 10 pinned; 14 rows leave 4.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 30, scroll: { offset: 0, bodyRows: 14 } } })
+  await ui.press({ key: 'tab:channels' })
+  await clock.settle()
+  expect(await ui.find({ key: 'body:channels' })).toMatchObject({ props: { height: 4 } })
+  // Records 2 + 3 + 3 (a blank above each after the first), the outro wrapped to 2 rows + its blank = 11: 7 hidden.
+  expect(await findRun(ui, '↓ 7')).toBeDefined()
+  // At the end the outro shows, in its two rows, and the cue counts all 7 above.
+  await $.ui.scroll({ component: 'Pane', requestId: 'einweave', offset: 2, by: 100, bodyRows: 14, contentRows: 16, origin: { kind: 'person' } } as never)
+  expect((await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith('prose:outro:'))).toHaveLength(2)
+  expect(await findRun(ui, '↑ 7')).toBeDefined()
+  await ui.unmount()
 })
 
 // Claude Code before 2.1.299 has no Text `weight` and refuses a tree that names it whole: an empty pane,
@@ -1797,7 +2053,7 @@ test('Inbox search: a refusal says why; a suggestion pressed rewrites the query 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.input({ key: 'search', text: 'deploy in:#opz' })
   await clock.settle()
-  expect(await findRun(ui, 'Nothing you can read matches in:#opz. Did you mean: in:#ops, in:#infra?')).toMatchObject({ props: { color: '#e8b04a' } })
+  expect(await proseOf(ui, 'search-refused')).toEqual({ text: 'Nothing you can read matches in:#opz. Did you mean: in:#ops, in:#infra?', props: expect.objectContaining({ color: '#e8b04a' }) })
   await ui.press({ key: 'suggest:in:#ops' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'ui_search').map(c => c.args.query)).toEqual(['deploy in:#opz', 'deploy in:#ops'])
@@ -1845,8 +2101,8 @@ test('Inbox search: nothing found says so, with what to try', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.input({ key: 'search', text: 'zzz' })
   await clock.settle()
-  expect(await findRun(ui, 'Nothing matches zzz.')).toBeDefined()
-  expect(await findRun(ui, 'Fewer words, or drop a filter. Archived threads: add is:archived.')).toBeDefined()
+  expect((await proseOf(ui, 'search-none'))?.text).toBe('Nothing matches zzz.')
+  expect(await proseOf(ui, 'search-none-hint')).toEqual({ text: 'Fewer words, or drop a filter. Archived threads: add is:archived.', props: expect.objectContaining({ dimColor: true }) })
   await ui.unmount()
 })
 
