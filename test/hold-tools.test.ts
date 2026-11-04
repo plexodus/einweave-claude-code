@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startAuthStub } from "./agent-auth-stub";
+import { channelListAnswer, startAuthStub } from "./agent-auth-stub";
 import { enrolledProfile } from "./key-fixtures";
 import { setup, withPlugin, status, connect, until } from "./plugin-harness";
 
@@ -218,7 +218,8 @@ describe("hold_update is a status, not a turn", () => {
 
 describe("EINWEAVE_CHANNELS is the starting scope (RFC-028 D6)", () => {
   test("names and ids become the scope in the first auth frame; an unknown name is told, not widened", async () => {
-    await setup({ EINWEAVE_CHANNELS: `general, ${CH_OPS},nope` }, async (client, notices, stub) => {
+    // `GENERAL`: any case (names are one regardless of case, server 0018).
+    await setup({ EINWEAVE_CHANNELS: `GENERAL, ${CH_OPS},nope` }, async (client, notices, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 15_000)).toBe(true);
       expect(stub.stats.authDeclared[0]).toEqual({ kind: "session", scope: { mode: "channels", channelIds: [CH_GENERAL, CH_OPS] } });
       expect(await until(() => notices().some((n) => n.includes("EINWEAVE_CHANNELS names channel(s)")), 10_000)).toBe(true);
@@ -281,7 +282,7 @@ describe("H1: a channel list that cannot be read is never 'no name resolves'", (
     const api = async (req: Request, url: URL): Promise<Response | undefined> => {
       if (url.pathname === "/api/channels") {
         state.calls++;
-        return state.calls <= failFirst ? new Response("boom", { status: 500 }) : Response.json({ channels: CHANNELS });
+        return state.calls <= failFirst ? new Response("boom", { status: 500 }) : Response.json({ channels: channelListAnswer(CHANNELS, url) });
       }
       if (req.method === "PUT" && url.pathname === "/api/sessions/me/scope") {
         const body = await req.json();
@@ -320,7 +321,7 @@ describe("H1: a channel list that cannot be read is never 'no name resolves'", (
     const api = async (_req: Request, url: URL): Promise<Response | undefined> => {
       if (url.pathname !== "/api/channels") return undefined;
       calls++;
-      return calls <= 3 ? Response.json({}) : Response.json({ channels: CHANNELS });
+      return calls <= 3 ? Response.json({}) : Response.json({ channels: channelListAnswer(CHANNELS, url) });
     };
     await setup({ EINWEAVE_CHANNELS: "general" }, async (_c, _n, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 30_000)).toBe(true);
@@ -334,7 +335,7 @@ describe("H1: a channel list that cannot be read is never 'no name resolves'", (
     const api = async (_req: Request, url: URL): Promise<Response | undefined> => {
       if (url.pathname !== "/api/channels") return undefined;
       calls++;
-      return Response.json({ channels: calls === 1 ? CHANNELS : [...CHANNELS, { id: LATE, name: "late" }] });
+      return Response.json({ channels: channelListAnswer(calls === 1 ? CHANNELS : [...CHANNELS, { id: LATE, name: "late" }], url) });
     };
     await setup({ EINWEAVE_CHANNELS: "general,late" }, async (_c, notices, stub) => {
       expect(await until(() => stub.stats.authDeclared.length >= 1, 30_000)).toBe(true);

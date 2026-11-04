@@ -33,6 +33,8 @@ import {
   MINT_TIMEOUT_MS,
   OAuthError,
   PROTOCOL_VERSION,
+  SEARCH_MARK_END,
+  SEARCH_MARK_START,
   TAIL_MAX_MESSAGES,
   TAIL_SELECT_BG,
   TAIL_SGR,
@@ -97,6 +99,7 @@ import {
   renderHeader,
   renderMessage,
   renderTranscript,
+  snippetParts,
   softwareSigner,
   stringWidth,
   stripControlChars,
@@ -107,7 +110,7 @@ import {
   userAgent,
   viewport,
   wsHtu
-} from "../index-4rgb4r5t.js";
+} from "../index-xtm975x0.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,
@@ -143,6 +146,8 @@ export {
   MINT_TIMEOUT_MS,
   OAuthError,
   PROTOCOL_VERSION,
+  SEARCH_MARK_END,
+  SEARCH_MARK_START,
   TAIL_MAX_MESSAGES,
   TAIL_SELECT_BG,
   TAIL_SGR,
@@ -207,6 +212,7 @@ export {
   renderHeader,
   renderMessage,
   renderTranscript,
+  snippetParts,
   softwareSigner,
   stringWidth,
   stripControlChars,

@@ -34,6 +34,10 @@ const ROUTES: UiRoutes = {
     if (id === "boom") throw new Error("kaboom");
     return { thread: { id }, content: "x".repeat(200_000) };
   },
+  search: async (p) => {
+    seen.push(`search ${JSON.stringify(p)}`);
+    return { results: [] };
+  },
   tool: async (name, args) => {
     if (name !== "take") throw new UiHttpError(403, `${name} is not run from the pane`);
     return { content: [{ type: "text", text: `took ${String(args.ref)}` }] };
@@ -86,6 +90,20 @@ describe("ui server", () => {
     await get(path, "/thread/t1?before_seq=42&limit=7");
     await get(path, "/thread/t2?before_seq=-1&limit=abc");
     expect(seen.slice(-2)).toEqual(["t1 42 7", "t2 - -"]);
+  });
+
+  test("GET /search passes q, type, sort, cursor and limit decoded; no q or a bad type/sort is 400", async () => {
+    const path = join(privateDir(), "u1.sock");
+    open(path);
+    const q = encodeURIComponent('deploy "a phrase" in:#ops');
+    const res = await get(path, `/search?q=${q}&type=messages&sort=newest&cursor=${encodeURIComponent("eyJ/=")}&limit=7`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ results: [] });
+    expect(seen.at(-1)).toBe(`search ${JSON.stringify({ query: 'deploy "a phrase" in:#ops', type: "messages", sort: "newest", cursor: "eyJ/=", limit: 7 })}`);
+    await get(path, "/search?q=w");
+    expect(seen.at(-1)).toBe(`search ${JSON.stringify({ query: "w" })}`);
+    for (const url of ["/search", "/search?q=%20", "/search?q=w&type=people", "/search?q=w&sort=oldest"]) expect((await get(path, url)).status).toBe(400);
+    expect((await get(path, "/search/x?q=w")).status).toBe(404);
   });
 
   test("a failing route answers { error } with its status (a plain throw is 500); the server stays up", async () => {

@@ -53,6 +53,154 @@ export interface MyWorkspace {
     webUrl: string | null;
     links: WorkspaceLinks | null;
 }
+/** RFC-031: a principal as search names one (`PrincipalRef` on the server); null fields when none is left. */
+export interface SearchPrincipalRef {
+    id: string;
+    name: string | null;
+    handle: string | null;
+    kind: "agent" | "human";
+}
+/** RFC-031 §5: what the server understood of the query. `filters[].value` is the resolved id when the filter names something. */
+export interface SearchQueryEcho {
+    text: string;
+    filters: {
+        key: string;
+        value: string;
+        label: string;
+    }[];
+    sort: "relevance" | "newest";
+}
+export interface SearchChannelRef {
+    id: string;
+    name: string;
+    archived: boolean;
+}
+/** One page. `next` is an opaque cursor (null = last page); `total.capped` = "1000+". */
+export interface SearchResponse<T> {
+    query: SearchQueryEcho;
+    results: T[];
+    next: string | null;
+    total: {
+        count: number;
+        capped: boolean;
+    };
+}
+/** `type: "threads"`. `match` is null for a filters-only query (nothing matched text); `snippet` carries the core `SEARCH_MARK_*` marks (see `snippetParts`). */
+export interface SearchThreadRow {
+    thread: {
+        id: string;
+        title: string;
+        kind: string;
+        status: string;
+        channel: SearchChannelRef;
+        assignee: SearchPrincipalRef | null;
+        lastActivityAt: string;
+        replyCount: number;
+    };
+    match: {
+        in: "title" | "fields" | "conclusion" | "message";
+        snippet: string;
+        /** Set when `in` is "message": the best matching reply. */
+        messageId?: string;
+        /** A similar title, not a text match ("Similar titles"). */
+        fuzzy?: true;
+    } | null;
+    /** How many replies of this thread match. */
+    matchingReplies: number;
+}
+/** `type: "messages"`. */
+export interface SearchMessageRow {
+    message: {
+        id: string;
+        threadId: string;
+        seq: number;
+        sender: SearchPrincipalRef | null;
+        createdAt: string;
+    };
+    thread: {
+        id: string;
+        title: string;
+        kind: string;
+        status: string;
+    };
+    channel: SearchChannelRef;
+    snippet: string;
+}
+/** `GET /api/search/jump` — the ⌘K list. */
+export interface SearchJumpResponse {
+    channels: {
+        id: string;
+        name: string;
+        description: string | null;
+    }[];
+    principals: {
+        principalId: string;
+        kind: string;
+        handle: string;
+        displayName: string | null;
+    }[];
+    threads: {
+        id: string;
+        title: string;
+        kind: string;
+        status: string;
+        channel: {
+            id: string;
+            name: string;
+        };
+    }[];
+}
+/**
+ * A search refusal, as the body of the `ApiRequestError`: status 422 for the query codes, 400 for
+ * `invalid_param`. The server sends `error` = `code`.
+ */
+export type SearchRefusal = {
+    error: string;
+} & ({
+    code: "query_too_long";
+    limit: {
+        chars: number;
+        filters: number;
+        words: number;
+    };
+} | {
+    code: "empty_query";
+} | {
+    code: "unknown_filter";
+    token: string;
+    keys: string[];
+} | {
+    code: "unresolved_filter";
+    token: string;
+    suggestions: string[];
+} | {
+    code: "bad_date";
+    token: string;
+} | {
+    code: "invalid_param";
+    param: string;
+    message: string;
+});
+/** `api.search.query` params; the server bounds `limit` (default 20, max 50). */
+export interface SearchQueryParams {
+    q: string;
+    type?: "threads" | "messages";
+    sort?: "relevance" | "newest";
+    cursor?: string;
+    limit?: number;
+}
+/** `api.search`: the row type follows `type` (threads by default). */
+export interface SearchApi {
+    /** RFC-031: search threads (default) or messages in the acting workspace. A refused query throws `ApiRequestError` (422/400) whose body is a `SearchRefusal`. */
+    query(p: SearchQueryParams & {
+        type: "messages";
+    }): Promise<SearchResponse<SearchMessageRow>>;
+    query(p: SearchQueryParams & {
+        type?: "threads";
+    }): Promise<SearchResponse<SearchThreadRow>>;
+    /** The ⌘K jump list for what is being typed: channels, people and agents, threads. */
+    jump(q: string): Promise<SearchJumpResponse>;
+}
 /** The caller's relationship to one channel: a row of `GET /api/me/channels` (server #331). */
 export interface MyChannel {
     channelId: string;
@@ -971,6 +1119,7 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             channels: MyChannel[];
         }>;
     };
+    search: SearchApi;
     presence: {
         list: () => Promise<PresenceList>;
     };

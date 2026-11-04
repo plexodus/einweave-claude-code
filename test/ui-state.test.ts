@@ -119,7 +119,7 @@ describe("toWaiting", () => {
     expect(toWaiting({ rows: many, more: false, counts: null }).top).toHaveLength(20);
   });
 
-  test("For you newest first, then Open quiet longest first, an untimed or unparseable row last in each; sorted BEFORE the cut", () => {
+  test("For you, then Open, each newest first (no Older fold: 2026-11-03), an untimed or unparseable row last in each; sorted BEFORE the cut", () => {
     // Server order: newest first.
     const rows = [
       timed("new", "addressed", "2026-10-30T09:59:00.000Z"),
@@ -131,7 +131,7 @@ describe("toWaiting", () => {
       timed("ch-new", "channel", "2026-10-30T10:00:00.000Z"),
       timed("ch-none", "channel"),
     ];
-    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["new", "mid", "old", "bad", "none", "ch", "ch-new", "ch-none"]);
+    expect(toWaiting({ rows, more: false, counts: null }).top.map((t) => t.threadId)).toEqual(["new", "mid", "old", "bad", "none", "ch-new", "ch", "ch-none"]);
     const cut = toWaiting({ rows, more: false, counts: null }, 2);
     expect(cut.top.map((t) => t.threadId)).toEqual(["new", "mid"]);
     // Rows were cut, so there is more than shown even with no next page.

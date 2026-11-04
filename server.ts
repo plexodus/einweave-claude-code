@@ -57,8 +57,8 @@ import { readOrphanedAt, decideStaleNotice, staleNoticeText, findInstalledVersio
 import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
-import { Session, createRuntime, isApiRequestError, type Api, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
-import { deadline } from "./vendor/einweave-agent-sdk/core/index.js";
+import { Session, createRuntime, isApiRequestError, type Api, type SearchRefusal, type SearchResponse, type SearchThreadRow, type SearchMessageRow, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
+import { deadline, snippetParts, type SnippetPart } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
@@ -868,7 +868,10 @@ function feedStatus(state: "connected" | "reconnecting" | "stopped", reason?: st
 function channelIdOf(ref: string): string | null {
   const r = ref.replace(/^#/, "");
   if (UUID_ID_RE.test(r)) return r.toLowerCase();
-  return channelNameToId?.get(r) ?? null;
+  // Any case: names are one per workspace regardless of case (server migration 0018).
+  const want = r.toLowerCase();
+  for (const [name, id] of channelNameToId ?? []) if (name.toLowerCase() === want) return id;
+  return null;
 }
 const UUID_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -1365,6 +1368,7 @@ const uiRoutes: UiRoutes = {
   channels: async () => (uiGate(), await uiChannels()),
   channel: async (id) => (uiGate(), await uiChannel(id)),
   thread: async (id, page) => (uiGate(), await uiThread(id, { before_seq: page.beforeSeq, limit: page.limit })),
+  search: async (p) => (uiGate(), await searchPage(p)),
 };
 /** requireBridge() as an HTTP refusal: its text says why (not configured, not connected). */
 function uiGate(): void {
@@ -2203,24 +2207,17 @@ async function resolveChannelRef(ref: unknown): Promise<{ channelId: string; cha
     return { channelId: raw.toLowerCase(), channelName: raw.toLowerCase() };
   }
   /**
-   * `includeArchived`: an archived channel must resolve, so join/leave can say "it is
-   * archived" rather than "no such channel". Names are unique per workspace but
-   * CASE-SENSITIVE (`Ops` and `ops` can both exist), so an exact match wins; a
-   * case-insensitive one is used only when it is the only one — never a guess, since
-   * leave_channel acts on what this returns.
+   * The SERVER matches the name (`?name=`: regardless of case, NFC, in SQL — the one place names
+   * are folded; a JS toLowerCase beside SQL's lower() disagrees on some letters). `includeArchived`:
+   * an archived channel must resolve, so join/leave can say "it is archived" rather than "no such
+   * channel". Names are unique regardless of case (server 0018): one row, or none.
    */
-  const listRes = await apiFetch("/api/channels?includeArchived=true");
+  const listRes = await apiFetch(`/api/channels?includeArchived=true&name=${encodeURIComponent(raw)}`);
   if (!listRes.ok) throw new Error(`einweave API error ${listRes.status}`);
-  const all = (((await listRes.json()) as any).channels ?? []) as { id: string; name: string }[];
-  const exact = all.find((c) => c.name === raw);
-  if (exact) return { channelId: exact.id, channelName: exact.name };
-  const folded = all.filter((c) => c.name.toLowerCase() === raw.toLowerCase());
-  if (folded.length === 1) return { channelId: folded[0]!.id, channelName: folded[0]!.name };
-  if (folded.length > 1) {
-    throw new Error(
-      `"${raw}" matches several channels: ${folded.map((c) => `#${c.name} (${c.id})`).join(", ")} — pass the exact name or the id`
-    );
-  }
+  const found = (((await listRes.json()) as any).channels ?? []) as { id: string; name: string }[];
+  // More than one: a server that ignored `name` (older than this plugin) listed everything.
+  if (found.length > 1) throw new Error("This einweave server is too old to look channels up by name: ask its admin to update it.");
+  if (found[0]) return { channelId: found[0].id, channelName: found[0].name };
   throw new Error(`no channel named "${raw}" that this agent can see`);
 }
 
@@ -2768,6 +2765,30 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "search",
+      description:
+        "Search this workspace's threads and messages you may read (RFC-031) -- past discussions, " +
+        "decisions, questions, work items. Words must all match; the last word also matches as a " +
+        "prefix (3+ letters); \"a phrase\" matches in order; -word excludes. Filters narrow it: " +
+        "in:#channel from:@person with:@person sender:agent|person kind:bug|task|feature|request|" +
+        "discussion|question|work status:open|resolved|… is:answered|unanswered|archived " +
+        "assignee:@person|me no:assignee label:name has:link before:/after:/on:YYYY-MM-DD. " +
+        "Filters alone list newest first. Each thread row says where it matched and a snippet " +
+        "(hits in **bold**); read_thread(thread_id) reads it. A refused query says why and what " +
+        "would work. Before starting a thread, list_threads(query) is still the duplicate check.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Words, \"phrases\" and filters, as above (max 256 characters)." },
+          type: { type: "string", enum: ["threads", "messages"], description: "threads (default): one row per thread, best message shown; messages: every matching message." },
+          sort: { type: "string", enum: ["relevance", "newest"], description: "relevance (default with words) or newest." },
+          cursor: { type: "string", description: "The `next` of the previous page, same query." },
+          limit: { type: "number", description: "Rows per page (default 20, max 50)." },
+        },
+        required: ["query"],
+      },
+    },
+    {
       name: "list_threads",
       description:
         "List a channel's threads, most recently active first, with each thread's kind, reply " +
@@ -2996,6 +3017,22 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "ui_search",
+      description:
+        "For the einweave terminal mod, not for conversation: one search page as the PERSON views it in the mod's pane (snippets split into hit runs). Use search yourself.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          type: { type: "string", enum: ["threads", "messages"] },
+          sort: { type: "string", enum: ["relevance", "newest"] },
+          cursor: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+    {
       name: "ui_channels",
       description:
         "For the einweave terminal mod, not for conversation: the channels this agent is in or follows, with what waits in each, as the PERSON views them in the mod's pane. Use list_channels yourself.",
@@ -3196,6 +3233,120 @@ async function uiChannels() {
   }));
   return { agent: cleanOrNull(agentHandle || agentName || null), channels };
 }
+
+/** RFC-031: what `search` takes, from the model's arguments or the pane's query string. */
+export type SearchArgs = { query: string; type?: "threads" | "messages"; sort?: "relevance" | "newest"; cursor?: string; limit?: number };
+/** A refused query as the pane and the tool show it: the server's code, its token, and what it offers instead. */
+type SearchRefused = { code: string; token: string | null; suggestions: string[]; keys: string[]; message: string };
+const SEARCH_LIMIT_MAX = 50;
+type SearchView = { query: { text: string; filters: (string | null)[]; sort: string }; type: "threads" | "messages"; results: ({ snippet_parts: SnippetPart[] } & Record<string, unknown>)[]; next: string | null; total: { count: number; capped: boolean } };
+
+/** The server's refusal, phrased: what was wrong, and what would work. */
+function searchRefusalText(a: Record<string, unknown> & { code: string }): string {
+  const token = typeof a.token === "string" ? stripControlChars(a.token) : "";
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map(stripControlChars) : []);
+  switch (a.code as SearchRefusal["code"]) {
+    case "unresolved_filter": {
+      const s = list(a.suggestions);
+      // A key with nothing after it yet (`is:`, `in:`): not a miss, a question.
+      if (token.endsWith(":")) return `Pick a value for ${token}`;
+      return `Nothing you can read matches ${token}.` + (s.length ? ` Did you mean: ${s.join(", ")}?` : "");
+    }
+    case "unknown_filter":
+      return `${token} is not a filter. Filters: ${list(a.keys).map((k) => `${k}:`).join(" ")}`;
+    case "bad_date":
+      return `${token} is not a date: use YYYY-MM-DD.`;
+    case "empty_query":
+      return "Type a word or a filter to search.";
+    case "query_too_long":
+      return "That query is too long: use fewer words or filters.";
+    case "invalid_param":
+      return `Bad ${typeof a.param === "string" ? a.param : "parameter"}: ${typeof a.message === "string" ? stripControlChars(a.message) : "refused"}.`;
+    default:
+      return `Search refused (${a.code}).`;
+  }
+}
+
+/**
+ * RFC-031 `GET /api/search`, as the `search` tool and the pane's `/search` route both read it: rows
+ * with their names cleaned and each snippet split by the SDK's `snippetParts` (never a raw mark).
+ * A refused query is a value (`refused`), not a throw: both callers show it, neither treats it as broken.
+ */
+async function searchPage(a: SearchArgs): Promise<{ refused: SearchRefused } | SearchView> {
+  const limit = a.limit === undefined ? undefined : Math.max(1, Math.min(SEARCH_LIMIT_MAX, Math.floor(a.limit)));
+  let page: SearchResponse<SearchThreadRow> | SearchResponse<SearchMessageRow>;
+  try {
+    const p = { q: a.query, sort: a.sort, cursor: a.cursor, limit };
+    page = a.type === "messages"
+      ? await creds.withApi((api) => api.search.query({ ...p, type: "messages" }))
+      : await creds.withApi((api) => api.search.query({ ...p, type: "threads" }));
+  } catch (e) {
+    if (isApiRequestError(e) && (e.status === 422 || e.status === 400) && e.body && typeof e.body === "object" && typeof (e.body as { code?: unknown }).code === "string") {
+      const b = e.body as Record<string, unknown> & { code: string };
+      const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map(stripControlChars) : []);
+      const refused: SearchRefused = { code: b.code, token: cleanOrNull(b.token), suggestions: strs(b.suggestions), keys: strs(b.keys), message: searchRefusalText(b) };
+      return { refused };
+    }
+    if (isApiRequestError(e) && e.status === 404) throw new Error("This einweave server is too old for search (no /api/search): ask its admin to update it.");
+    throw new Error(apiErrorText(e));
+  }
+  const parts = (s: string): SnippetPart[] => snippetParts(stripControlChars(s));
+  const type: SearchView["type"] = a.type === "messages" ? "messages" : "threads";
+  const results =
+    type === "messages"
+      ? (page as SearchResponse<SearchMessageRow>).results.map((r) => ({
+          message_id: r.message.id,
+          thread_id: r.message.threadId,
+          thread_title: cleanOrNull(r.thread.title),
+          kind: r.thread.kind,
+          status: r.thread.status,
+          channel_id: r.channel.id,
+          channel: cleanOrNull(r.channel.name),
+          channel_archived: r.channel.archived,
+          sender: cleanOrNull(r.message.sender?.handle ? `@${r.message.sender.handle}` : r.message.sender?.name ?? null),
+          created_at: r.message.createdAt,
+          snippet_parts: parts(r.snippet),
+        }))
+      : (page as SearchResponse<SearchThreadRow>).results.map((r) => ({
+          thread_id: r.thread.id,
+          title: cleanOrNull(r.thread.title),
+          kind: r.thread.kind,
+          status: r.thread.status,
+          channel_id: r.thread.channel.id,
+          channel: cleanOrNull(r.thread.channel.name),
+          channel_archived: r.thread.channel.archived,
+          assignee: r.thread.assignee ? cleanOrNull(r.thread.assignee.handle ? `@${r.thread.assignee.handle}` : r.thread.assignee.name) : null,
+          last_activity_at: r.thread.lastActivityAt,
+          reply_count: r.thread.replyCount,
+          matched_in: r.match?.in ?? null,
+          message_id: r.match?.messageId ?? null,
+          similar_title: r.match?.fuzzy === true,
+          matching_replies: r.matchingReplies,
+          snippet_parts: r.match ? parts(r.match.snippet) : [],
+        }));
+  return {
+    query: { text: stripControlChars(page.query.text), filters: page.query.filters.map((f) => cleanOrNull(f.label)), sort: page.query.sort },
+    type,
+    results,
+    next: page.next,
+    total: page.total,
+  };
+}
+
+/** A tool's arguments as `searchPage` takes them; a bad one throws (the tool's error), before any request. */
+function searchArgs(args: Record<string, unknown>): SearchArgs {
+  const query = typeof args.query === "string" ? args.query : "";
+  if (!query.trim()) throw new Error("query is required: words and/or filters");
+  const type = args.type === "messages" ? "messages" : args.type === undefined || args.type === "threads" ? "threads" : null;
+  if (!type) throw new Error('type must be "threads" or "messages"');
+  const sort = args.sort === "newest" || args.sort === "relevance" ? args.sort : args.sort === undefined ? undefined : null;
+  if (sort === null) throw new Error('sort must be "relevance" or "newest"');
+  const limit = typeof args.limit === "number" && Number.isFinite(args.limit) ? args.limit : undefined;
+  return { query, type, sort, cursor: typeof args.cursor === "string" ? args.cursor : undefined, limit };
+}
+
+/** A snippet for a MODEL: the hits in **bold**, as Markdown reads. */
+const boldParts = (ps: SnippetPart[]) => ps.map((p) => (p.hit ? `**${p.text}**` : p.text)).join("");
 
 async function uiChannel(channelIdArg: string) {
   const channelId = channelIdArg.trim();
@@ -4440,6 +4591,23 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
         // The MCP result is a MODEL-facing tool output, which Claude Code cuts at its own limit: this path keeps the page under a budget.
         const view = await uiThread(typeof args.thread_id === "string" ? args.thread_id : "", args, { budget: UI_THREAD_BUDGET });
         return { content: [{ type: "text", text: JSON.stringify(view) }] };
+      }
+
+      case "ui_search": {
+        { const gate = requireBridge(); if (gate) return gate; }
+        return { content: [{ type: "text", text: JSON.stringify(await searchPage(searchArgs(args))) }] };
+      }
+
+      case "search": {
+        { const gate = requireBridge(); if (gate) return gate; }
+        const page = await searchPage(searchArgs(args));
+        if ("refused" in page) return { content: [{ type: "text", text: JSON.stringify({ refused: page.refused.code, hint: page.refused.message, ...(page.refused.suggestions.length ? { suggestions: page.refused.suggestions } : {}) }, null, 2) }] };
+        const results = page.results.map(({ snippet_parts, ...r }) => ({ ...r, snippet: boldParts(snippet_parts) }));
+        const n = page.total.capped ? `${page.total.count}+` : String(page.total.count);
+        const hint = results.length === 0
+          ? "Nothing matches. Try fewer words, drop a filter, or add is:archived."
+          : `${n} match${n === "1" ? "" : "es"}.` + (page.next ? " More: call again with cursor = next." : "") + (page.type === "threads" ? " read_thread(thread_id) reads one." : "");
+        return { content: [{ type: "text", text: JSON.stringify({ query: page.query, type: page.type, total: n, results, next: page.next, hint }, null, 2) }] };
       }
 
       case "ui_channels": {

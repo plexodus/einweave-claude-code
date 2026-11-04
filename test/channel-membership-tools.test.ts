@@ -29,10 +29,9 @@ const GONE = "01a11c21-175f-7000-9449-f0a07118354c";
 const OLD = "01a11c21-175f-7000-9449-f0a07118354d";
 const THREAD = "01a11c21-175f-7000-9449-f0a0711835aa";
 const MINE = "01a11c21-175f-7000-9449-f0a07118354e"; // private, this agent is in it (its last owner)
-const OPS_UPPER = "01a11c21-175f-7000-9449-f0a071183501"; // "Ops"
-const OPS_LOWER = "01a11c21-175f-7000-9449-f0a071183502"; // "ops" — names differ only in case
-const DUP_A = "01a11c21-175f-7000-9449-f0a071183503"; // "Dup"
-const DUP_B = "01a11c21-175f-7000-9449-f0a071183504"; // "dUp"
+const OPS_UPPER = "01a11c21-175f-7000-9449-f0a071183501"; // "Ops" — one channel, named in any case (server 0018)
+/** A server older than `?name=` ignores it and lists every channel. */
+let oldServer = false;
 
 type Call = { method: string; path: string };
 
@@ -66,11 +65,11 @@ function startStub() {
           { id: MINE, name: "mine" },
           { id: GONE, name: "gone" },
           { id: OPS_UPPER, name: "Ops" },
-          { id: OPS_LOWER, name: "ops" },
-          { id: DUP_A, name: "Dup" },
-          { id: DUP_B, name: "dUp" },
         ];
         if (url.searchParams.get("includeArchived") === "true") channels.push({ id: OLD, name: "old" });
+        // `name`: the server matches it regardless of case (SQL lower(), server 0018); an OLD server ignores it.
+        const name = url.searchParams.get("name");
+        if (name !== null && !oldServer) return Response.json({ channels: channels.filter((c) => c.name.toLowerCase() === name.toLowerCase()) });
         return Response.json({ channels });
       }
       const m = url.pathname.match(/^\/api\/channels\/([^/]+)\/join$/);
@@ -94,7 +93,7 @@ function startStub() {
         const id = leave[1];
         if (id === GENERAL) return Response.json({ ok: true, channelId: id, left: true, releasedItems: 2, agentsRemoved: [] });
         if (id === MINE) return Response.json({ error: "last_owner" }, { status: 409 });
-        if (id === OPS_UPPER || id === OPS_LOWER) return Response.json({ ok: true, channelId: id, left: true, releasedItems: 0, agentsRemoved: [] });
+        if (id === OPS_UPPER) return Response.json({ ok: true, channelId: id, left: true, releasedItems: 0, agentsRemoved: [] });
         if (id === OLD) return Response.json({ error: "channel_archived" }, { status: 409 });
         return Response.json({ error: "Not a member of this channel" }, { status: 404 });
       }
@@ -331,21 +330,27 @@ describe("join_channel", () => {
     expect(nf.text).toContain("not found, or not readable");
   });
 
-  test("names are case-sensitive: an exact match wins, a unique folded match is used, an ambiguous one is refused", async () => {
-    await call("leave_channel", { channel_id: "ops" });
-    expect(stub.calls).toContainEqual({ method: "POST", path: `/api/channels/${OPS_LOWER}/leave` });
-    expect(stub.calls.some((c) => c.path === `/api/channels/${OPS_UPPER}/leave`)).toBe(false);
-    stub.reset();
-    await call("leave_channel", { channel_id: "Ops" });
-    expect(stub.calls).toContainEqual({ method: "POST", path: `/api/channels/${OPS_UPPER}/leave` });
+  test("a channel is named in any case: ops, OPS and Ops are the one #Ops (names are unique regardless of case, server 0018)", async () => {
+    for (const ref of ["ops", "OPS", "#Ops"]) {
+      stub.reset();
+      await call("leave_channel", { channel_id: ref });
+      expect(stub.calls).toContainEqual({ method: "POST", path: `/api/channels/${OPS_UPPER}/leave` });
+    }
     stub.reset();
     expect((await call("join_channel", { channel_id: "GENERAL" })).text).toContain("joined #general");
-    stub.reset();
-    const amb = await call("leave_channel", { channel_id: "DUP" });
-    expect(amb.isError).toBe(true);
-    expect(amb.text).toContain("matches several channels");
-    expect(amb.text).toContain(DUP_A);
-    expect(stub.calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  test("a server that ignores ?name= (older) is said to be too old, never answered with the wrong channel", async () => {
+    oldServer = true;
+    try {
+      stub.reset();
+      const r = await call("leave_channel", { channel_id: "ops" });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain("too old to look channels up by name");
+      expect(stub.calls.some((c) => c.method === "POST")).toBe(false);
+    } finally {
+      oldServer = false;
+    }
   });
 
   test("an archived channel resolves by name, so the answer is 'archived', not 'no such channel'", async () => {
