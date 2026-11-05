@@ -228,6 +228,76 @@ test('/einweave toggles the pane as the band does; closed any other way (its ×)
   await band.unmount()
 })
 
+/** A file system for the mod's $.fs: what is written is read back, each write a newer mtime. */
+const disk = (on: Parameters<Parameters<typeof test>[1]>[1], files: Record<string, string> = {}) => {
+  let mtime = 1
+  on('fs.exists', (_$, e) => ({ value: e.path in files }))
+  on('fs.stat', (_$, e) => {
+    if (!(e.path in files)) throw new Error(`ENOENT ${e.path}`)
+    return { value: { kind: 'file', size: files[e.path]!.length, mtimeMs: mtime, isLink: false } }
+  })
+  on('fs.read', (_$, e) => ({ value: files[e.path]! }))
+  on('fs.write', (_$, e) => {
+    files[e.path] = e.text
+    mtime++
+    return { value: undefined }
+  })
+  return files
+}
+
+test('the pane\'s key: the hint names the chord bound to pane:next (else ctrl+x tab); /einweave bind asks, writes it, keeps the rest; unbind takes it out', async ($, on) => {
+  const path = '/home/me/.claude/keybindings.json'
+  const files = disk(on, { [path]: JSON.stringify({ bindings: [{ context: 'Chat', bindings: { 'shift+enter': 'chat:newline' } }] }) })
+  let answer = 'Leave it'
+  const asked: string[] = []
+  on('tool.call', ($, e) => {
+    const q = (e as { questions: { question: string }[] }).questions[0]!.question
+    asked.push(q)
+    return { result: { answers: { [q]: answer } } }
+  })
+  const { clock } = engine(on, { env: { TERM_PROGRAM: 'iTerm.app', HOME: '/home/me' } })
+  await start($, clock)
+  await $.command.run({ command: 'einweave', args: '' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { label: 'ctrl+x tab: keys', action: 'pane:next', dimColor: true } })
+  // Asked, and left: nothing written.
+  const before = files[path]
+  expect((await $.command.run({ command: 'einweave', args: 'bind' })).text).toBe('Nothing changed.')
+  expect(asked[0]).toBe(`Bind ctrl+x p to put the keyboard in the einweave pane? It is saved in ${path}.`)
+  expect(files[path]).toBe(before)
+  answer = 'Bind it'
+  expect((await $.command.run({ command: 'einweave', args: 'bind' })).text).toMatch(/^Bound: ctrl\+x p puts the keyboard in the pane/)
+  expect(JSON.parse(files[path]!).bindings).toEqual([{ context: 'Chat', bindings: { 'shift+enter': 'chat:newline', 'ctrl+x p': 'pane:next' } }])
+  await ui.redraw()
+  expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { label: 'ctrl+x p: keys' } })
+  // Another key replaces it; a default of Claude Code's is refused unasked.
+  const n = asked.length
+  expect((await $.command.run({ command: 'einweave', args: 'bind ctrl+r' })).text).toMatch(/^ctrl\+r is already history:search/)
+  expect(asked.length).toBe(n)
+  await $.command.run({ command: 'einweave', args: 'bind ctrl+x e' })
+  expect(asked.at(-1)).toMatch(/^Bind ctrl\+x e .* \(instead of ctrl\+x p\)\?/)
+  await ui.redraw()
+  expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { label: 'ctrl+x e: keys' } })
+  answer = 'Remove it'
+  expect((await $.command.run({ command: 'einweave', args: 'unbind' })).text).toMatch(/^Unbound/)
+  expect(JSON.parse(files[path]!).bindings).toEqual([{ context: 'Chat', bindings: { 'shift+enter': 'chat:newline' } }])
+  await ui.redraw()
+  expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { label: 'ctrl+x tab: keys' } })
+  // A press of it (the chord, or a click) opens the pane with the keyboard.
+  await ui.press({ key: 'rest' })
+  await ui.unmount()
+})
+
+test('the pane\'s key lives where CLAUDE_CONFIG_DIR says; no file there, bind makes one', async ($, on) => {
+  const files = disk(on)
+  on('tool.call', ($, e) => ({ result: { answers: { [(e as { questions: { question: string }[] }).questions[0]!.question]: 'Bind it' } } }))
+  const { clock } = engine(on, { env: { TERM_PROGRAM: 'iTerm.app', HOME: '/home/me', CLAUDE_CONFIG_DIR: '/cfg/' } })
+  await start($, clock)
+  await $.command.run({ command: 'einweave', args: 'bind' })
+  expect(Object.keys(files)).toEqual(['/cfg/keybindings.json'])
+  expect(JSON.parse(files['/cfg/keybindings.json']!).bindings).toEqual([{ context: 'Chat', bindings: { 'ctrl+x p': 'pane:next' } }])
+})
+
 test('a relay started against an older plugin, which refuses watch, leaves the poll in charge', async ($, on) => {
   const { calls, clock } = engine(on, { pushed: [JSON.stringify({ ok: false, error: 'bad request' }) + '\n'] })
   await start($, clock)
@@ -1772,17 +1842,17 @@ test('the key bar at rest says the keys that work now: unfocused how to reach th
   const { clock } = engine(on, { polled: WAITING })
   await start($, clock)
   let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await findRun(ui, 'ctrl+x tab: keys')).toMatchObject({ props: { dimColor: true } })
+  expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { label: 'ctrl+x tab: keys', dimColor: true } })
   await ui.unmount()
   ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, isFocused: true } })
   expect(await findRun(ui, 'tab: next · enter: open · esc: back')).toMatchObject({ props: { dimColor: true } })
-  expect(await findRun(ui, 'ctrl+x tab: keys')).toBeUndefined()
+  expect((await ui.find({ key: 'rest' }))?.props.label).toBeUndefined()
   await ui.press({ key: 'tab:session' })
   expect(await findRun(ui, 'tab: next · esc: back')).toMatchObject({ props: { dimColor: true } })
   await ui.unmount()
   // A desktop has no keyboard ring and no hotkeys: no hint there.
   const desk = await $.ui.mount({ ...PANE, surface: 'vscode' })
-  expect(await findRun(desk, 'ctrl+x tab: keys')).toBeUndefined()
+  expect(await desk.find({ key: 'rest' })).toBeUndefined()
   await desk.unmount()
 })
 

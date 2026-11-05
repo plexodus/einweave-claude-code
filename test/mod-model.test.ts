@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, arrowTarget, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, arrowTarget, bindKeys, chordProblem, paneChord, unbindKeys, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, leadOf, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
 } from "../mod/model";
@@ -128,6 +128,62 @@ describe("parseCommand", () => {
     const u = parseCommand("frobnicate 3");
     expect(u.kind).toBe("usage");
     expect(u.kind === "usage" && u.text).toContain("/einweave take [N|id]");
+  });
+});
+
+describe("the pane's key (keybindings.json)", () => {
+  const file = (bindings: unknown[]) => JSON.stringify({ $schema: "s", bindings });
+  test("paneChord: a chord bound to pane:next where the prompt hears it (Chat, Global); none elsewhere, or in a file Claude Code would not read", () => {
+    expect(paneChord(file([{ context: "Chat", bindings: { "ctrl+x p": "pane:next" } }]))).toBe("ctrl+x p");
+    expect(paneChord(file([{ context: "Global", bindings: { "ctrl+k p": "pane:next" } }]))).toBe("ctrl+k p");
+    expect(paneChord(file([{ context: "Pane", bindings: { "ctrl+x p": "pane:next" } }]))).toBeNull();
+    expect(paneChord(file([{ context: "Chat", bindings: { "ctrl+x p": null } }]))).toBeNull();
+    expect([paneChord(null), paneChord(""), paneChord("{nope"), paneChord("[]"), paneChord('{"bindings":{}}')]).toEqual([null, null, null, null, null]);
+  });
+  test("bindKeys: adds ctrl+x p to the Chat block and keeps the rest; a new file has the schema; bound already, taken, or unreadable writes nothing", () => {
+    const mine = file([{ context: "Chat", bindings: { "shift+enter": "chat:newline" } }, { context: "Pane", bindings: { "ctrl+x x": null } }]);
+    const w = bindKeys(mine);
+    expect(w.kind).toBe("write");
+    expect(JSON.parse((w as { text: string }).text)).toEqual({ $schema: "s", bindings: [{ context: "Chat", bindings: { "shift+enter": "chat:newline", "ctrl+x p": "pane:next" } }, { context: "Pane", bindings: { "ctrl+x x": null } }] });
+    expect(paneChord((w as { text: string }).text)).toBe("ctrl+x p");
+    const fresh = bindKeys(null) as { kind: string; text: string };
+    expect(JSON.parse(fresh.text)).toEqual({ $schema: "https://www.schemastore.org/claude-code-keybindings.json", $docs: "https://code.claude.com/docs/en/keybindings", bindings: [{ context: "Chat", bindings: { "ctrl+x p": "pane:next" } }] });
+    expect(JSON.parse((bindKeys(file([{ context: "Global", bindings: {} }])) as { text: string }).text).bindings).toEqual([{ context: "Global", bindings: {} }, { context: "Chat", bindings: { "ctrl+x p": "pane:next" } }]);
+    expect(bindKeys(file([{ context: "Global", bindings: { "ctrl+k p": "pane:next" } }]))).toEqual({ kind: "same", chord: "ctrl+k p" });
+    expect(bindKeys(file([{ context: "Global", bindings: { "ctrl+x p": "app:redraw" } }]))).toEqual({ kind: "taken", action: "app:redraw" });
+    expect(bindKeys("{nope")).toEqual({ kind: "unreadable" });
+  });
+  test("bindKeys with a chord of the person's: replaces the one bound before; refuses a default of Claude Code's unless the file unbound it", () => {
+    const had = file([{ context: "Chat", bindings: { "ctrl+x p": "pane:next" } }]);
+    const w = bindKeys(had, "ctrl+x e") as { kind: string; text: string; was: string | null };
+    expect(w.kind).toBe("write");
+    expect(w.was).toBe("ctrl+x p");
+    expect(JSON.parse(w.text).bindings).toEqual([{ context: "Chat", bindings: { "ctrl+x e": "pane:next" } }]);
+    expect(bindKeys(had, "ctrl+r")).toEqual({ kind: "taken", action: "history:search" });
+    expect(bindKeys(had, "ctrl+x tab")).toEqual({ kind: "taken", action: "abovePrompt:focus" });
+    expect(bindKeys(file([{ context: "Chat", bindings: { "ctrl+r": null } }]), "ctrl+r").kind).toBe("write");
+    expect(bindKeys(had, "p").kind).toBe("bad");
+  });
+
+  test("chordProblem: one or two keystrokes, real modifiers, the first held (ctrl, alt, meta, cmd); not the terminal's keys, nor a prefix of Claude Code's chords", () => {
+    expect([chordProblem("ctrl+x p"), chordProblem("ctrl+x ctrl+p"), chordProblem("alt+e"), chordProblem("ctrl+shift+e")]).toEqual([null, null, null, null]);
+    expect(chordProblem("p")).toMatch(/first keystroke/);
+    expect(chordProblem("shift+p")).toMatch(/first keystroke/);
+    expect(chordProblem("ctl+p")).toMatch(/not a key/);
+    expect(chordProblem("ctrl+x p q")).toMatch(/one or two/);
+    expect(chordProblem("ctrl+c")).toMatch(/kept/);
+    expect(chordProblem("ctrl+x")).toMatch(/starts Claude Code's own chords/);
+    expect(chordProblem("")).toMatch(/one or two/);
+  });
+
+  test("unbindKeys: takes out every prompt chord bound to pane:next, keeps the rest; nothing bound writes nothing", () => {
+    const both = file([{ context: "Chat", bindings: { "shift+enter": "chat:newline", "ctrl+x p": "pane:next" } }, { context: "Global", bindings: { "ctrl+k p": "pane:next" } }, { context: "Pane", bindings: { "ctrl+x n": "pane:next" } }]);
+    const w = unbindKeys(both) as { kind: string; text: string };
+    expect(JSON.parse(w.text).bindings).toEqual([{ context: "Chat", bindings: { "shift+enter": "chat:newline" } }, { context: "Global", bindings: {} }, { context: "Pane", bindings: { "ctrl+x n": "pane:next" } }]);
+    expect(paneChord(w.text)).toBeNull();
+    expect(unbindKeys(file([]))).toEqual({ kind: "same", chord: null });
+    expect(unbindKeys(null)).toEqual({ kind: "same", chord: null });
+    expect(unbindKeys("{nope")).toEqual({ kind: "unreadable" });
   });
 });
 
@@ -413,6 +469,8 @@ describe("the Inbox and thread tabs", () => {
     expect(parseCommand("take 2")).toEqual({ kind: "take", ref: "2" });
     expect(parseCommand("search release notes")).toEqual({ kind: "search", words: "release notes" });
     expect(parseCommand("search").kind).toBe("usage");
+    expect([parseCommand("bind"), parseCommand("unbind"), parseCommand("BIND")]).toEqual([{ kind: "bind" }, { kind: "unbind" }, { kind: "bind" }]);
+    expect(parseCommand("bind  Ctrl+X   E")).toEqual({ kind: "bind", chord: "ctrl+x e" });
   });
 });
 

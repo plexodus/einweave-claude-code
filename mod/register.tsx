@@ -12,7 +12,7 @@ import type { ButtonProps, EngineInterface, Register, RenderElement } from 'clau
 
 import type { ChannelView, OpenTab, PaneScroll, PaneTabs, ThreadView, UiSnapshot } from '../types'
 import {
-  applySnapshot, arrowTarget, channelMeta, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
+  applySnapshot, arrowTarget, bindKeys, channelMeta, paneChord, PANE_ACTION, PANE_CHORD, unbindKeys, claudeCodeTooOld, MIN_CLAUDE_CODE, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, focusTarget, fold, fromTool, holdBadge, inbox,
   indicator, needsBand, newestKey, newSessionCommand, NO_CHANNELS, OLDER_PAGE, olderCursor, openTab, PALETTE, parseCommand, parseLine, quietFor, recordOf, refreshed, scopeText, senderColor,
   scrollBy, shownTab, stateLine, statusSummary, tabLabel, tabLit, tabRows, tabWidth, takeOutcome, textOf, threadLayout, threadView, withOlder, BAND_GRACE_MS,
   cueText, hidden, landOff, revealOff, stack, windowOff, type Anchor, type Stack,
@@ -187,6 +187,60 @@ async function togglePane($: EngineInterface): Promise<{ isPlaced: boolean } | n
   const opened = await $.ui.open({ id: PANE, title: 'einweave' })
   await update($, paneUp, () => true)
   return opened
+}
+
+/** Claude Code's keybindings.json: where the person binds the key that puts the keyboard in the pane. */
+async function keysPath($: EngineInterface): Promise<string> {
+  const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${(await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '~'}/.claude`
+  return `${dir.replace(/[\\/]+$/, '')}/keybindings.json`
+}
+
+async function readKeys($: EngineInterface, path: string): Promise<string | null> {
+  return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : null
+}
+
+/** The chord bound to PANE_ACTION, read again only when the file changed (each pane draw asks). */
+let chordSeen: { path: string; mtime: number; chord: string | null } | null = null
+async function boundChord($: EngineInterface): Promise<string | null> {
+  try {
+    const path = await keysPath($)
+    const mtime = (await $.fs.exists(path)) ? (await $.fs.stat(path)).mtimeMs : -1
+    if (chordSeen?.path === path && chordSeen.mtime === mtime) return chordSeen.chord
+    const chord = mtime < 0 ? null : paneChord(await readKeys($, path))
+    chordSeen = { path, mtime, chord }
+    return chord
+  } catch {
+    return null
+  }
+}
+
+/** `/einweave bind | unbind`: the person's keybindings.json changed only after they said yes, the rest of it kept. */
+async function editKeys($: EngineInterface, verb: 'bind' | 'unbind', asked?: string): Promise<string> {
+  const chord = asked ?? PANE_CHORD
+  const path = await keysPath($)
+  const text = await readKeys($, path)
+  const edit = verb === 'bind' ? bindKeys(text, asked) : unbindKeys(text)
+  if (edit.kind === 'bad') return `Not bound: ${edit.why}. Nothing changed.`
+  if (edit.kind === 'unreadable') return `${path} is not a keybindings file Claude Code can read; nothing changed.`
+  if (edit.kind === 'taken') return `${chord} is already ${edit.action}; nothing changed. Try another: /einweave bind ctrl+x e`
+  if (edit.kind === 'same') return edit.chord ? `${edit.chord} already puts the keyboard in the pane (${path}). Another key: /einweave bind <key>, e.g. ctrl+x e.` : `No key puts the keyboard in the pane (${path}); nothing to remove.`
+  const question = verb === 'bind'
+    ? `Bind ${chord} to put the keyboard in the einweave pane${edit.was ? ` (instead of ${edit.was})` : ''}? It is saved in ${path}.`
+    : `Remove ${edit.was}, the key that puts the keyboard in the einweave pane, from ${path}?`
+  const yes = verb === 'bind' ? 'Bind it' : 'Remove it'
+  let answer = ''
+  try {
+    answer = await $.ui.ask(question, [yes, 'Leave it'])
+  } catch {
+    return 'Nothing changed.'
+  }
+  if (answer !== yes) return 'Nothing changed.'
+  await $.fs.write(path, edit.text)
+  chordSeen = null
+  $.ui.invalidate('ui.render')
+  return verb === 'bind'
+    ? `Bound: ${chord} puts the keyboard in the pane from an empty prompt, and in the pane hands it back. Undo: /einweave unbind.`
+    : `Unbound. ctrl+x tab still reaches the pane, after the band's buttons.`
 }
 
 /** Take this session back from the window that took it over: the person pressed for it, so no question. */
@@ -572,6 +626,10 @@ export const register: Register = on => {
         const opened = await togglePane($)
         return !opened || opened.isPlaced ? {} : { text: `The pane waits for a wider terminal. ${indicator(await read($, view), await $.clock.now()).text}` }
       }
+      case 'bind':
+        return { text: await editKeys($, 'bind', action.chord) }
+      case 'unbind':
+        return { text: await editKeys($, 'unbind') }
       case 'usage':
         return { text: action.text }
       case 'connect':
@@ -1871,10 +1929,13 @@ export const register: Register = on => {
     )
     // The key bar, the pane's last row on every tab: the actions of what is selected, on their keys (the thread,
     // or the record the keyboard is on); else the keys that work now. At its right end, the rows the window hides.
+    // Not on the pane: the key that puts the keyboard here. ctrl+x tab stops at every band Button first, so a
+    // chord bound to PANE_ACTION presses this from the prompt, past the band (/einweave bind; live 2026-11-05).
+    const chord = desk || keys ? null : await boundChord($)
     const resting = desk ? null : keys ? (
       <Text key="rest" dimColor>{tab === 'session' ? 'tab: next · esc: back' : 'tab: next · enter: open · esc: back'}</Text>
     ) : (
-      <Text key="rest" dimColor>ctrl+x tab: keys</Text>
+      <Button key="rest" plain dimColor action={PANE_ACTION} label={`${chord ?? 'ctrl+x tab'}: keys`} onPress={() => detach($.ui.open({ id: PANE, title: 'einweave', focus: true }))} />
     )
     const left =
       frame.keys ??
