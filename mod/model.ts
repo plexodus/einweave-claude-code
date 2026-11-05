@@ -194,6 +194,8 @@ export function stateLine(v: View, now: number): Seg[] {
 
 export type Action =
   | { kind: 'pane' }
+  | { kind: 'bind'; chord?: string }
+  | { kind: 'unbind' }
   | { kind: 'tool'; tool: string; args: Record<string, unknown> }
   | { kind: 'connect' }
   | { kind: 'status'; full: boolean }
@@ -203,6 +205,7 @@ export type Action =
 
 export const USAGE = [
   '/einweave                       open or close the pane',
+  '/einweave bind [chord] | unbind a key that puts the keyboard in the pane, past the band (ctrl+x p)',
   '/einweave status [full]         connection, session and what waits (full: every field)',
   '/einweave connect | disconnect  join or leave einweave in this session',
   '/einweave rename <name>         rename this session ("" clears)',
@@ -214,6 +217,131 @@ export const USAGE = [
   '/einweave search <words>        search threads and messages (filters: in:#ch from:@who is:open …)',
 ].join('\n')
 
+/**
+ * The engine action a pane Button answers from the prompt. Claude Code has no action that focuses a pane and
+ * ctrl+x tab stops at every band Button first (live 2026-11-05); a Button's `action` is pressed by the chord the
+ * person bound to it, and that press may give the pane the keyboard. `pane:next` has no default key; inside a
+ * pane the engine's own handler takes it, which hands the keyboard back: a toggle.
+ */
+export const PANE_ACTION = 'pane:next'
+/** What `/einweave bind` binds: ctrl+x, as the band's ctrl+x ctrl+a; no default binding has it. */
+export const PANE_CHORD = 'ctrl+x p'
+/** The keybinding contexts the prompt hears. */
+const PROMPT_CONTEXTS: readonly string[] = ['Chat', 'Global']
+const KEYS_HEAD = { $schema: 'https://www.schemastore.org/claude-code-keybindings.json', $docs: 'https://code.claude.com/docs/en/keybindings' }
+
+type KeyBlock = { context?: unknown; bindings?: unknown }
+type KeyFile = Record<string, unknown> & { bindings?: unknown }
+
+/** keybindings.json's text → its object; null when it is not one Claude Code would read. Absent or blank: an empty one. */
+function keyFile(text: string | null): KeyFile | null {
+  if (text == null || !text.trim()) return { ...KEYS_HEAD, bindings: [] }
+  try {
+    const o: unknown = JSON.parse(text)
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+    const f = o as KeyFile
+    return f.bindings === undefined || Array.isArray(f.bindings) ? f : null
+  } catch {
+    return null
+  }
+}
+
+const promptBlock = (b: unknown): b is { context: string; bindings: Record<string, unknown> } =>
+  !!b && typeof b === 'object' && PROMPT_CONTEXTS.includes(String((b as KeyBlock).context)) &&
+  !!(b as KeyBlock).bindings && typeof (b as KeyBlock).bindings === 'object' && !Array.isArray((b as KeyBlock).bindings)
+
+/** The chord the person bound to PANE_ACTION where the prompt hears it; null when none (or the file is unreadable). */
+export function paneChord(text: string | null): string | null {
+  const f = keyFile(text)
+  let chord: string | null = null
+  for (const b of (f?.bindings as unknown[] | undefined) ?? []) {
+    if (!promptBlock(b)) continue
+    for (const [k, v] of Object.entries(b.bindings)) if (v === PANE_ACTION) chord = k
+  }
+  return chord
+}
+
+export type KeysEdit =
+  | { kind: 'write'; text: string; was: string | null }
+  | { kind: 'same'; chord: string | null }
+  | { kind: 'taken'; action: string }
+  | { kind: 'bad'; why: string }
+  | { kind: 'unreadable' }
+
+/** A chord as the person typed it → as keybindings.json spells it: lower case, one space between keystrokes. */
+export function normChord(chord: string): string {
+  return chord.trim().toLowerCase().split(/\s+/).join(' ')
+}
+
+const MODS = new Set(['ctrl', 'control', 'alt', 'opt', 'option', 'meta', 'shift', 'cmd', 'command', 'super', 'win'])
+const HOLDS = new Set(['ctrl', 'control', 'alt', 'opt', 'option', 'meta', 'cmd', 'command', 'super', 'win'])
+/** Keys a terminal cannot tell apart from another, or that Claude Code keeps (its keybindings docs). */
+const RESERVED = new Set(['ctrl+c', 'ctrl+d', 'ctrl+m', 'ctrl+[', 'ctrl+i', 'ctrl+h', 'ctrl+z', 'ctrl+\\'])
+/**
+ * Claude Code's default keys where the prompt hears them (Global, Chat), from its keybindings list (2.1.318).
+ * A bind over one would take that action away; the person's own file is checked as well.
+ */
+const PROMPT_DEFAULTS: Readonly<Record<string, string>> = {
+  'ctrl+t': 'app:toggleTodos', 'ctrl+o': 'app:toggleTranscript', 'ctrl+shift+b': 'app:toggleBrief', 'ctrl+up': 'app:diffFileListUp',
+  'meta+up': 'app:diffFileListUp', 'ctrl+down': 'app:diffFileListDown', 'meta+down': 'app:diffFileListDown', 'ctrl+]': 'app:openArtifact',
+  'ctrl+r': 'history:search', 'ctrl+x ctrl+k': 'chat:killAgents', 'meta+p': 'chat:modelPicker', 'meta+o': 'chat:fastMode',
+  'ctrl+y': 'chat:defaultToNewerModel', 'meta+t': 'chat:thinkingToggle', 'meta+w': 'chat:workflowKeywordToggle', 'ctrl+x enter': 'chat:queueSubmit',
+  'ctrl+x ctrl+s': 'chat:sendNow', 'ctrl+enter': 'chat:sendNow', 'ctrl+j': 'chat:newline', 'ctrl+_': 'chat:undo', 'ctrl+-': 'chat:undo',
+  'ctrl+shift+-': 'chat:undo', 'ctrl+shift+_': 'chat:undo', 'ctrl+x ctrl+e': 'chat:externalEditor', 'ctrl+g': 'chat:externalEditor',
+  'ctrl+s': 'chat:stash', 'ctrl+v': 'chat:imagePaste', 'ctrl+l': 'chat:clearInput', 'cmd+k': 'chat:clearScreen',
+  'ctrl+x ctrl+a': 'abovePrompt:toggle', 'ctrl+x tab': 'abovePrompt:focus', 'ctrl+x b': 'app:cycleDiffBase', 'ctrl+x x': 'pane:close',
+}
+
+/** Why `chord` cannot be the pane's key; null when it can. Its first keystroke holds a modifier (a bare key types). */
+export function chordProblem(chord: string): string | null {
+  const strokes = chord.split(' ')
+  if (!chord || strokes.length > 2) return 'a key is one or two keystrokes, e.g. ctrl+x p'
+  for (const k of strokes) {
+    const parts = k.split('+')
+    const key = parts.pop()
+    if (!key || parts.some(m => !MODS.has(m))) return `"${k}" is not a key: modifiers are ctrl, alt, meta, shift, cmd`
+  }
+  if (!strokes[0]!.split('+').slice(0, -1).some(m => HOLDS.has(m))) return 'its first keystroke needs ctrl, alt, meta or cmd (a bare key would be typed)'
+  if (RESERVED.has(strokes[0]!) && strokes.length === 1) return `${chord} is kept by the terminal or Claude Code`
+  if (strokes.length === 1 && Object.keys(PROMPT_DEFAULTS).some(d => d.startsWith(`${chord} `))) return `${chord} starts Claude Code's own chords (${chord} …)`
+  return null
+}
+
+/**
+ * `/einweave bind [chord]`: keybindings.json with `chord` → PANE_ACTION in its Chat block, any earlier one taken
+ * out, the rest kept. No chord: PANE_CHORD, unless a key is bound already (the person's choice stands).
+ */
+export function bindKeys(text: string | null, asked?: string): KeysEdit {
+  const chord = asked ?? PANE_CHORD
+  const why = chordProblem(chord)
+  if (why) return { kind: 'bad', why }
+  const f = keyFile(text)
+  if (!f) return { kind: 'unreadable' }
+  const was = paneChord(text)
+  if (was && (was === chord || asked === undefined)) return { kind: 'same', chord: was }
+  const blocks = (f.bindings as unknown[] | undefined) ?? []
+  for (const b of blocks) if (promptBlock(b) && chord in b.bindings && b.bindings[chord] !== PANE_ACTION && b.bindings[chord] !== null) return { kind: 'taken', action: String(b.bindings[chord]) }
+  const unset = blocks.some(b => promptBlock(b) && chord in b.bindings && b.bindings[chord] === null)
+  if (PROMPT_DEFAULTS[chord] && !unset) return { kind: 'taken', action: PROMPT_DEFAULTS[chord]! }
+  const kept = blocks.map(b => (promptBlock(b) ? { ...b, bindings: Object.fromEntries(Object.entries(b.bindings).filter(([, v]) => v !== PANE_ACTION)) } : b))
+  const chat = kept.find(b => promptBlock(b) && b.context === 'Chat')
+  const next = chat
+    ? kept.map(b => (b === chat ? { ...(b as object), bindings: { ...(b as { bindings: object }).bindings, [chord]: PANE_ACTION } } : b))
+    : [...kept, { context: 'Chat', bindings: { [chord]: PANE_ACTION } }]
+  return { kind: 'write', text: JSON.stringify({ ...f, bindings: next }, null, 2) + '\n', was }
+}
+
+/** `/einweave unbind`: keybindings.json with every prompt chord bound to PANE_ACTION taken out, everything else kept. */
+export function unbindKeys(text: string | null): KeysEdit {
+  const f = keyFile(text)
+  if (!f) return { kind: 'unreadable' }
+  if (!paneChord(text)) return { kind: 'same', chord: null }
+  const blocks = (f.bindings as unknown[]).map(b =>
+    promptBlock(b) ? { ...b, bindings: Object.fromEntries(Object.entries(b.bindings).filter(([, v]) => v !== PANE_ACTION)) } : b,
+  )
+  return { kind: 'write', text: JSON.stringify({ ...f, bindings: blocks }, null, 2) + '\n', was: paneChord(text) }
+}
+
 /** `/einweave <verb> <rest>` → what to do. Every tool named here is the plugin's own. */
 export function parseCommand(args: string): Action {
   const trimmed = args.trim()
@@ -223,6 +351,10 @@ export function parseCommand(args: string): Action {
   switch (verb) {
     case '':
       return { kind: 'pane' }
+    case 'bind':
+      return rest ? { kind: 'bind', chord: normChord(rest) } : { kind: 'bind' }
+    case 'unbind':
+      return { kind: 'unbind' }
     case 'status':
       return { kind: 'status', full: rest.toLowerCase() === 'full' }
     case 'connect':
