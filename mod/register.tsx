@@ -68,8 +68,12 @@ const MIN_ROOM = 3
 const PANE_PAD = 1
 /** The mark left on the record the keyboard was on once Escape handed the keyboard back: where it lands on return. */
 const MARK_AWAY = '#4a4a4a'
-/** The keyboard's and the pointer's mark: the light bar the engine's focus inversion draws (TabStates board). */
-const MARK_ON = '#e4e4e4'
+/**
+ * The keyboard's and the pointer's mark: the terminal's own inversion, the bar the engine's focus ring draws
+ * on the title row (TabStates board). A colour of our own drew the rows below a shade apart from that one
+ * (#e4e4e4 against the terminal's text colour, Jörgen 2026-11-05): every row inverts, so all match in any theme.
+ */
+const MARK_ON = { inverse: true } as const
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
@@ -286,18 +290,30 @@ async function takeThread($: EngineInterface, ref: string): Promise<string> {
   return text
 }
 
+/** The pane held the keyboard when last drawn: a focus request waits, unanswered, while the prompt holds it. */
+let paneKeys = false
+
 /**
  * Every change to the tabs goes through here: one that changes the tab shown closes the Hand over picker,
  * so going back to the tab it opened on does not bring it back (Jörgen 2026-11-04: closed on any tab switch).
+ * It also lets go of the keyboard's record and, while the pane holds the keyboard, puts the ring on the tab
+ * now shown (Jörgen 2026-11-05): the element the ring was on is gone, and the engine re-homed the ring by
+ * POSITION, unasked and telling no hook (a click on Held left it on the 2nd record's Release, on Channels
+ * on the 4th mark, the 11th element both times), while the old record was still drawn as the keyboard's.
  */
 async function setTabs($: EngineInterface, f: (t: PaneTabs) => PaneTabs): Promise<void> {
   let moved = false
+  let shown = ''
   await update($, tabs, t => {
     const next = f(t)
-    moved = shownTab(next) !== shownTab(t)
+    shown = shownTab(next)
+    moved = shown !== shownTab(t)
     return next
   })
-  if (moved) await update($, handover, () => NO_HANDOVER)
+  if (!moved) return
+  await update($, handover, () => NO_HANDOVER)
+  await update($, focused, () => '')
+  if (paneKeys) detach($.ui.focus({ requestId: PANE, key: `tab:${shown}` }).catch(() => {}))
 }
 
 /** Read a thread tab's content with `ui_thread`: the person's view, which neither marks read nor acks. */
@@ -836,6 +852,7 @@ export const register: Register = on => {
     // Escape hands the keyboard back without a ui.focus: the record stays, drawn as where the keyboard was.
     const f = await read($, focused)
     const keys = e.props.isFocused
+    paneKeys = keys
     let footActs: Act[] = []
     // The keyboard is on a record: the footer is drawn, its actions or none (a channel has none, enter still opens it).
     let footOn = false
@@ -969,7 +986,7 @@ export const register: Register = on => {
       // The mark: one bar down every row of the record (TabStates board). Light under the keyboard (on the title
       // row the engine's inversion of the mark's Button draws it) and under the pointer; Escape's grey.
       const markCell = (row: number) => (
-        <Text {...(row > 0 && hot ? { backgroundColor: MARK_ON } : away ? { backgroundColor: MARK_AWAY } : {})} hover={{ backgroundColor: MARK_ON }}> </Text>
+        <Text {...(row > 0 && hot ? MARK_ON : away ? { backgroundColor: MARK_AWAY } : {})} hover={MARK_ON}> </Text>
       )
       // The record's Box is the ONE keyed Box in it: every hover inside (title, meta, mark, actions) lights while the
       // pointer is anywhere on the record. A row Box with a key of its own scopes its hovers to that row (kit

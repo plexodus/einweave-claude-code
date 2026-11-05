@@ -1239,6 +1239,26 @@ test('the keyboard stops on marks only: a move onto a record\'s title or Take go
   await ui.unmount()
 })
 
+test('a tab change lets go of the keyboard\'s record: back on its tab nothing is drawn as the keyboard\'s', async ($, on) => {
+  // Jörgen 2026-11-05: a click on a tab left the record the keyboard was on as the keyboard's (the engine re-homed its
+  // ring by position, telling no hook), and the next tab drew a ring where nothing said one was. The tab change itself
+  // now drops the record and, while the pane holds the keyboard, puts the ring on the tab chosen (that move: live).
+  ring(on)
+  const { clock } = engine(on, { polled: WAITING })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
+  await focus($, `mark:${T_NEW}`)
+  await clock.settle()
+  expect(await ui.find({ key: 'foot:take' })).toBeDefined()
+  await ui.press({ key: 'tab:held' })
+  await clock.settle()
+  await ui.press({ key: 'tab:inbox' })
+  await clock.settle()
+  expect(await ui.find({ key: 'foot:take' })).toBeUndefined()
+  expect((await metaRow(ui, T_NEW))?.children?.[0]?.props).not.toHaveProperty('inverse')
+  await ui.unmount()
+})
+
 test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n New), none inline on hotkeys; the pane still draws', async ($, on) => {
   ring(on)
   const { calls, clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'take' ? text('This session now holds Newer ask.') : undefined) })
@@ -1256,8 +1276,10 @@ test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n Ne
   expect((await findRun(ui, 'addressed to you · unheld'))?.props).not.toHaveProperty('dimColor')
   expect(await findRun(ui, 'you took part · holder offline')).toMatchObject({ props: { dimColor: true } })
   // The keyboard's mark runs down the meta row too (the engine inverts only the title row's Button).
-  expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { backgroundColor: '#e4e4e4' } })
-  expect((await metaRow(ui, T_OLD))?.children?.[0]?.props).not.toHaveProperty('backgroundColor')
+  expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { inverse: true } })
+  expect((await metaRow(ui, T_OLD))?.children?.[0]?.props).not.toHaveProperty('inverse')
+  // The title row's is the engine's own inversion of the mark Button: the cell sets none (two would be one swap too many).
+  expect((await ui.find({ key: `mark:${T_NEW}` }))?.children?.[0]?.props).not.toHaveProperty('inverse')
   // Onto the footer, the record it acts on stays the keyboard's.
   await focus($, 'foot:take')
   await clock.settle()
@@ -1308,9 +1330,9 @@ test('Escape hands the keyboard back with no ui.focus: no footer, a grey mark wh
   // The grey mark runs down the whole record, its meta row too (TabStates board).
   expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { backgroundColor: '#4a4a4a' } })
   // Another record: no mark at rest, the pointer's light mark on every row under hover.
-  expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]).toMatchObject({ type: 'Text', hover: { backgroundColor: '#e4e4e4' } })
+  expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]).toMatchObject({ type: 'Text', hover: { inverse: true } })
   expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]?.props).not.toHaveProperty('backgroundColor')
-  expect((await metaRow(ui, T_OLD))?.children?.[0]).toMatchObject({ type: 'Text', hover: { backgroundColor: '#e4e4e4' } })
+  expect((await metaRow(ui, T_OLD))?.children?.[0]).toMatchObject({ type: 'Text', hover: { inverse: true } })
   await ui.unmount()
 })
 
