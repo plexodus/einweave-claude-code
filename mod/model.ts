@@ -643,8 +643,27 @@ export function fold<T extends { old: boolean }>(rows: T[]): { recent: T[]; olde
 
 /** The record a pane element belongs to: `mark:<id>`, `open:<id>`, `take:<id>` ... → `<id>`; '' for any other element. */
 export function recordOf(element: string | undefined): string {
-  const m = element && /^(mark|open|take|new|release|join|handover):(.+)$/.exec(element)
+  const m = element && /^(mark|open|take|new|release|join|handover|undo):(.+)$/.exec(element)
   return m ? m[2]! : ''
+}
+
+/**
+ * Where the keyboard goes when the element it was on left the list it was drawn in (Jörgen 2026-11-05):
+ * the engine re-homes the ring by POSITION, telling no hook, so a Release, a hand-over's picker closing or
+ * an Undo line running out left the ring on whatever stop now sat at that index. Instead: the record it
+ * belonged to (a picker's buttons belong to their record), else the stop after it, else the one before.
+ * `was`/`now`: the list's focus keys and stops, drawn last and now; `last`: where the ring was.
+ * `undefined`: nothing to do (the element is still there, was not the list's, or no stop is left).
+ */
+export function refocusTarget(was: { keys: readonly string[]; stops: readonly string[] }, now: { keys: readonly string[]; stops: readonly string[] }, last: string): string | undefined {
+  if (!last || !was.keys.includes(last) || now.keys.includes(last)) return undefined
+  const id = recordOf(last) || /^pick(?:-new|-cancel)?:([^:]+)/.exec(last)?.[1] || ''
+  const own = id ? `mark:${id}` : last
+  if (now.stops.includes(own)) return own
+  const at = was.stops.indexOf(own)
+  if (at < 0) return undefined
+  const left = (k: string) => now.stops.includes(k)
+  return was.stops.slice(at + 1).find(left) ?? was.stops.slice(0, at).reverse().find(left)
 }
 
 /**
@@ -659,7 +678,7 @@ export function focusTarget(stops: readonly string[], last: string, element: str
   // The Inbox search field's filler (a click target, never a stop): from the field the move was
   // forward, on to the first record; from anywhere else it was back, into the field (live check 2026-11-03).
   if (element === SEARCH_FILL) return last === SEARCH_FIELD ? (stops[0] ?? SEARCH_FIELD) : SEARCH_FIELD
-  const m = element && /^(open|take|new|release|join|handover):(.+)$/.exec(element)
+  const m = element && /^(open|take|new|release|join|handover|undo):(.+)$/.exec(element)
   if (!m) return element
   const id = m[2]!
   const at = stops.indexOf(`mark:${id}`)

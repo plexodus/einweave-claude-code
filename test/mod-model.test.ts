@@ -4,7 +4,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
-  ago, applySnapshot, arrowTarget, bindKeys, chordProblem, paneChord, unbindKeys, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
+  ago, applySnapshot, arrowTarget, bindKeys, chordProblem, paneChord, unbindKeys, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, refocusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
   nextTurn, pickerRows,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, leadOf, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
@@ -288,8 +288,27 @@ describe("the Inbox and thread tabs", () => {
   });
 
   test("recordOf: the record an element belongs to; tabs, folds and the rest belong to none", () => {
-    expect([recordOf("mark:t1"), recordOf("open:t1"), recordOf("take:t1"), recordOf("new:ch:c1"), recordOf("release:t1"), recordOf("join:ch:c1")]).toEqual(["t1", "t1", "t1", "ch:c1", "t1", "ch:c1"]);
+    expect([recordOf("mark:t1"), recordOf("open:t1"), recordOf("take:t1"), recordOf("new:ch:c1"), recordOf("release:t1"), recordOf("join:ch:c1"), recordOf("undo:t1")]).toEqual(["t1", "t1", "t1", "ch:c1", "t1", "ch:c1", "t1"]);
     expect([recordOf("tab:inbox"), recordOf("fold:forYou"), recordOf("foot:take"), recordOf(undefined), recordOf("")]).toEqual(["", "", "", "", ""]);
+  });
+
+  test("refocusTarget: the keyboard's element gone from the list -> its record's mark if still drawn, else the next stop, else the one before; nothing when it is still there or was never the list's", () => {
+    const keys = (ids: string[], extra: string[] = []) => [...ids.flatMap((i) => [`mark:${i}`, `open:${i}`, `release:${i}`]), ...extra];
+    const list = (ids: string[], extra: string[] = []) => ({ keys: keys(ids, extra), stops: ids.map((i) => `mark:${i}`) });
+    // Release: the record gone -> the next one; the last gone -> the one before; nothing left -> none.
+    expect(refocusTarget(list(["a", "b", "c"]), list(["a", "c"]), "mark:b")).toBe("mark:c");
+    expect(refocusTarget(list(["a", "b", "c"]), list(["a", "b"]), "release:c")).toBe("mark:b");
+    expect(refocusTarget(list(["a"]), list([]), "mark:a")).toBeUndefined();
+    // The picker closing: its buttons belong to their record, still drawn (the Undo row) -> its mark.
+    const picker = ["pick:b:s2", "pick-new:b", "pick-cancel:b"];
+    expect(refocusTarget(list(["a", "b"], picker), list(["a", "b"]), "pick:b:s2")).toBe("mark:b");
+    expect(refocusTarget(list(["a", "b"], picker), list(["a", "b"]), "pick-cancel:b")).toBe("mark:b");
+    // Undo running out on its row.
+    expect(refocusTarget(list(["a", "b"], ["undo:b"]), list(["a"]), "undo:b")).toBe("mark:a");
+    // Still there, not the list's (a tab, the footer), or nowhere: nothing to do.
+    expect(refocusTarget(list(["a", "b"]), list(["a", "b"]), "mark:b")).toBeUndefined();
+    expect(refocusTarget(list(["a", "b"]), list(["a"]), "tab:held")).toBeUndefined();
+    expect(refocusTarget(list(["a", "b"]), list(["a"]), "")).toBeUndefined();
   });
 
   test("focusTarget: a record's mark is its only stop -- its title and actions are none: down goes on to the next stop, up back to its own mark; past the last stop it stays", () => {
