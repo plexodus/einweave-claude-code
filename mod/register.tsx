@@ -981,6 +981,8 @@ export const register: Register = on => {
     const handoverAct = (id: string): Act => ({ key: 'handover', label: 'Hand over', hotkey: 'h', onPress: togglePicker(id) })
     const hd = await read($, handed)
     const undoing = hd.threadId && now < hd.until ? hd : null
+    /** The seconds Undo has left, drawn dim beside it (`8s`, mock A); a redraw each second keeps it current. */
+    const undoLeft = undoing ? `${Math.max(1, Math.ceil((undoing.until - now) / 1000))}s` : ''
     const undoAct = (id: string): Act => ({
       key: 'undo',
       label: 'Undo',
@@ -1005,6 +1007,8 @@ export const register: Register = on => {
           if (r.isError || !/^Handed /.test(text)) return
           const until = (await $.clock.now()) + UNDO_MS
           await update($, handed, () => ({ threadId, title: row?.title ?? '', channel: row?.channel ?? '', place: w.place, at: Math.max(0, at), until }))
+          // A redraw each second for the count beside Undo, then the row goes.
+          for (let t = 1_000; t < UNDO_MS; t += 1_000) $.clock.after(t, () => detach(update($, handed, h => (h.until === until ? { ...h } : h))))
           $.clock.after(UNDO_MS, () => detach(update($, handed, h => (h.until === until ? NO_HANDED : h))))
           await poll($)
         })(),
@@ -1363,7 +1367,7 @@ export const register: Register = on => {
         title: [{ text: '↪ ' }, ...(u.channel ? [{ text: `#${u.channel} ` }] : []), { text: label }],
         dim: true,
         onOpen: () => detach(viewThread($, u.threadId, label)),
-        meta: [{ text: `handed to ${u.place}`, tone: 'dim' }],
+        meta: [{ text: `handed to ${u.place} · ${undoLeft}`, tone: 'dim' }],
         acts: [undoAct(u.threadId)],
         pin: true,
       })
@@ -2029,7 +2033,7 @@ export const register: Register = on => {
               ]
             : []),
           undoing?.threadId === id
-            ? headLine('head:thread:line', `handed to ${undoing.place} · Undo puts it back here`, { dimColor: true })
+            ? headLine('head:thread:line', `handed to ${undoing.place} · Undo puts it back here · ${undoLeft}`, { dimColor: true })
             : held
             ? headLine('head:thread:line', 'held by you · replies come here', { color: PALETTE.brand })
             : headLine('head:thread:line', 'not held here · Claude has not seen it · Take brings it here', { color: PALETTE.amber }),
