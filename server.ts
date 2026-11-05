@@ -58,7 +58,7 @@ import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
 import { Session, createRuntime, isApiRequestError, type Api, type SearchRefusal, type SearchResponse, type SearchThreadRow, type SearchMessageRow, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
-import { deadline, snippetParts, type SnippetPart } from "./vendor/einweave-agent-sdk/core/index.js";
+import { deadline, snippetParts, TURN_STATES, type SnippetPart, type TurnState } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
@@ -1249,6 +1249,11 @@ const returnedAcks = new ReturnedAcks();
 /** Entries handed to the host in this process — `status`'s "idle" until the first. */
 let pushedCount = 0;
 let session: Session | null = null;
+/**
+ * What this window's model is doing, as the mod last reported it (`POST /turn/<state>` on the UI socket, from
+ * Claude Code's own turn lifecycle). Kept here so a Session made later (connect, a re-key) starts with it.
+ */
+let turnState: TurnState | null = null;
 /** This process's registry record (RFC-017 D2), written at startup; re-written on a re-key. */
 let myProc: ProcInfo | null = null;
 let lock: SessionLockHandle | null = null;
@@ -1370,9 +1375,18 @@ const uiRoutes: UiRoutes = {
     return runTool(name, args);
   },
   channels: async () => (uiGate(), await uiChannels()),
+  // Read now, not the snapshot's (refreshed each minute): the picker shows what each window is doing as it opens.
+  sessions: async () => (uiGate(), { sessions: (await holds.sessionsView()).siblings }),
   channel: async (id) => (uiGate(), await uiChannel(id)),
   thread: async (id, page) => (uiGate(), await uiThread(id, { before_seq: page.beforeSeq, limit: page.limit })),
   search: async (p) => (uiGate(), await searchPage(p)),
+  // The mod's report of this window's turn (never a model's call): kept, and sent while a Session exists.
+  turn: async (state) => {
+    if (!(TURN_STATES as readonly string[]).includes(state)) throw new UiHttpError(400, `not a turn state: ${state}`);
+    turnState = state as TurnState;
+    session?.turn(turnState);
+    return { ok: true };
+  },
 };
 /** requireBridge() as an HTTP refusal: its text says why (not configured, not connected). */
 function uiGate(): void {
@@ -1691,6 +1705,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
   });
   created = s;
   session = s;
+  if (turnState) s.turn(turnState);
   replaceSentBy = replace ? s : null;
   standbyHolder = null;
   updateProcState(STATE_DIR, process.pid, "disconnected");

@@ -19,7 +19,10 @@ import {
   applySuggestion, fitSnippet, NO_SEARCH, oneLine, SEARCH_DEBOUNCE_MS, searchPlaceholder, SEARCH_FIELD, SEARCH_FILL, searchAnswer,
   type InboxRow, type SearchHit, type SearchState, type Seg, type Tone,
   heldRow,
-  pickerSessions,
+  pickerRows,
+  nextTurn,
+  WAITS_ON_PERSON,
+  type TurnState,
 } from './model'
 import { cellWidth, plainLines, type Line } from './text'
 import { hyperlinks } from './links'
@@ -48,10 +51,13 @@ const focused = atom({ plugin: 'einweave', key: 'focused' } as const, '', { shap
 const paneUp = atom({ plugin: 'einweave', key: 'paneUp' } as const, false, { shape: 'pane-up-1' })
 /** The "Older" folds opened, by list. */
 const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Record<string, boolean>, { shape: 'unfolded-1' })
-/** The held thread whose Hand over picker is open (Held tab row or thread tab); '' when none. */
-// `offline`: whether it shows the offline sessions too; folded again each time a picker opens or closes.
-const NO_HANDOVER = { id: '', offline: false, on: '' }
-const handover = atom({ plugin: 'einweave', key: 'handover' } as const, NO_HANDOVER, { shape: 'handover-3' })
+/**
+ * The held thread whose Hand over picker is open (Held tab row or thread tab; '' when none), the tab it opened on,
+ * and the windows it lists: the snapshot's as it opens, then read anew once (`GET /sessions`). Kept here so the
+ * list does not reorder under the pointer while the picker is open (MRU lists that reshuffle mislead past two items).
+ */
+const NO_HANDOVER: { id: string; on: string; sessions: NonNullable<UiSnapshot['sessions']> | null } = { id: '', on: '', sessions: null }
+const handover = atom({ plugin: 'einweave', key: 'handover' } as const, NO_HANDOVER, { shape: 'handover-4' })
 /** The Inbox search (board Search): the query, the current answer, and which edit it answers. */
 // shape: bump when SearchState's form changes, so a pane reloaded mid-search drops the old state rather than
 // drawing it without the new fields (search-2: `applied`, live check 2026-11-04).
@@ -586,6 +592,31 @@ function placed(off: number, atTop: boolean, w: PaneWindow, sc: PaneScroll | und
   return { off, newest: newestKey(w.stack), open: sc?.open ?? {}, ...(w.anchor === 'top' && atTop ? { top: true as const } : {}) }
 }
 
+/**
+ * This window's turn state as last seen, and as last told to the plugin's server: only a change is posted,
+ * and a post that failed (no socket yet) goes with the next event or the first snapshot. Module variables:
+ * a reload starts them over, and the next event reports again.
+ */
+let turnNow: TurnState | null = null
+let turnSent: TurnState | null = null
+
+/** Post the turn state to the plugin's server over the UI socket (`POST /turn/<state>`), if it changed. */
+async function sendTurn($: EngineInterface): Promise<void> {
+  const want = turnNow
+  if (!want || want === turnSent) return
+  const socketPath = (await read($, view)).snap?.uiSocket
+  if (!socketPath) return
+  const r = await $.http.fetch(`http://einweave/turn/${want}`, { method: 'POST', socketPath })
+  if (r.ok) turnSent = want
+}
+
+/** A lifecycle event moved the turn state (null: no change): post it without waiting. */
+function reportTurn($: EngineInterface, state: TurnState | null): void {
+  if (!state) return
+  turnNow = state
+  detach(sendTurn($))
+}
+
 export const register: Register = on => {
   // The stops the pane's records drew last, top to bottom, and where the ring was: ui.focus reads both.
   let stops: string[] = []
@@ -605,7 +636,8 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`/einweave not registered: ${String(err)}`, { to: 'debug' })
     }
-    detach(poll($))
+    // The first snapshot names the UI socket: a turn state reported before it lands goes then.
+    detach(poll($).then(() => sendTurn($)))
     // The relay ends when the module unloads (its sleep or spawn is aborted): nothing to report then.
     detach(runRelay($))
     $.clock.every(POLL_MS, () => {
@@ -623,6 +655,36 @@ export const register: Register = on => {
     })
     return started
   })
+
+  /**
+   * What this window's model is doing (`working` | `needs_you` | `idle`), told to the plugin's server
+   * (`POST /turn/<state>`, the UI socket) for einweave's Hand over picker (Jörgen 2026-11-05). From Claude
+   * Code's own lifecycle, in process, never a timer: the main loop's turn start and end (an Esc ends one too,
+   * which a Stop hook never hears); a dialog shown to the person (a permission, an MCP question; AskUserQuestion
+   * and plan approval are tools that wait on the person); the asked call returning, or the next one, ends that wait. Only a change is
+   * posted; a post that fails is tried again on the next event. No hook here waits on it or changes anything.
+   */
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) reportTurn($, nextTurn(turnNow, { kind: 'start' }))
+    return next(e)
+  })
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) reportTurn($, nextTurn(turnNow, { kind: 'end' }))
+    return next(e)
+  })
+  on('classic.Notification', async ($, e, next) => {
+    reportTurn($, nextTurn(turnNow, { kind: 'notification', type: e.notification_type }))
+    return next(e)
+  }).catch(($, e, next) => next(e))
+  on('tool.call', async ($, e, next) => {
+    const waits = WAITS_ON_PERSON.has(e.tool)
+    reportTurn($, nextTurn(turnNow, { kind: waits ? 'ask' : 'tool' }))
+    const result = await next(e)
+    // The person answered whatever this call asked (its dialog opens inside `next`), and the tool ran. No hook
+    // hears the answer itself, so a long approved command still reads `needs_you` until it returns.
+    reportTurn($, nextTurn(turnNow, { kind: 'tool' }))
+    return result
+  }).catch(($, e, next) => next(e))
 
   // /clear, /resume and /branch reset $.state and do not run session.start again: read the snapshot
   // anew. classic.SessionStart does not run where the built-in guard loads, so session.end backs it.
@@ -868,87 +930,119 @@ export const register: Register = on => {
     // tab shown changes without one (not connected: the Session tab only). Held and a thread tab share it.
     const ho = await read($, handover)
     const picking = ho.on === tab ? ho.id : ''
-    const offlineOpen = ho.offline
-    const togglePicker = (id: string) => () => detach(update($, handover, open => (open.on === tab && open.id === id ? NO_HANDOVER : { id, offline: false, on: tab })))
+    const togglePicker = (id: string) => () =>
+      detach(
+        (async () => {
+          let opened = false
+          await update($, handover, open => {
+            if (open.on === tab && open.id === id) return NO_HANDOVER
+            opened = true
+            return { id, on: tab, sessions: s?.sessions ?? null }
+          })
+          if (!opened) return
+          // What each window is doing NOW: the snapshot's list is up to a minute old. Read once; the order then
+          // stays while the picker is open. A failed read keeps the snapshot's.
+          // Over the UI socket only: no MCP tool reads it (the model has no use for it).
+          const socketPath = (await read($, view)).snap?.uiSocket
+          if (!socketPath) return
+          let fresh: NonNullable<UiSnapshot['sessions']> | null = null
+          try {
+            const r = await $.http.fetch('http://einweave/sessions', { socketPath })
+            const body = r.ok ? (JSON.parse(r.text) as { sessions?: unknown }) : null
+            if (Array.isArray(body?.sessions)) fresh = body.sessions as NonNullable<UiSnapshot['sessions']>
+          } catch {}
+          if (fresh) await update($, handover, open => (open.on === tab && open.id === id ? { ...open, sessions: fresh } : open))
+        })(),
+      )
     const handoverAct = (id: string): Act => ({ key: 'handover', label: 'Hand over', hotkey: 'h', onPress: togglePicker(id) })
 
     /**
-     * Hand over's picker (Jörgen 2026-11-03/04): this agent's other sessions that are online, each one press;
-     * the offline ones behind `▸ Show N offline`, which turns into `▾ Hide offline` in the same row; then
-     * New window, which copies the command that starts one and takes the thread there (also the way when
-     * there is no other session); then Cancel. `rows` bounds it where it has a fixed area (the thread tab's
-     * posts window): what does not fit is counted, so Cancel always shows. Hands back its rows and the keys
-     * of what it draws (the window reveals it by them).
+     * Hand over's picker (option B, Jörgen 2026-11-05; mockup https://claude.ai/artifact/6L15G1YyW89Q8W2zEvpAzF):
+     * hung off the record by a left edge (`╭ │ ╰`), each online window a two-line record (where it works and what
+     * it is doing; what it holds), needs you first; then `[ New window ]`, which copies the command that starts
+     * one and takes the thread there (also the way when there is no other window), and `[ Cancel ]`; the offline
+     * windows only counted. `rows` bounds it where it has a fixed area (the thread tab's posts window): what does
+     * not fit is counted, so Cancel always shows. Hands back its rows and the keys of what it draws.
      */
     const picker = (threadId: string, rows = Infinity) => {
       const close = () => detach(update($, handover, () => NO_HANDOVER))
-      const { online, offline } = pickerSessions(s?.sessions)
-      const showOff = offlineOpen && offline.length > 0
+      const { rows: windows, offline } = pickerRows(ho.id === threadId && ho.sessions ? ho.sessions : s?.sessions, now)
       const agent = s?.session.agent ? `@${s.session.agent}` : 'this agent'
-      const head = online.length ? 'Hand over to' : `No other session of ${agent}${offline.length ? ' online' : ''} · start one`
-      const fixed = 2 + (offline.length ? 1 : 0)
-      const want = online.length + (showOff ? offline.length : 0)
-      const fits = fixed + want <= rows
-      const budget = fits ? want : Math.max(0, rows - fixed - 1)
-      const shownOn = online.slice(0, budget)
-      const shownOff = showOff ? offline.slice(0, budget - shownOn.length) : []
-      const cut = want - shownOn.length - shownOff.length
-      // One row, clipped as the Inbox's title row, its runs ONE Text: a long label wrapped to 2 rows and broke
-      // the row budget (live 2026-11-04).
-      const row = (o: (typeof online)[number]) => (
-        <Box key={`pick-row:${threadId}:${o.id}`} flexDirection="row" height={1} overflow="hidden">
-          <Button
-            key={`pick:${threadId}:${o.id}`}
-            plain
-            label={`Hand over to ${o.label}`}
-            onPress={() => {
-              act('handover', { ref: threadId, to: o.id })()
-              close()
-            }}
-          >
-            <Text wrap="truncate-end">
-              <Text color={o.online ? PALETTE.brand : undefined} dimColor={!o.online}>{o.online ? '● ' : '○ '}</Text>
-              <Text weight="semibold">{o.label}</Text>
-              {o.online ? null : <Text dimColor> · offline</Text>}
-            </Text>
-          </Button>
+      const head = windows.length ? 'Hand over to' : `No other session of ${agent}${offline ? ' online' : ''} · start one`
+      // Head, the buttons and the closing edge; two rows a window.
+      const fixed = 3
+      const fits = fixed + windows.length * 2 <= rows
+      const shown = fits ? windows : windows.slice(0, Math.max(0, Math.floor((rows - fixed - 1) / 2)))
+      const cut = windows.length - shown.length
+      const edge = (c: string) => <Text color={RULE}>{c}</Text>
+      const win = (w: (typeof windows)[number]) => (
+        <Box key={`pick-win:${threadId}:${w.id}`} flexDirection="column">
+          <Box flexDirection="row" height={1} overflow="hidden">
+            {edge('│ ')}
+            <Box flexShrink={1} overflow="hidden">
+              <Button
+                key={`pick:${threadId}:${w.id}`}
+                plain
+                label={`Hand over to ${w.place}`}
+                onPress={() => {
+                  act('handover', { ref: threadId, to: w.id })()
+                  close()
+                }}
+              >
+                {/* One Text, truncated once: a long place wrapped to 2 rows and broke the row budget (live 2026-11-04). */}
+                <Text wrap="truncate-end">
+                  <Text color={PALETTE.brand}>● </Text>
+                  <Text weight="semibold" hover={{ bold: true, color: '#ffffff' }}>
+                    {w.place}
+                  </Text>
+                </Text>
+              </Button>
+            </Box>
+            <Box flexGrow={1} />
+            {w.state ? (
+              <Box flexShrink={0} paddingLeft={1}>
+                <Text {...paint(w.state.tone)} weight={w.state.weight}>
+                  {w.state.text}
+                </Text>
+              </Box>
+            ) : null}
+          </Box>
+          <Box flexDirection="row" height={1} overflow="hidden">
+            {edge('│ ')}
+            <Text dimColor wrap="truncate-end">{`  ${w.holds}`}</Text>
+          </Box>
         </Box>
       )
-      const keys = [...[...shownOn, ...shownOff].map(o => `pick:${threadId}:${o.id}`), ...(offline.length ? [`pick-offline:${threadId}`] : []), `pick-new:${threadId}`, `pick-cancel:${threadId}`]
-      const rowsDrawn = 1 + shownOn.length + (offline.length ? 1 : 0) + shownOff.length + (cut > 0 ? 1 : 0) + 1
+      const keys = [...shown.map(w => `pick:${threadId}:${w.id}`), `pick-new:${threadId}`, `pick-cancel:${threadId}`]
+      const rowsDrawn = 1 + shown.length * 2 + (cut > 0 ? 1 : 0) + 2
       const node = (
         <Box key={`picker:${threadId}`} flexDirection="column" paddingLeft={2} flexShrink={0}>
-          <Box key={`pick-head:${threadId}`} height={1} overflow="hidden">
+          <Box key={`pick-head:${threadId}`} flexDirection="row" height={1} overflow="hidden">
+            {edge('╭ ')}
             <Text dimColor wrap="truncate-end">{head}</Text>
           </Box>
-          {shownOn.map(row)}
-          {offline.length ? (
-            <Button
-              key={`pick-offline:${threadId}`}
-              plain
-              dimColor
-              label={showOff ? '▾ Hide offline' : `▸ Show ${offline.length} offline`}
-              onPress={() => detach(update($, handover, h => ({ ...h, offline: !h.offline })))}
-            />
-          ) : null}
-          {shownOff.map(row)}
+          {shown.map(win)}
           {cut > 0 ? (
-            <Box key={`pick-cut:${threadId}`} height={1} overflow="hidden">
+            <Box key={`pick-cut:${threadId}`} flexDirection="row" height={1} overflow="hidden">
+              {edge('│ ')}
               <Text dimColor wrap="truncate-end">{`${cut} more · a taller pane shows them`}</Text>
             </Box>
           ) : null}
           <Box key={`pick-foot:${threadId}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+            {edge('│')}
             <Button
               key={`pick-new:${threadId}`}
-              plain
               label="New window"
               onPress={(press: Press) => {
                 newSession(threadId)(press)
                 close()
               }}
             />
-            <Text dimColor>·</Text>
-            <Button key={`pick-cancel:${threadId}`} plain dimColor label="Cancel" onPress={close} />
+            <Button key={`pick-cancel:${threadId}`} dimColor label="Cancel" onPress={close} />
+          </Box>
+          <Box key={`pick-tail:${threadId}`} flexDirection="row" height={1} overflow="hidden">
+            {edge('╰ ')}
+            {offline ? <Text dimColor wrap="truncate-end">{`${offline} offline not shown`}</Text> : null}
           </Box>
         </Box>
       )

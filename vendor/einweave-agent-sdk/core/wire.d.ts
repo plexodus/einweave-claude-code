@@ -40,6 +40,14 @@ export type ConnectionKind = (typeof CONNECTION_KINDS)[number];
  * not to surface it; it never lights ✓✓.
  */
 export type AckHow = AckFrame["how"];
+/**
+ * What a session's model is doing, as its host reports it (`session.turn`): `working` (in a turn),
+ * `needs_you` (waiting on its person: a permission, a question), `idle` (its turn ended). Never a timer.
+ */
+export declare const TURN_STATES: readonly ["working", "needs_you", "idle"];
+export type TurnState = (typeof TURN_STATES)[number];
+/** The `sessionInfo` fields `session.setDetails` replaces (the protocol's `SessionDetails`). */
+export declare const SESSION_DETAIL_KEYS: readonly ["repoName", "worktreeName", "branchName", "headShortSha"];
 /** The server's cap on ids in one ack frame; more are sent in chunks. */
 export declare const MAX_ACK_IDS = 500;
 /** The three accountable kinds (L1) — what a session's model owes (D3). */
@@ -98,16 +106,22 @@ export declare const WS_CLOSE_REASONS: {
 };
 declare const WIRE: {
     sessionInfo: {
-        clientVersion?: string | undefined;
-        clientName?: string | undefined;
-        hostName?: string | undefined;
         repoName?: string | undefined;
         worktreeName?: string | undefined;
         branchName?: string | undefined;
         headShortSha?: string | undefined;
+        clientVersion?: string | undefined;
+        clientName?: string | undefined;
+        hostName?: string | undefined;
         sessionLabel?: string | undefined;
         sessionKey?: string | undefined;
         softwareId?: string | undefined;
+    };
+    sessionDetails: {
+        repoName?: string | undefined;
+        worktreeName?: string | undefined;
+        branchName?: string | undefined;
+        headShortSha?: string | undefined;
     };
     scope: {
         channelIds?: string[] | undefined;
@@ -137,13 +151,13 @@ declare const WIRE: {
             sessionKey: string;
         } | undefined;
         sessionInfo?: {
-            clientVersion?: string | undefined;
-            clientName?: string | undefined;
-            hostName?: string | undefined;
             repoName?: string | undefined;
             worktreeName?: string | undefined;
             branchName?: string | undefined;
             headShortSha?: string | undefined;
+            clientVersion?: string | undefined;
+            clientName?: string | undefined;
+            hostName?: string | undefined;
             sessionLabel?: string | undefined;
             sessionKey?: string | undefined;
             softwareId?: string | undefined;
@@ -379,6 +393,13 @@ type _SessionInfo = typeof WIRE.sessionInfo;
  * TERMINAL, not the software; `softwareId`/`clientVersion` name the BUILD (RFC-017 D5).
  */
 export interface SessionInfo extends _SessionInfo {
+}
+type _SessionDetails = typeof WIRE.sessionDetails;
+/**
+ * The part of `SessionInfo` that changes while a session runs (a checkout): `session.setDetails`.
+ * The whole set each time — a field left out is no longer reported.
+ */
+export interface SessionDetails extends _SessionDetails {
 }
 type _Scope = typeof WIRE.scope;
 /** Which channels' UNHELD work a work session takes (RFC-028 D6). `channelIds` only with `mode: "channels"`. */

@@ -545,16 +545,95 @@ export function heldRow(h: UiHeld, now: number): HeldRowView {
   return { threadId: h.threadId, title: h.title ?? h.threadId, channel: h.channel ?? null, meta }
 }
 
-type PickerSession = { id: string; label: string; online: boolean }
+/** What a window's model is doing, as einweave's `turn` frame says it. */
+export type TurnState = 'working' | 'needs_you' | 'idle'
+
+/** Tools that run until the person answers: while one runs, the window waits on its person. */
+export const WAITS_ON_PERSON: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
+
+/** A Claude Code lifecycle event, as the turn state reads it (main loop only for `start` / `end`). */
+export type TurnEvent = { kind: 'start' } | { kind: 'end' } | { kind: 'ask' } | { kind: 'tool' } | { kind: 'notification'; type: string }
 
 /**
- * The Hand over picker's targets, the other sessions split by whether they are online (the server's order
- * kept within each). The picker lists the online ones and folds the offline ones (Jörgen 2026-11-04): a
- * thread handed to a closed window waits there unanswered, so they are rarely the place to hand it.
+ * The next turn state, or null for no change. A turn starts working and ends idle (an Esc included);
+ * a dialog shown to the person (`permission_prompt`, `elicitation_dialog`) or a tool that waits on them
+ * makes it `needs_you`; the next tool call ends that wait. `idle_prompt` (Claude Code: about 60 s after
+ * a turn ended, nothing typed) settles idle even when the end was missed.
  */
-export function pickerSessions(sessions: UiSnapshot['sessions']): { online: PickerSession[]; offline: PickerSession[] } {
+export function nextTurn(cur: TurnState | null, ev: TurnEvent): TurnState | null {
+  switch (ev.kind) {
+    case 'start':
+      return 'working'
+    case 'end':
+      return 'idle'
+    case 'ask':
+      return 'needs_you'
+    case 'tool':
+      // A tool runs: whatever waited on the person was answered. Idle stays idle: a background subagent's call is not this window's turn.
+      return cur === 'needs_you' || cur === null ? 'working' : null
+    case 'notification':
+      return ev.type === 'permission_prompt' || ev.type === 'elicitation_dialog' ? 'needs_you' : ev.type === 'idle_prompt' ? 'idle' : null
+  }
+}
+
+/** One window in the Hand over picker (option B, Jörgen 2026-11-05): where it works, what it is doing, what it holds. */
+export interface PickerRow {
+  id: string
+  /** Its own name, else `folder · branch` (a branch equal to its folder dropped), else its label. */
+  place: string
+  /** What its model is doing (`needs you`, `working`, `idle 12 min`); null when its client reports none. */
+  state: Seg | null
+  /** `holds <title>` (`+N` for more), else `#<id> · holds nothing`. */
+  holds: string
+}
+
+type PickerSession = NonNullable<UiSnapshot['sessions']>[number]
+
+/** Under this long idle, the word alone: `idle 20 s` reads as noise. */
+const IDLE_BARE_MS = 60_000
+
+const TURN_RANK: Record<string, number> = { needs_you: 0, working: 1, idle: 2 }
+
+/**
+ * The Hand over picker's windows: online only (a thread handed to a closed window waits there unanswered;
+ * New window covers that), the offline ones counted. Ordered by what each is doing, the way agent dashboards
+ * do (Claude Code agent view, iTerm2): needs you, then working, then idle (the shortest idle first), then
+ * those that report nothing, in the server's order. Never a heartbeat age: an online window is here now.
+ */
+export function pickerRows(sessions: UiSnapshot['sessions'], now: number): { rows: PickerRow[]; offline: number } {
   const all = sessions ?? []
-  return { online: all.filter(s => s.online), offline: all.filter(s => !s.online) }
+  const online = all.filter(s => s.online)
+  const rank = (s: PickerSession) => TURN_RANK[s.activity?.state ?? ''] ?? 3
+  const since = (s: PickerSession) => {
+    const t = s.activity ? Date.parse(s.activity.since) : NaN
+    return Number.isFinite(t) ? t : -Infinity
+  }
+  const ordered = online
+    .map((s, n) => ({ s, n }))
+    .sort((a, b) => rank(a.s) - rank(b.s) || (rank(a.s) < 3 ? since(b.s) - since(a.s) : 0) || a.n - b.n)
+    .map(({ s }) => s)
+  return { rows: ordered.map(s => pickerRow(s, now)), offline: all.length - online.length }
+}
+
+function pickerRow(s: PickerSession, now: number): PickerRow {
+  const place = s.name || (s.folder ? (s.branch && s.branch !== s.folder ? `${s.folder} · ${s.branch}` : s.folder) : s.label)
+  const a = s.activity
+  const t = a ? Date.parse(a.since) : NaN
+  const state: Seg | null = !a
+    ? null
+    : a.state === 'needs_you'
+      ? { text: 'needs you', tone: 'amber', weight: 'semibold' }
+      : a.state === 'working'
+        ? { text: 'working', tone: 'brand' }
+        : { text: Number.isFinite(t) && now - t >= IDLE_BARE_MS ? `idle ${ago(now - t)}` : 'idle', tone: 'dim' }
+  const h = s.holds ?? { title: null, count: 0 }
+  const short = `#${s.id.slice(-4)}`
+  const holds = h.title
+    ? `holds ${h.title}${h.count > 1 ? ` +${h.count - 1}` : ''}`
+    : h.count > 0
+      ? `${short} · holds ${h.count} thread${h.count === 1 ? '' : 's'}`
+      : `${short} · holds nothing`
+  return { id: s.id, place, state, holds }
 }
 
 /** A list split for drawing: the recent rows in their order, then those under the "Older" fold. */

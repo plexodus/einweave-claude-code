@@ -32,7 +32,7 @@ const INPUTS: UiInputs = {
   scope: { mode: "none" },
   holds: ["t1"],
   held: new Map<string, HeldInfo>([["t1", { title: "Fix the build", channel: "dev", quietSince: "2026-11-03T10:00:00.000Z", unseenByModel: 2, lastBy: "@kevin" }]]),
-  sessions: [{ id: "s2", label: "other", online: true }],
+  sessions: [{ id: "s2", label: "other", online: true, name: null, folder: "bridge", branch: "main", activity: { state: "idle" as const, since: "2026-11-05T10:00:00.000Z" }, holds: { title: null, count: 0 } }],
   waiting: { forYou: 2, channel: 0, more: false, top: [] },
   gateway: { online: true, label: "bridge-gw" },
   version: "0.38.0",
@@ -45,7 +45,7 @@ describe("buildUiState", () => {
     expect(s.connection).toEqual({ state: "connected", detail: null });
     expect(s.session).toEqual({ agent: "bellman", label: "probe", kind: "session", scope: { mode: "none" } });
     expect(s.holds).toEqual([{ threadId: "t1", title: "Fix the build", channel: "dev", quietSince: "2026-11-03T10:00:00.000Z", unseenByModel: 2, lastBy: "@kevin" }]);
-    expect(s.sessions).toEqual([{ id: "s2", label: "other", online: true }]);
+    expect(s.sessions).toEqual([{ id: "s2", label: "other", online: true, name: null, folder: "bridge", branch: "main", activity: { state: "idle" as const, since: "2026-11-05T10:00:00.000Z" }, holds: { title: null, count: 0 } }]);
     expect(s.waiting?.forYou).toBe(2);
     expect(s.gateway).toEqual({ online: true, label: "bridge-gw" });
   });

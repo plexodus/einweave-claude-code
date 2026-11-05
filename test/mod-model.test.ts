@@ -6,6 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, arrowTarget, bindKeys, chordProblem, paneChord, unbindKeys, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
+  nextTurn, pickerRows,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, leadOf, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
 } from "../mod/model";
 import type { ThreadMessage, ThreadView } from "../types";
@@ -674,5 +675,86 @@ describe("claudeCodeTooOld (the mod's minimum Claude Code)", () => {
     expect(claudeCodeTooOld(null)).toBe(true);
     expect(claudeCodeTooOld("")).toBe(true);
     expect(claudeCodeTooOld("dev")).toBe(true);
+  });
+});
+
+/**
+ * Hand over picker, option B (Jörgen 2026-11-05). MUTATIONS (seen red): rank by server order only → the
+ * needs-you window is not first; keep offline rows → the closed window listed; `idle 20 s` for a fresh idle
+ * → the bare word missing; a branch equal to its folder kept → `x · x`.
+ */
+describe("pickerRows", () => {
+  const NOW = Date.parse("2026-11-05T12:00:00.000Z");
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  const w = (id: string, over: Partial<NonNullable<UiSnapshot["sessions"]>[number]> = {}) => ({ id, label: `label ${id}`, online: true, ...over });
+
+  test("online only, needs you → working → idle (shortest first) → no state; offline counted", () => {
+    const r = pickerRows(
+      [
+        w("a-old-client-0001"),
+        w("b-idle-long-0002", { activity: { state: "idle", since: ago(3_600_000) } }),
+        w("c-closed-0003", { online: false, activity: null }),
+        w("d-working-0004", { activity: { state: "working", since: ago(5_000) } }),
+        w("e-idle-short-0005", { activity: { state: "idle", since: ago(120_000) } }),
+        w("f-needs-0006", { activity: { state: "needs_you", since: ago(30_000) } }),
+      ],
+      NOW
+    );
+    expect(r.rows.map((x) => x.id)).toEqual(["f-needs-0006", "d-working-0004", "e-idle-short-0005", "b-idle-long-0002", "a-old-client-0001"]);
+    expect(r.offline).toBe(1);
+    expect(r.rows.map((x) => x.state?.text ?? null)).toEqual(["needs you", "working", "idle 2 min", "idle 1 h", null]);
+    expect(r.rows[0]!.state).toMatchObject({ tone: "amber" });
+  });
+
+  test("an idle under a minute is the bare word: never a seconds count", () => {
+    expect(pickerRows([w("x", { activity: { state: "idle", since: ago(20_000) } })], NOW).rows[0]!.state?.text).toBe("idle");
+  });
+
+  test("place: its own name, else folder · branch (a branch equal to its folder dropped), else its label", () => {
+    const rows = pickerRows(
+      [
+        w("n1", { name: "the reviewer", folder: "bridge", branch: "main" }),
+        w("n2", { name: null, folder: "bridge", branch: "workspace-onboarding-spec" }),
+        w("n3", { folder: "4035-auto-update", branch: "4035-auto-update" }),
+        w("n4"),
+      ],
+      NOW
+    ).rows;
+    expect(rows.map((x) => x.place)).toEqual(["the reviewer", "bridge · workspace-onboarding-spec", "4035-auto-update", "label n4"]);
+  });
+
+  test("what it holds: the first title (+N more), a count for threads not readable, else its short id", () => {
+    const rows = pickerRows(
+      [
+        w("s-000000000aaaa", { holds: { title: "Fix the build", count: 3 } }),
+        w("s-000000000bbbb", { holds: { title: null, count: 1 } }),
+        w("s-000000000cccc", { holds: { title: null, count: 0 } }),
+        w("s-000000000dddd"),
+      ],
+      NOW
+    ).rows;
+    expect(rows.map((x) => x.holds)).toEqual(["holds Fix the build +2", "#bbbb · holds 1 thread", "#cccc · holds nothing", "#dddd · holds nothing"]);
+  });
+});
+
+/** MUTATIONS (seen red): `tool` ends idle → a background subagent's call flips an idle window to working; drop idle_prompt → a missed end never settles. */
+describe("nextTurn", () => {
+  test("a turn: working; a dialog or a tool that waits: needs you; the next tool call: working; the end (Esc too): idle", () => {
+    expect(nextTurn(null, { kind: "start" })).toBe("working");
+    expect(nextTurn("working", { kind: "notification", type: "permission_prompt" })).toBe("needs_you");
+    expect(nextTurn("working", { kind: "notification", type: "elicitation_dialog" })).toBe("needs_you");
+    expect(nextTurn("needs_you", { kind: "tool" })).toBe("working");
+    expect(nextTurn("working", { kind: "ask" })).toBe("needs_you");
+    expect(nextTurn("working", { kind: "end" })).toBe("idle");
+  });
+
+  test("no change where nothing changed: a tool mid-turn, an idle window's background tool, other notifications", () => {
+    expect(nextTurn("working", { kind: "tool" })).toBeNull();
+    expect(nextTurn("idle", { kind: "tool" })).toBeNull();
+    expect(nextTurn("working", { kind: "notification", type: "auth_success" })).toBeNull();
+  });
+
+  test("idle_prompt settles idle when a turn's end was missed", () => {
+    expect(nextTurn("working", { kind: "notification", type: "idle_prompt" })).toBe("idle");
   });
 });

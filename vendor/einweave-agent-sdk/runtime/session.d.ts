@@ -30,7 +30,7 @@
  * (`api.sessions.setScope`) is not reverted and a takeover is never repeated by a transient close.
  * `supersede` is unchanged — this GRANT from another window — and NEVER implies a takeover.
  */
-import { type AckHow, type AuthenticatedPayload, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type ForYouPayload, type HoldUpdatePayload, type InvalidSessionPayload, type ReceiptPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionInfo } from "../core";
+import { type AckHow, type AuthenticatedPayload, type CatchupPayload, type CloseClass, type CloseOutcome, type ConnectionKind, type ForYouPayload, type HoldUpdatePayload, type InvalidSessionPayload, type ReceiptPayload, type ReleasedThread, type ReplacesDeclaration, type Scope, type SessionDetails, type SessionInfo, type TurnState } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 import type { LockHolderInfo, SeqStore, SessionLock } from "./store";
@@ -215,6 +215,8 @@ export declare class Session {
     private reconnectAttempt;
     private lastClose;
     private authenticatedAt;
+    /** The last `setDetails`: replaces the details in every later auth frame's `sessionInfo`. */
+    private details;
     /** The starting `scope` / `takeover` / `replaces` are said once: until the first `authenticated`, never after. */
     private declaredOnce;
     private remintedAfter4001;
@@ -239,6 +241,8 @@ export declare class Session {
     private readonly settled;
     private readonly ownMessageIds;
     private readonly acks;
+    /** The latest turn state the host reported (`turn`). */
+    private turnState;
     private readonly pushQueue;
     private pushing;
     private readonly statusChannel;
@@ -272,6 +276,23 @@ export declare class Session {
      * ids; idempotent; queued while offline and sent after the next authentication.
      */
     ack(ids: Iterable<string>, how: AckHow): void;
+    /**
+     * What this session's model is doing, from the host's own lifecycle (a turn starts, waits on its person,
+     * ends). Only a change is sent; the latest is sent again after every authentication, so a reconnect never
+     * loses it. The server stamps the time a state began. An older server ignores the frame (counting it as unknown).
+     */
+    turn(state: TurnState): void;
+    /** Send the latest turn state, on an authenticated socket only; otherwise the next authentication sends it. */
+    private flushTurn;
+    /**
+     * This session's details changed while it runs (a checkout, another worktree): the WHOLE set
+     * (`repoName`, `worktreeName`, `branchName`, `headShortSha`; one left out is no longer
+     * reported). Sent now when authenticated (`session_details`), and every later auth frame
+     * carries it, so a reconnect never reverts it. The same set as the last call sends nothing, so
+     * a caller may report after every command. An older server ignores the frame; its next auth
+     * still carries the details.
+     */
+    setDetails(details: SessionDetails): void;
     /** Graceful shutdown: stop reconnecting, close the socket cleanly, resolve `closed()`. */
     drain(): Promise<void>;
     /** Protocol PR D: the version is declared at connect; the server echoes it in `authenticated.protocol`. */

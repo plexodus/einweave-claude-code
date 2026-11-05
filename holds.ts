@@ -10,6 +10,7 @@
  * another kind of list, N is past its end), nothing is acted on and the fresh list is shown
  * instead: a stale number is never guessed into a thread.
  */
+import type { TurnState } from "./vendor/einweave-agent-sdk/core/index.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const SEARCH_PAGES = 4;
@@ -104,6 +105,15 @@ export interface SiblingSession {
   kind: string | null;
   /** A socket is open now. */
   online: boolean;
+  /** Its own name (a rename); null = derived. The picker's place line leads with it. */
+  name: string | null;
+  /** Its details (bridge #357 `details`): where it works and on what branch; null = not reported. */
+  folder: string | null;
+  branch: string | null;
+  /** What its model is doing and since when (SDK 0.28 `activity`); null while offline or not reported. */
+  activity: { state: TurnState; since: string } | null;
+  /** What it holds: the first thread the caller may read by title, and how many it holds in all. */
+  holds: { title: string | null; count: number };
 }
 
 interface SessionRow {
@@ -114,6 +124,12 @@ interface SessionRow {
   state: "live" | "parked";
   online: boolean;
   holds: string[];
+  /** Absent from an older server (before bridge #357 / SDK 0.29: name + details; #355 / SDK 0.28: activity). */
+  name?: string | null;
+  details?: { folder: string | null; branch: string | null; client: string | null; host: string | null };
+  activity?: { state: TurnState; since: string } | null;
+  heldThreads?: Array<{ id: string; title: string }>;
+  hiddenHolds?: number;
 }
 
 const nameOf = (label: string | null | undefined, id: string): string => label || `session ${id.slice(-4)}`;
@@ -219,7 +235,17 @@ export function createHolds(deps: HoldsDeps) {
     const gw = all.find((s) => s.kind === "gateway" && s.state === "live");
     const siblings = all
       .filter((s) => s.id !== deps.mySessionId() && s.kind !== "observer")
-      .map((s) => ({ id: s.id, label: nameOf(s.label, s.id), kind: s.kind, online: s.online }))
+      .map((s) => ({
+        id: s.id,
+        label: nameOf(s.label, s.id),
+        kind: s.kind,
+        online: s.online,
+        name: s.name ?? null,
+        folder: s.details?.folder ?? null,
+        branch: s.details?.branch ?? null,
+        activity: s.activity ?? null,
+        holds: { title: s.heldThreads?.[0]?.title ?? null, count: s.holds.length + (s.hiddenHolds ?? 0) },
+      }))
       .sort((a, b) => Number(b.online) - Number(a.online));
     return { gateway: gw ? { online: true, label: nameOf(gw.label, gw.id) } : { online: false, label: null }, siblings };
   }

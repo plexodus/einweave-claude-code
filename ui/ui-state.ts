@@ -53,6 +53,15 @@ export interface UiSession {
   id: string;
   label: string;
   online: boolean;
+  /** Its own name (a rename); null = derived. */
+  name: string | null;
+  /** Where it works and on what branch (the label's parts); null = not reported. */
+  folder: string | null;
+  branch: string | null;
+  /** What its model is doing and since when; null while offline or when its client reports none. */
+  activity: { state: "working" | "needs_you" | "idle"; since: string } | null;
+  /** The first held thread the agent may read, by title, and how many it holds in all. */
+  holds: { title: string | null; count: number };
 }
 
 /** One held thread as the server lists it, before it meets the live set of held ids. */

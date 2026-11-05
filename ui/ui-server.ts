@@ -48,6 +48,10 @@ export interface UiRoutes {
   search(p: { query: string; type?: "threads" | "messages"; sort?: "relevance" | "newest"; cursor?: string; limit?: number }): Promise<unknown>;
   /** A person's action: the MCP tool `name`'s result; a tool not allowed is a UiHttpError 403. */
   tool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  /** This agent's other sessions, read now (the Hand over picker opens on it): `{ sessions: UiSession[] }`. */
+  sessions(): Promise<unknown>;
+  /** The mod's report of what this window's model is doing (`working` | `needs_you` | `idle`); a bad state is a UiHttpError 400. */
+  turn(state: string): Promise<unknown>;
 }
 
 export interface UiServerOptions {
@@ -88,9 +92,9 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
     if (req.url.length > MAX_URL) return json(414, { error: "request too long" });
     const url = new URL(req.url);
     const [, head, rest, ...more] = url.pathname.split("/");
-    // POST is an action, and only an action; a GET carries no body: refuse one rather than read it.
+    // POST is an action (a tool, a turn report), and only that; a GET carries no body: refuse one rather than read it.
     const post = req.method === "POST";
-    if (post !== (head === "tool")) return json(405, { error: post ? "GET only here" : "POST only" });
+    if (post !== (head === "tool" || head === "turn")) return json(405, { error: post ? "GET only here" : "POST only" });
     if (!post && (req.body !== null || req.headers.has("transfer-encoding") || Number(req.headers.get("content-length") ?? 0) > 0)) return json(400, { error: "no body expected" });
     let id = "";
     if (rest !== undefined) {
@@ -105,6 +109,7 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
       if (more.length === 0) {
         if (head === "state" && rest === undefined) return json(200, await routes.state());
         if (head === "channels" && rest === undefined) return json(200, await routes.channels());
+        if (head === "sessions" && rest === undefined) return json(200, await routes.sessions());
         if (head === "channel" && rest !== undefined) return json(200, await routes.channel(id));
         if (head === "tool" && rest !== undefined) {
           const text = await req.text();
@@ -118,6 +123,7 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
           if (!args || typeof args !== "object" || Array.isArray(args)) return json(400, { error: "arguments must be an object" });
           return json(200, await routes.tool(id, args as Record<string, unknown>));
         }
+        if (head === "turn" && rest !== undefined) return json(200, await routes.turn(id));
         if (head === "search" && rest === undefined) {
           const q = url.searchParams;
           const query = q.get("q") ?? "";

@@ -492,7 +492,7 @@ test('the Held tab lists held threads, the Session tab has the name field; Relea
 
 // Red: drop the channel title → no '#dev'; unseenByModel from anywhere else (or 0 shown) → no '3 new'; picker unsorted →
 // offline first; handover args wrong → calls differ; the old typed hint kept → found.
-test('board Held: rows as the Inbox (#channel Title, N new · last @x · age), Release and Hand over; the picker lists online first and hands over', async ($, on) => {
+test('board Held: rows as the Inbox (#channel Title, N new · last @x · age), Release and Hand over; the picker lists the online windows and hands over', async ($, on) => {
   const NOW = Date.parse('2026-11-03T12:00:00.000Z')
   const HELD: UiSnapshot = {
     ...SNAP,
@@ -524,22 +524,11 @@ test('board Held: rows as the Inbox (#channel Title, N new · last @x · age), R
 
   await ui.press({ key: 'handover:t1' })
   const picks = async () => (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('pick'))
-  // Online only; the offline ones folded behind one row (Jörgen 2026-11-04, option C).
-  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick-new:t1', 'pick-cancel:t1'])
-  expect(await ui.find({ key: 'pick-offline:t1' })).toMatchObject({ props: { label: '▸ Show 1 offline', dimColor: true } })
-  expect(await ui.find({ type: 'Text', text: ' · offline' })).toBeUndefined()
-  // Shown, then hidden again from the same row.
-  await ui.press({ key: 'pick-offline:t1' })
-  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick:t1:s3', 'pick-new:t1', 'pick-cancel:t1'])
-  expect(await ui.find({ key: 'pick-offline:t1' })).toMatchObject({ props: { label: '▾ Hide offline' } })
-  expect(await ui.find({ type: 'Text', text: ' · offline' })).toBeDefined()
-  await ui.press({ key: 'pick-offline:t1' })
-  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick-new:t1', 'pick-cancel:t1'])
-  // Shown, then the picker closed: it opens folded again.
-  await ui.press({ key: 'pick-offline:t1' })
-  await ui.press({ key: 'pick-cancel:t1' })
-  await ui.press({ key: 'handover:t1' })
-  expect(await picks()).toEqual(['pick:t1:s2', 'pick-offline:t1', 'pick-new:t1', 'pick-cancel:t1'])
+  // Option B (Jörgen 2026-11-05): online windows only, the offline ones counted under the edge; then New window and Cancel.
+  expect(await picks()).toEqual(['pick:t1:s2', 'pick-new:t1', 'pick-cancel:t1'])
+  expect(await findRun(ui, '1 offline not shown')).toBeDefined()
+  expect(await findRun(ui, '╭ ')).toBeDefined()
+  expect(await ui.find({ key: 'pick-new:t1' })).toMatchObject({ props: { label: 'New window' } })
   await ui.press({ key: 'pick:t1:s2' })
   await clock.settle()
   expect(calls.filter(c => c.tool === 'handover')).toEqual([{ tool: 'handover', args: { ref: 't1', to: 's2' } }])
@@ -1377,12 +1366,10 @@ test('a held thread tab, docked: Hand over opens the picker in place of the post
   expect(order).toEqual(['rule:head', `body:${T_OLD}`, `picker:${T_OLD}`, 'rule:foot', `keys:${T_OLD}`])
   expect(await ui.find({ key: `body:${T_OLD}` })).toMatchObject({ props: { height: 5 } })
   const picks = async () => (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('pick'))
-  // Head, 2 online, fold row, foot = 5: it fits.
-  expect(await picks()).toEqual([`pick:${T_OLD}:on1`, `pick:${T_OLD}:on2`, `pick-offline:${T_OLD}`, `pick-new:${T_OLD}`, `pick-cancel:${T_OLD}`])
-  // Shown, 7 rows do not fit 5: one session, a count of the rest, and Cancel still there.
-  await ui.press({ key: `pick-offline:${T_OLD}` })
-  expect(await picks()).toEqual([`pick:${T_OLD}:on1`, `pick-offline:${T_OLD}`, `pick-new:${T_OLD}`, `pick-cancel:${T_OLD}`])
-  expect(await findRun(ui, '6 more · a taller pane shows them')).toMatchObject({ props: { dimColor: true } })
+  // Head, two windows of 2 rows, buttons, edge = 7 rows do not fit 5: a count of the windows, and Cancel still there.
+  expect(await picks()).toEqual([`pick-new:${T_OLD}`, `pick-cancel:${T_OLD}`])
+  expect(await findRun(ui, '2 more · a taller pane shows them')).toMatchObject({ props: { dimColor: true } })
+  expect(await findRun(ui, '5 offline not shown')).toBeDefined()
   // Cancel: the posts come back.
   await ui.press({ key: `pick-cancel:${T_OLD}` })
   expect((await postKeys()).length).toBeGreaterThan(0)
@@ -2346,3 +2333,91 @@ test('Inbox search: filters alone say "newest first" (what the server did) and o
   await ui.unmount()
 })
 
+
+/**
+ * Hand over picker, option B (Jörgen 2026-11-05). The windows are read anew as the picker opens (`GET /sessions`
+ * on the UI socket): the snapshot's are up to a minute old. The picker draws from the list it opened with (the
+ * `handover` atom, written as it opens and once by that read), so a later snapshot cannot reorder it.
+ * MUTATIONS (seen red): skip the fresh read → the snapshot's stale order; draw from the snapshot instead of the
+ * picker's own list → the same.
+ */
+test('the Hand over picker reads the windows anew as it opens and draws from that list, needs you first', async ($, on) => {
+  const NOW = Date.parse('2026-11-05T12:00:00.000Z')
+  const at = (ms: number) => new Date(NOW - ms).toISOString()
+  const win = (id: string, over: Record<string, unknown>) => ({ id, label: `label ${id}`, online: true, name: null, folder: null, branch: null, activity: null, holds: { title: null, count: 0 }, ...over })
+  const HELD: UiSnapshot = {
+    ...SNAP,
+    uiSocket: '/tmp/ew/u1.sock',
+    holds: [{ threadId: 't1', title: 'Fix the build', channel: 'dev', quietSince: null, unseenByModel: 0, lastBy: null }],
+    // Stale: the snapshot says s1 is working.
+    sessions: [win('s1', { activity: { state: 'working', since: at(60_000) } }), win('s2', {})],
+  }
+  const fresh = [
+    win('s1', { folder: 'bridge', branch: 'main', activity: { state: 'idle', since: at(720_000) }, holds: { title: 'Search relevance', count: 1 } }),
+    win('s2', { folder: 'bridge', branch: 'bridge', activity: { state: 'needs_you', since: at(5_000) } }),
+    win('s3', { online: false }),
+  ]
+  const fetched: string[] = []
+  on('http.fetch', (_$, e) => {
+    fetched.push(e.url)
+    if (e.url === 'http://einweave/sessions') return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ sessions: fresh }) } }
+    return { value: { status: 404, ok: false, headers: {}, text: '{}' } }
+  })
+  const { clock } = engine(on, { polled: HELD, now: NOW })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: 'handover:t1' })
+  await clock.settle()
+  expect(fetched.filter(u => u.endsWith('/sessions'))).toEqual(['http://einweave/sessions'])
+  const picks = async () => (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('pick:'))
+  expect(await picks()).toEqual(['pick:t1:s2', 'pick:t1:s1'])
+  // Place (a branch equal to its folder dropped), what it is doing, what it holds.
+  expect(await ui.find({ key: 'pick:t1:s2' })).toMatchObject({ props: { label: 'Hand over to bridge' } })
+  expect(await findRun(ui, 'needs you')).toMatchObject({ props: { color: PALETTE.amber } })
+  expect(await findRun(ui, 'idle 12 min')).toBeDefined()
+  expect(await findRun(ui, '  holds Search relevance')).toBeDefined()
+  expect(await findRun(ui, /#s2 · holds nothing/)).toBeDefined()
+  expect(await findRun(ui, '1 offline not shown')).toBeDefined()
+  await ui.unmount()
+})
+
+/**
+ * The window's turn, told to the plugin's server (`POST /turn/<state>` on the UI socket) from Claude Code's own
+ * lifecycle. MUTATIONS (seen red): report a subagent's turn → an extra post; drop the dedupe → `working` twice;
+ * report only before the call (not after it resolves) → `needs_you` held to the turn's end.
+ */
+test('turn state: a main-loop turn posts working, a permission dialog needs_you, its tool working, the end idle; a subagent turn and a repeat post nothing', async ($, on) => {
+  const posted: string[] = []
+  on('http.fetch', (_$, e) => {
+    if (e.url.startsWith('http://einweave/turn/')) {
+      posted.push(`${e.init?.method} ${e.url.slice('http://einweave'.length)} ${e.init?.socketPath}`)
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
+    }
+    return { value: { status: 404, ok: false, headers: {}, text: '{}' } }
+  })
+  // The engine beneath the plugin: each event's own result.
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Notification', () => ({}) as never)
+  // As in a session: the permission dialog opens INSIDE the call (core beneath every tool.call hook), and the
+  // approved tool runs before the call resolves; nothing tells a hook when the person answered.
+  on('tool.call', async (_$, e) => {
+    if (e.tool === 'Bash') await $.classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' })
+    return { result: 'ran' } as never
+  })
+  const { clock } = engine(on, { polled: { ...SNAP, uiSocket: '/tmp/ew/u1.sock' } })
+  await start($, clock)
+  await $.turn.start({ text: 'go', turnId: 'm1' })
+  await $.turn.start({ text: '', turnId: 'a1', agentId: 'sub-1' })
+  await $.turn.start({ text: 'again', turnId: 'm2' })
+  // A subagent's run ends mid-turn: the window is still working.
+  await $.turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 'a1', agentId: 'sub-1', reason: 'answer' })
+  // The turn's LAST tool asks: no later call ends the wait, so the asked call resolving must (live 2026-11-05).
+  await $.tool.call({ tool: 'Bash', command: 'ls' } as never).catch(() => {})
+  await clock.settle()
+  // Esc: the turn ends aborted (a Stop hook never hears this).
+  await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 'm2', reason: 'aborted' })
+  await clock.settle()
+  expect(posted).toEqual(['POST /turn/working /tmp/ew/u1.sock', 'POST /turn/needs_you /tmp/ew/u1.sock', 'POST /turn/working /tmp/ew/u1.sock', 'POST /turn/idle /tmp/ew/u1.sock'])
+})
