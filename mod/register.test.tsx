@@ -2383,6 +2383,157 @@ test('the Hand over picker reads the windows anew as it opens and draws from tha
 })
 
 /**
+ * Undo after a hand-over (Jörgen 2026-11-05: an Undo, not a confirm; 10 s; option A, the row stays where it was).
+ * The handed thread keeps its Held place as a dim `↪` record with Undo drawn at rest; the keyboard on it gets
+ * `u Undo` in the footer; Undo takes it back, answering the online holder's question with that press (take,
+ * then take by id with confirm); after 10 s the row is gone. A failed hand-over offers no Undo.
+ * MUTATIONS (seen red): no ghost row → `undo:` missing; ghost at the end, not its place → order; drop the
+ * confirm step → one take; no expiry → the row after 10 s; set the Undo state on a failed hand-over → `undo:` shown.
+ */
+const HO_A = '01990000-0000-7000-8000-0000000000b1'
+const HO_B = '01990000-0000-7000-8000-0000000000b2'
+const HO_C = '01990000-0000-7000-8000-0000000000b3'
+const heldOf = (id: string, title: string) => ({ threadId: id, title, channel: 'dev', quietSince: null, unseenByModel: 0, lastBy: null })
+const handSnap = (): UiSnapshot => ({
+  ...SNAP,
+  holds: [heldOf(HO_A, 'First'), heldOf(HO_B, 'Bugs'), heldOf(HO_C, 'Third')],
+  sessions: [{ id: 's2', label: 'Bellman #ab12', online: true, name: null, folder: 'bridge', branch: 'main', activity: null, holds: { title: null, count: 0 } }],
+})
+const recKeys = async (ui: { findAll: (q: { type: 'Button' }) => Promise<{ key?: string }[]> }) =>
+  (await ui.findAll({ type: 'Button' })).map(b => b.key).filter((k): k is string => !!k && k.startsWith('mark:'))
+
+test('Hand over then Undo: the row keeps its place with Undo for 10 s; Undo takes it back, confirming the online holder', async ($, on) => {
+  ring(on)
+  const snap = handSnap()
+  const asked = `Bellman #ab12 is online and working on this. Take it anyway?\nAsk the person; if they agree, call take again with ref "${HO_B}" and confirm: true. Nothing was taken.`
+  const { calls, toasts, clock } = engine(on, {
+    polled: snap,
+    answer: c => {
+      if (c.tool === 'handover') {
+        snap.holds = snap.holds.filter(h => h.threadId !== HO_B)
+        return text('Handed Bugs to Bellman #ab12.')
+      }
+      if (c.tool === 'take') {
+        if (!c.args.confirm) return text(asked)
+        snap.holds = [heldOf(HO_A, 'First'), heldOf(HO_B, 'Bugs'), heldOf(HO_C, 'Third')]
+        return text(`This session now holds Bugs. Reply with thread_id "${HO_B}".`)
+      }
+      return undefined
+    },
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `handover:${HO_B}` })
+  await ui.press({ key: `pick:${HO_B}:s2` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'handover').map(c => c.args)).toEqual([{ ref: HO_B, to: 's2' }])
+  expect(toasts.at(-1)).toBe('Handed Bugs to Bellman #ab12.')
+  // Its place kept, between the two still held; Undo drawn at rest; where it went said.
+  expect(await recKeys(ui)).toEqual([`mark:${HO_A}`, `mark:${HO_B}`, `mark:${HO_C}`])
+  expect(await ui.find({ key: `undo:${HO_B}` })).toMatchObject({ props: { label: 'Undo' } })
+  expect(await findRun(ui, /handed to bridge · main/)).toBeDefined()
+  expect(await ui.find({ key: `release:${HO_B}` })).toBeUndefined()
+  // The keyboard on it: `u Undo` in the footer.
+  await focus($, `mark:${HO_B}`)
+  await clock.settle()
+  expect(await ui.find({ key: 'foot:undo' })).toMatchObject({ props: { hotkey: 'u', label: 'Undo' } })
+  await ui.press({ key: 'foot:undo' })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: HO_B }, { ref: HO_B, confirm: true }])
+  expect(toasts.at(-1)).toContain('now holds Bugs')
+  // Back as a held row, Release and Hand over again, no Undo.
+  expect(await ui.find({ key: `undo:${HO_B}` })).toBeUndefined()
+  expect(await ui.find({ key: `release:${HO_B}` })).toBeDefined()
+  expect(await recKeys(ui)).toEqual([`mark:${HO_A}`, `mark:${HO_B}`, `mark:${HO_C}`])
+  await ui.unmount()
+})
+
+test('Hand over: Undo runs out after 10 s (the row goes); a failed hand-over offers no Undo', async ($, on) => {
+  const snap = handSnap()
+  let fail = false
+  const { clock } = engine(on, {
+    polled: snap,
+    answer: c => {
+      if (c.tool !== 'handover') return undefined
+      if (fail) return { content: [{ type: 'text', text: 'einweave API error 409: not held here' }], isError: true }
+      snap.holds = snap.holds.filter(h => h.threadId !== HO_B)
+      return text('Handed Bugs to Bellman #ab12.')
+    },
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `handover:${HO_B}` })
+  await ui.press({ key: `pick:${HO_B}:s2` })
+  await clock.settle()
+  expect(await ui.find({ key: `undo:${HO_B}` })).toBeDefined()
+  await clock.advance(9_000)
+  expect(await ui.find({ key: `undo:${HO_B}` })).toBeDefined()
+  await clock.advance(1_100)
+  expect(await ui.find({ key: `undo:${HO_B}` })).toBeUndefined()
+  expect(await recKeys(ui)).toEqual([`mark:${HO_A}`, `mark:${HO_C}`])
+  fail = true
+  await ui.press({ key: `handover:${HO_C}` })
+  await ui.press({ key: `pick:${HO_C}:s2` })
+  await clock.settle()
+  expect(await ui.find({ key: `undo:${HO_C}` })).toBeUndefined()
+  expect(await ui.find({ key: `release:${HO_C}` })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Hand over from the thread tab: its key bar offers Undo on u (in place of Take), its head says where it went', async ($, on) => {
+  const snap = handSnap()
+  const { calls, clock } = engine(on, {
+    polled: snap,
+    answer: c => {
+      if (c.tool === 'handover') {
+        snap.holds = snap.holds.filter(h => h.threadId !== HO_B)
+        return text('Handed Bugs to Bellman #ab12.')
+      }
+      if (c.tool === 'take') {
+        snap.holds = [heldOf(HO_A, 'First'), heldOf(HO_B, 'Bugs'), heldOf(HO_C, 'Third')]
+        return text('This session now holds Bugs.')
+      }
+      return undefined
+    },
+  })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `open:${HO_B}` })
+  await clock.settle()
+  await ui.press({ key: `handover:${HO_B}` })
+  await ui.press({ key: `pick:${HO_B}:s2` })
+  await clock.settle()
+  expect(await ui.find({ key: `undo:${HO_B}` })).toMatchObject({ props: { hotkey: 'u', label: 'Undo' } })
+  expect(await ui.find({ key: `take:${HO_B}` })).toBeUndefined()
+  expect(await findRun(ui, /handed to bridge · main/)).toBeDefined()
+  await ui.press({ key: `undo:${HO_B}` })
+  await clock.settle()
+  expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: HO_B }])
+  expect(await ui.find({ key: `release:${HO_B}` })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the keyboard reaches the Hand over picker: its windows are stops after the record\'s mark, before the next record', async ($, on) => {
+  const landed = ring(on)
+  const snap = handSnap()
+  const { clock } = engine(on, { polled: snap })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `handover:${HO_A}` })
+  await clock.settle()
+  await focus($, `mark:${HO_A}`)
+  // Tab from the mark goes over its title: on to the picker's first window, not the next record (live 2026-11-05).
+  await focus($, `open:${HO_A}`)
+  await clock.settle()
+  expect(landed.at(-1)).toBe(`pick:${HO_A}:s2`)
+  await ui.unmount()
+})
+
+/**
  * The window's turn, told to the plugin's server (`POST /turn/<state>` on the UI socket) from Claude Code's own
  * lifecycle. MUTATIONS (seen red): report a subagent's turn → an extra post; drop the dedupe → `working` twice;
  * report only before the call (not after it resolves) → `needs_you` held to the turn's end.

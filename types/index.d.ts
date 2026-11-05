@@ -277,6 +277,8 @@ declare module 'claude-code' {
       paneUp: Shaped<boolean>
       /** The held thread whose Hand over picker is open ('' when none), the tab it opened on, and the windows it lists (frozen while open). */
       handover: Shaped<{ id: string; on: string; sessions: UiSession[] | null }>
+      /** The thread this window last handed over, for its Undo: its Held place, title, channel, where it went, until when ('' when none). */
+      handed: Shaped<{ threadId: string; title: string; channel: string; place: string; at: number; until: number }>
       scrolls: Shaped<Record<string, PaneScroll>>
       search: Shaped<SearchState>
     }

@@ -20,6 +20,7 @@ import {
   type InboxRow, type SearchHit, type SearchState, type Seg, type Tone,
   heldRow,
   pickerRows,
+  refocusTarget,
   nextTurn,
   WAITS_ON_PERSON,
   type TurnState,
@@ -58,6 +59,14 @@ const unfolded = atom({ plugin: 'einweave', key: 'unfolded' } as const, {} as Re
  */
 const NO_HANDOVER: { id: string; on: string; sessions: NonNullable<UiSnapshot['sessions']> | null } = { id: '', on: '', sessions: null }
 const handover = atom({ plugin: 'einweave', key: 'handover' } as const, NO_HANDOVER, { shape: 'handover-4' })
+/**
+ * The thread this window last handed over, for its Undo (Jörgen 2026-11-05: an Undo, not a confirm; 10 s; the
+ * Held row stays where it was, mockup https://claude.ai/artifact/3DAwHnMFimc6ujb8D3h6J9 option A): the row's
+ * place in Held (`at`), its title and channel, the window it went to, and until when Undo is offered.
+ */
+const UNDO_MS = 10_000
+const NO_HANDED = { threadId: '', title: '', channel: '', place: '', at: 0, until: 0 }
+const handed = atom({ plugin: 'einweave', key: 'handed' } as const, NO_HANDED, { shape: 'handed-1' })
 /** The Inbox search (board Search): the query, the current answer, and which edit it answers. */
 // shape: bump when SearchState's form changes, so a pane reloaded mid-search drops the old state rather than
 // drawing it without the new fields (search-2: `applied`, live check 2026-11-04).
@@ -322,6 +331,19 @@ async function setTabs($: EngineInterface, f: (t: PaneTabs) => PaneTabs): Promis
   if (paneKeys) detach($.ui.focus({ requestId: PANE, key: `tab:${shown}` }).catch(() => {}))
 }
 
+/**
+ * Undo a hand-over: take the thread back. The person pressed Undo, so that press answers an online holder's
+ * question: the first take asks (and arms the confirm for that thread), the second confirms it.
+ */
+async function undoHandover($: EngineInterface, id: string): Promise<string> {
+  const first = textOf(await uiTool($, 'take', { ref: id }))
+  const o = takeOutcome(first)
+  const text = o.kind === 'ask' ? textOf(await uiTool($, 'take', { ref: o.id, confirm: true })) : first
+  await update($, handed, h => (h.threadId === id ? NO_HANDED : h))
+  await poll($)
+  return text
+}
+
 /** Read a thread tab's content with `ui_thread`: the person's view, which neither marks read nor acks. */
 async function loadThread($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...(m[id] ?? NO_THREAD), loading: true } }))
@@ -537,7 +559,7 @@ type Press = Parameters<NonNullable<ButtonProps['onPress']>>[0]
 
 /** One action of a record: drawn on hover, and in the footer, on its hotkey, while the keyboard is on the record. */
 interface Act {
-  key: 'take' | 'new' | 'release' | 'join' | 'handover'
+  key: 'take' | 'new' | 'release' | 'join' | 'handover' | 'undo'
   label: string
   hotkey: string
   onPress: (press: Press) => void
@@ -621,6 +643,8 @@ export const register: Register = on => {
   // The stops the pane's records drew last, top to bottom, and where the ring was: ui.focus reads both.
   let stops: string[] = []
   let last = ''
+  // The body's focus keys and stops as drawn last, and on which tab: what refocusTarget compares with.
+  let bodyWas = { frame: '', keys: [] as string[], stops: [] as string[] }
   let win: PaneWindow | null = null
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -955,6 +979,36 @@ export const register: Register = on => {
         })(),
       )
     const handoverAct = (id: string): Act => ({ key: 'handover', label: 'Hand over', hotkey: 'h', onPress: togglePicker(id) })
+    const hd = await read($, handed)
+    const undoing = hd.threadId && now < hd.until ? hd : null
+    const undoAct = (id: string): Act => ({
+      key: 'undo',
+      label: 'Undo',
+      hotkey: 'u',
+      onPress: () => detach(undoHandover($, id).then(toastFirst($)).catch(err => $.ui.toast(`Undo failed: ${String(err).slice(0, 120)}`))),
+    })
+    /** Hand the thread to window `w`; once it went, its Held row (or its tab's key bar) offers Undo for UNDO_MS. */
+    const handOver = (threadId: string, w: { id: string; place: string }) =>
+      detach(
+        (async () => {
+          const at = s?.holds.findIndex(h => h.threadId === threadId) ?? -1
+          const row = at >= 0 && s ? heldRow(s.holds[at]!, now) : null
+          let r: Awaited<ReturnType<typeof uiTool>>
+          try {
+            r = await uiTool($, 'handover', { ref: threadId, to: w.id })
+          } catch (err) {
+            $.ui.toast(`handover failed: ${String(err).slice(0, 120)}`)
+            return
+          }
+          const text = textOf(r)
+          $.ui.toast(text.split('\n')[0] || (r.isError ? 'handover failed' : 'Done.'))
+          if (r.isError || !/^Handed /.test(text)) return
+          const until = (await $.clock.now()) + UNDO_MS
+          await update($, handed, () => ({ threadId, title: row?.title ?? '', channel: row?.channel ?? '', place: w.place, at: Math.max(0, at), until }))
+          $.clock.after(UNDO_MS, () => detach(update($, handed, h => (h.until === until ? NO_HANDED : h))))
+          await poll($)
+        })(),
+      )
 
     /**
      * Hand over's picker (option B, Jörgen 2026-11-05; mockup https://claude.ai/artifact/6L15G1YyW89Q8W2zEvpAzF):
@@ -985,7 +1039,7 @@ export const register: Register = on => {
                 plain
                 label={`Hand over to ${w.place}`}
                 onPress={() => {
-                  act('handover', { ref: threadId, to: w.id })()
+                  handOver(threadId, w)
                   close()
                 }}
               >
@@ -1066,7 +1120,8 @@ export const register: Register = on => {
      * record's own text is semibold; bold is the pointer's and the keyboard's. Bold at rest leaves the
      * hover nothing to change (Channels drew `#name` 600 and its hover showed nothing).
      */
-    const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; meta2?: Seg[]; acts: Act[] }) => {
+    // `pin`: its actions always drawn, not only under the pointer (the handed-over row's Undo).
+    const record = (r: { id: string; label: string; title?: Seg[]; dim?: boolean; onOpen: () => void; meta?: Seg[]; meta2?: Seg[]; acts: Act[]; pin?: boolean }) => {
       if (desk) return deskRecord(r)
       drawn.push(`mark:${r.id}`)
       const hot = keys && f === r.id
@@ -1134,7 +1189,7 @@ export const register: Register = on => {
             </Box>
           ))}
           {r.acts.length ? (
-            <Box position="absolute" top={metaLines.length} right={0} flexDirection="row" display="none" hover={{ display: 'flex' }}>
+            <Box position="absolute" top={metaLines.length} right={0} flexDirection="row" {...(r.pin ? {} : { display: 'none' as const, hover: { display: 'flex' as const } })}>
               {r.acts.map(a => (
                 <Box key={`act:${a.key}:${r.id}`} flexDirection="row">
                   {/* A space as text, not a gap: columnGap's cells let the record show through. */}
@@ -1297,6 +1352,23 @@ export const register: Register = on => {
       )
     const heldHere = (id: string) => s.holds.some(h => h.threadId === id)
     const releaseAct = (id: string): Act => ({ key: 'release', label: 'Release', hotkey: 'r', onPress: act('release', { ref: id }) })
+    /** Held's rows with the thread just handed over put back at its place, dim, `↪`, Undo drawn at rest. */
+    const withHanded = (rows: Block[]): Block[] => {
+      if (!undoing) return rows
+      const u = undoing
+      const label = u.title || 'thread'
+      const ghost = recordBlock({
+        id: u.threadId,
+        label,
+        title: [{ text: '↪ ' }, ...(u.channel ? [{ text: `#${u.channel} ` }] : []), { text: label }],
+        dim: true,
+        onOpen: () => detach(viewThread($, u.threadId, label)),
+        meta: [{ text: `handed to ${u.place}`, tone: 'dim' }],
+        acts: [undoAct(u.threadId)],
+        pin: true,
+      })
+      return [...rows.slice(0, u.at), ghost, ...rows.slice(u.at)]
+    }
     const dot = { text: ' · ', tone: 'dim' as const }
     const dim = (text: string) => ({ text, tone: 'dim' as const })
     /** Where a thread matched, as the board says it: title, a reply count, the conclusion, its fields. */
@@ -1374,15 +1446,20 @@ export const register: Register = on => {
         space: o.space,
         stop: true,
         focus: [`mark:${r.id}`, `open:${r.id}`, ...r.acts.map(a => `${a.key}:${r.id}`), ...(p ? p.keys : [])],
-        draw: () =>
-          p ? (
+        draw: () => {
+          if (!p) return record(r)
+          // The picker's windows are stops after the record's mark: a move over the record's title or actions
+          // (focusTarget) and the arrows go into it, not on to the next record (live 2026-11-05: with two held
+          // rows the keyboard could not reach the picker).
+          const head = record(r)
+          drawn.push(...p.keys)
+          return (
             <Box key={`recp:${r.id}`} flexDirection="column" flexShrink={0}>
-              {record(r)}
+              {head}
               {p.node}
             </Box>
-          ) : (
-            record(r)
-          ),
+          )
+        },
       }
     }
     /** Blocks after the first get a blank row above them: a list's breathing room, counted. */
@@ -1636,11 +1713,13 @@ export const register: Register = on => {
         ],
         blocks: !connected
           ? [prose('not-connected', 'Not connected.')]
-          : s.holds.length === 0
+          : s.holds.length === 0 && !undoing
             ? [prose('none', 'None. Take one from the Inbox.')]
             : spaced(
                 // Board Held (Jörgen 2026-11-03): rows as the Inbox's, Release and Hand over on the row, the picker under it.
-                s.holds.map(held => {
+                // A thread just handed over keeps its place for UNDO_MS, as a dim row with Undo: the same record (its
+                // mark's key unchanged, so the keyboard stays on it), the same footer (`u Undo`).
+                withHanded(s.holds.filter(h => h.threadId !== undoing?.threadId).map(held => {
                   const r = heldRow(held, now)
                   return recordBlock(
                     {
@@ -1653,7 +1732,7 @@ export const register: Register = on => {
                     },
                     { picker: picking === r.threadId && !desk ? picker(r.threadId) : null },
                   )
-                }),
+                })),
               ),
         keys: null,
         anchor: 'top',
@@ -1949,7 +2028,9 @@ export const register: Register = on => {
                 },
               ]
             : []),
-          held
+          undoing?.threadId === id
+            ? headLine('head:thread:line', `handed to ${undoing.place} · Undo puts it back here`, { dimColor: true })
+            : held
             ? headLine('head:thread:line', 'held by you · replies come here', { color: PALETTE.brand })
             : headLine('head:thread:line', 'not held here · Claude has not seen it · Take brings it here', { color: PALETTE.amber }),
         ],
@@ -1965,6 +2046,8 @@ export const register: Register = on => {
                 <Text dimColor>·</Text>
                 <Button key={`handover:${id}`} plain {...hot('h')} label="Hand over" dimColor onPress={togglePicker(id)} />
               </Box>
+            ) : undoing?.threadId === id ? (
+              <Button key={`undo:${id}`} plain {...hot('u')} label="Undo" onPress={undoAct(id).onPress} />
             ) : (
               <Button key={`take:${id}`} plain {...hot('t')} label="Take" onPress={take(id)} />
             )}
@@ -2032,7 +2115,17 @@ export const register: Register = on => {
       )
     }
     if (own) flush()
+    // The keyboard's element left the list (Release, the picker closing, Undo running out): put the ring on
+    // its record or the next one, before the engine re-homes it by position. Same tab only: a tab change
+    // puts it on the tab itself (setTabs).
+    const bodyKeys = frame.blocks.flatMap(b => b.focus ?? [])
+    const refocus = keys && bodyWas.frame === frame.id ? refocusTarget(bodyWas, { keys: bodyKeys, stops: drawn }, last) : undefined
+    bodyWas = { frame: frame.id, keys: bodyKeys, stops: drawn }
     stops = drawn
+    if (refocus) {
+      last = refocus
+      detach($.ui.focus({ requestId: PANE, key: refocus }).catch(() => {}))
+    }
     const rule = (key: string) => (
       <Box key={key} height={1} flexShrink={0}>
         <Text color={RULE}>{'─'.repeat(width)}</Text>
