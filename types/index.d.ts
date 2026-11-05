@@ -30,13 +30,32 @@ export interface UiWaitingItem {
   quietSince?: string | null
 }
 
+/**
+ * Another session of this agent, a Hand over target. The fields after `online` are absent from an older
+ * plugin server: the picker then names it by `label` and shows no state.
+ */
+export interface UiSession {
+  id: string
+  label: string
+  online: boolean
+  /** Its own name (a rename); null = derived. */
+  name?: string | null
+  /** Where it works and on what branch; null = not reported. */
+  folder?: string | null
+  branch?: string | null
+  /** What its model is doing and since when; null while offline or when its client reports none. */
+  activity?: { state: 'working' | 'needs_you' | 'idle'; since: string } | null
+  /** The first held thread the agent may read, by title, and how many it holds in all. */
+  holds?: { title: string | null; count: number }
+}
+
 export interface UiSnapshot {
   v: 1
   connection: { state: UiConnection; detail: string | null }
   session: { agent: string | null; label: string | null; kind: string | null; scope: { mode: string; channelIds: string[]; channelNames?: (string | null)[] } | null }
   holds: UiHeld[]
   /** This agent's other sessions (Hand over targets), online first; null until read, absent from an older plugin server. */
-  sessions?: { id: string; label: string; online: boolean }[] | null
+  sessions?: UiSession[] | null
   waiting: { forYou: number | null; channel: number | null; more: boolean; top: UiWaitingItem[] } | null
   /** The agent's gateway (RFC-028); absent from an older plugin server, null until read. */
   gateway?: { online: boolean; label: string | null } | null
@@ -256,9 +275,8 @@ declare module 'claude-code' {
       focused: Shaped<string>
       unfolded: Shaped<Record<string, boolean>>
       paneUp: Shaped<boolean>
-      /** The held thread whose Hand over picker is open ('' when none), and whether it shows the offline sessions. */
-      /** The held thread whose Hand over picker is open, whether it shows the offline sessions, and the tab it opened on. */
-      handover: Shaped<{ id: string; offline: boolean; on: string }>
+      /** The held thread whose Hand over picker is open ('' when none), the tab it opened on, and the windows it lists (frozen while open). */
+      handover: Shaped<{ id: string; on: string; sessions: UiSession[] | null }>
       scrolls: Shaped<Record<string, PaneScroll>>
       search: Shaped<SearchState>
     }

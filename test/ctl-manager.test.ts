@@ -76,7 +76,7 @@ describe("CtlManager", () => {
       retryDelaysMs: [10],
       watchMs: 20,
       holdsLock: () => flag.holds,
-      companion: () => openUiServer({ path: uiPath, routes: { state: async () => ({}), channels: async () => ({}), channel: async () => ({}), thread: async () => ({}), tool: async () => ({}), search: async () => ({}) }, log: () => {} }).server,
+      companion: () => openUiServer({ path: uiPath, routes: { state: async () => ({}), channels: async () => ({}), channel: async () => ({}), thread: async () => ({}), tool: async () => ({}), search: async () => ({}), sessions: async () => ({}), turn: async () => ({}) }, log: () => {} }).server,
       onCompanion: () => void changes.push(m.companionPath()),
     });
     cleanups.push(() => m.close());

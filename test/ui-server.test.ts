@@ -25,6 +25,7 @@ const seen: string[] = [];
 const ROUTES: UiRoutes = {
   state: async () => ({ rev: 1 }),
   channels: async () => ({ channels: [] }),
+  sessions: async () => ({ sessions: [{ id: "s1" }] }),
   channel: async (id) => {
     if (id === "nope") throw new UiHttpError(404, "no such channel");
     return { channel_id: id };
@@ -41,6 +42,11 @@ const ROUTES: UiRoutes = {
   tool: async (name, args) => {
     if (name !== "take") throw new UiHttpError(403, `${name} is not run from the pane`);
     return { content: [{ type: "text", text: `took ${String(args.ref)}` }] };
+  },
+  turn: async (state) => {
+    if (state === "busy") throw new UiHttpError(400, "not a turn state: busy");
+    seen.push(`turn ${state}`);
+    return { ok: true };
   },
 };
 
@@ -86,6 +92,7 @@ describe("ui server", () => {
     open(path);
     expect(await (await get(path, "/state")).json()).toEqual({ rev: 1 });
     expect(await (await get(path, "/channels")).json()).toEqual({ channels: [] });
+    expect(await (await get(path, "/sessions")).json()).toEqual({ sessions: [{ id: "s1" }] });
     expect(await (await get(path, "/channel/a%2Fb")).json()).toEqual({ channel_id: "a/b" });
     await get(path, "/thread/t1?before_seq=42&limit=7");
     await get(path, "/thread/t2?before_seq=-1&limit=abc");
@@ -104,6 +111,18 @@ describe("ui server", () => {
     expect(seen.at(-1)).toBe(`search ${JSON.stringify({ query: "w" })}`);
     for (const url of ["/search", "/search?q=%20", "/search?q=w&type=people", "/search?q=w&sort=oldest"]) expect((await get(path, url)).status).toBe(400);
     expect((await get(path, "/search/x?q=w")).status).toBe(404);
+  });
+
+  test("POST /turn/<state> reports the window's turn; GET there is 405, a bad state 400", async () => {
+    const path = join(privateDir(), "u1.sock");
+    open(path);
+    const res = await get(path, "/turn/needs_you", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(seen.at(-1)).toBe("turn needs_you");
+    expect((await get(path, "/turn/working")).status).toBe(405);
+    expect((await get(path, "/turn/busy", { method: "POST" })).status).toBe(400);
+    expect((await get(path, "/turn", { method: "POST" })).status).toBe(404);
   });
 
   test("a failing route answers { error } with its status (a plain throw is 500); the server stays up", async () => {

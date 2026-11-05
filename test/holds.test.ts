@@ -422,4 +422,30 @@ describe("held (the mod's Held tab) and sessionsView (gateway + Hand over picker
     expect(v.siblings.map((x) => [x.label, x.online])).toEqual([["live one", true], ["gw", true], ["parked one", false]]);
     expect(f.calls.length).toBe(1);
   });
+
+  // Red: drop a field from the map → its value missing; count hidden holds out → 1 not 3.
+  test("sessionsView: a sibling carries its name, place, activity and what it holds (hidden holds counted, never named)", async () => {
+    const S3 = "00000000-0000-7000-8000-00000000eeee";
+    const f = fake((c) =>
+      c.path === `/api/agents/${AGENT}/sessions`
+        ? {
+            status: 200,
+            body: {
+              sessions: [
+                { id: S3, label: "bridge · main · Claude Code · #eeee", name: null, details: { folder: "bridge", branch: "main", client: "Claude Code", host: "mac" }, kind: "session", scope: { mode: "all", channelIds: [] }, state: "live", online: true,
+                  activity: { state: "working", since: "2026-11-05T10:00:00.000Z" }, holds: [T1], heldThreads: [{ id: T1, title: "Fix the build" }], hiddenHolds: 2 },
+                // An older server: none of the new fields.
+                { id: S2, label: "old", kind: "session", scope: { mode: "all", channelIds: [] }, state: "live", online: true, holds: [] },
+              ],
+            },
+          }
+        : undefined
+    );
+    const v = await f.holds.sessionsView();
+    expect(v.siblings).toEqual([
+      { id: S3, label: "bridge · main · Claude Code · #eeee", kind: "session", online: true, name: null, folder: "bridge", branch: "main",
+        activity: { state: "working", since: "2026-11-05T10:00:00.000Z" }, holds: { title: "Fix the build", count: 3 } },
+      { id: S2, label: "old", kind: "session", online: true, name: null, folder: null, branch: null, activity: null, holds: { title: null, count: 0 } },
+    ]);
+  });
 });

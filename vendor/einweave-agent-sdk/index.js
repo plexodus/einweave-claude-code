@@ -6,6 +6,8 @@ import {
   Clock,
   MAX_ACK_IDS,
   PROTOCOL_VERSION,
+  SESSION_DETAIL_KEYS,
+  TURN_STATES,
   TokenClient,
   WS_CLOSE_REASONS,
   apiOrigin,
@@ -28,7 +30,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-xtm975x0.js";
+} from "./index-e2fvvstq.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -202,6 +204,7 @@ class Session {
   reconnectAttempt = 0;
   lastClose = { cls: "transient" };
   authenticatedAt = null;
+  details = null;
   declaredOnce = false;
   remintedAfter4001 = false;
   sockBearer;
@@ -221,6 +224,7 @@ class Session {
   settled = new Map;
   ownMessageIds = new Set;
   acks = { model: new Set, dismissed: new Set };
+  turnState = null;
   pushQueue = [];
   pushing = false;
   statusChannel;
@@ -303,6 +307,27 @@ class Session {
       this.acks[how].add(id);
     }
     this.flushAcks();
+  }
+  turn(state) {
+    if (!TURN_STATES.includes(state))
+      return;
+    if (state === this.turnState)
+      return;
+    this.turnState = state;
+    this.flushTurn();
+  }
+  flushTurn() {
+    if (this.authenticatedAt === null || this.turnState === null)
+      return;
+    this.sendJson({ type: "turn", state: this.turnState });
+  }
+  setDetails(details) {
+    const next = pickDetails(details);
+    if (this.details && JSON.stringify(this.details) === JSON.stringify(next))
+      return;
+    this.details = next;
+    if (this.authenticatedAt !== null)
+      this.sendJson({ type: "session_details", details: next });
   }
   async drain() {
     if (this.stopped)
@@ -415,7 +440,7 @@ class Session {
       if (this.ws !== sock)
         return;
       const sessionInfo = {
-        ...typeof this.opts.sessionInfo === "function" ? this.opts.sessionInfo() : this.opts.sessionInfo,
+        ...withDetails(typeof this.opts.sessionInfo === "function" ? this.opts.sessionInfo() : this.opts.sessionInfo, this.details),
         sessionKey: this.client.sessionKey(),
         softwareId: this.client.softwareId(),
         clientVersion: this.client.softwareVersion()
@@ -818,6 +843,7 @@ class Session {
       ...Array.isArray(p.notCarried) ? { notCarried: p.notCarried } : {}
     });
     this.flushAcks();
+    this.flushTurn();
     this.armReconcile();
   }
   deliver(entry) {
@@ -916,9 +942,26 @@ function pendingMeta(entry) {
   }
   return { ...base, channelId: null, threadId: null, type: entry.action.action ?? null, senderHandle: null };
 }
+function pickDetails(d) {
+  const out = {};
+  for (const k of SESSION_DETAIL_KEYS) {
+    const v = d[k];
+    if (typeof v === "string" && v.length > 0)
+      out[k] = v;
+  }
+  return out;
+}
+function withDetails(base, details) {
+  if (!details)
+    return { ...base };
+  const out = { ...base };
+  for (const k of SESSION_DETAIL_KEYS)
+    delete out[k];
+  return { ...out, ...details };
+}
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.26.0";
+var SDK_VERSION = "0.29.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;

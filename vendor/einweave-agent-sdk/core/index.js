@@ -35,9 +35,11 @@ import {
   PROTOCOL_VERSION,
   SEARCH_MARK_END,
   SEARCH_MARK_START,
+  SESSION_DETAIL_KEYS,
   TAIL_MAX_MESSAGES,
   TAIL_SELECT_BG,
   TAIL_SGR,
+  TURN_STATES,
   TokenClient,
   TransportError,
   WS_CLOSE_CODES,
@@ -110,7 +112,7 @@ import {
   userAgent,
   viewport,
   wsHtu
-} from "../index-xtm975x0.js";
+} from "../index-e2fvvstq.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,
@@ -148,9 +150,11 @@ export {
   PROTOCOL_VERSION,
   SEARCH_MARK_END,
   SEARCH_MARK_START,
+  SESSION_DETAIL_KEYS,
   TAIL_MAX_MESSAGES,
   TAIL_SELECT_BG,
   TAIL_SGR,
+  TURN_STATES,
   TokenClient,
   TransportError,
   WS_CLOSE_CODES,

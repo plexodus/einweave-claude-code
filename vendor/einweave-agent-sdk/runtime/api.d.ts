@@ -12,7 +12,7 @@
  * ("callers MUST call clear() … skipping it leaks both") rather than the
  * plugin's caller-specific workaround.
  */
-import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type Scope, type WorkspaceLinks } from "../core";
+import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type Scope, type TurnState, type WorkspaceLinks } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 export declare class ApiRequestError extends Error {
@@ -379,10 +379,27 @@ export interface HoldResult {
     changed: boolean;
     moved: number;
 }
+/** A session's details (`AgentSession.details`). */
+export interface AgentSessionDetails {
+    /** The repo, or repo/worktree. */
+    folder: string | null;
+    /** Prettified (`feat/PROJ-42-x` → `PROJ-42-x`), or `detached@<sha>`. */
+    branch: string | null;
+    client: string | null;
+    host: string | null;
+}
 /** One session of an agent (`GET /api/agents/:id/sessions`, RFC-028 D8). */
 export interface AgentSession {
     id: string;
     label: string | null;
+    /** The session's NAME: a person sets it (a rename); null = none. Absent from an older server. */
+    name?: string | null;
+    /**
+     * The session's DETAILS, reported by its client and kept current (`session.setDetails`). Lay a
+     * session out from `name` + `details`, never by splitting `label`. Null = not reported; absent
+     * from an older server.
+     */
+    details?: AgentSessionDetails;
     /** null: it has not connected since kinds existed. */
     kind: ConnectionKind | null;
     scope: {
@@ -392,10 +409,26 @@ export interface AgentSession {
     state: "live" | "parked";
     online: boolean;
     parked: boolean;
+    /** Socket liveness (its last heartbeat), never activity: read `activity` for what it is doing. */
     lastSeenAt: string | null;
+    /**
+     * What its model is doing and since when, as its client reports it (`session.turn`). Null while it is
+     * offline or when its client reports none; absent from an older server.
+     */
+    activity?: {
+        state: TurnState;
+        since: string;
+    } | null;
     createdAt: string;
     /** Thread ids this session holds. */
     holds: string[];
+    /** The held threads the CALLER may read, named (same order as `holds`). Sent since RFC-028 D8. */
+    heldThreads: Array<{
+        id: string;
+        title: string;
+        channelId: string;
+        channelName: string;
+    }>;
 }
 export interface ThreadSummary {
     id: string;
