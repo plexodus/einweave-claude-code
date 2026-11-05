@@ -1256,8 +1256,10 @@ test('the keyboard\'s record: its actions in the footer on hotkeys (t Take, n Ne
   expect((await findRun(ui, 'addressed to you · unheld'))?.props).not.toHaveProperty('dimColor')
   expect(await findRun(ui, 'you took part · holder offline')).toMatchObject({ props: { dimColor: true } })
   // The keyboard's mark runs down the meta row too (the engine inverts only the title row's Button).
-  expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { backgroundColor: '#e4e4e4' } })
-  expect((await metaRow(ui, T_OLD))?.children?.[0]?.props).not.toHaveProperty('backgroundColor')
+  expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { inverse: true } })
+  expect((await metaRow(ui, T_OLD))?.children?.[0]?.props).not.toHaveProperty('inverse')
+  // The title row's is the engine's own inversion of the mark Button: the cell sets none (two would be one swap too many).
+  expect((await ui.find({ key: `mark:${T_NEW}` }))?.children?.[0]?.props).not.toHaveProperty('inverse')
   // Onto the footer, the record it acts on stays the keyboard's.
   await focus($, 'foot:take')
   await clock.settle()
@@ -1308,9 +1310,9 @@ test('Escape hands the keyboard back with no ui.focus: no footer, a grey mark wh
   // The grey mark runs down the whole record, its meta row too (TabStates board).
   expect((await metaRow(ui, T_NEW))?.children?.[0]).toMatchObject({ type: 'Text', props: { backgroundColor: '#4a4a4a' } })
   // Another record: no mark at rest, the pointer's light mark on every row under hover.
-  expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]).toMatchObject({ type: 'Text', hover: { backgroundColor: '#e4e4e4' } })
+  expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]).toMatchObject({ type: 'Text', hover: { inverse: true } })
   expect((await ui.find({ key: `mark:${T_OLD}` }))?.children?.[0]?.props).not.toHaveProperty('backgroundColor')
-  expect((await metaRow(ui, T_OLD))?.children?.[0]).toMatchObject({ type: 'Text', hover: { backgroundColor: '#e4e4e4' } })
+  expect((await metaRow(ui, T_OLD))?.children?.[0]).toMatchObject({ type: 'Text', hover: { inverse: true } })
   await ui.unmount()
 })
 

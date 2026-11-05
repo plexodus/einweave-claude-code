@@ -68,8 +68,12 @@ const MIN_ROOM = 3
 const PANE_PAD = 1
 /** The mark left on the record the keyboard was on once Escape handed the keyboard back: where it lands on return. */
 const MARK_AWAY = '#4a4a4a'
-/** The keyboard's and the pointer's mark: the light bar the engine's focus inversion draws (TabStates board). */
-const MARK_ON = '#e4e4e4'
+/**
+ * The keyboard's and the pointer's mark: the terminal's own inversion, the bar the engine's focus ring draws
+ * on the title row (TabStates board). A colour of our own drew the rows below a shade apart from that one
+ * (#e4e4e4 against the terminal's text colour, Jörgen 2026-11-05): every row inverts, so all match in any theme.
+ */
+const MARK_ON = { inverse: true } as const
 const NO_THREAD: ThreadView = { title: null, status: null, messages: [], older: 0, error: null, loading: true }
 const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 
@@ -969,7 +973,7 @@ export const register: Register = on => {
       // The mark: one bar down every row of the record (TabStates board). Light under the keyboard (on the title
       // row the engine's inversion of the mark's Button draws it) and under the pointer; Escape's grey.
       const markCell = (row: number) => (
-        <Text {...(row > 0 && hot ? { backgroundColor: MARK_ON } : away ? { backgroundColor: MARK_AWAY } : {})} hover={{ backgroundColor: MARK_ON }}> </Text>
+        <Text {...(row > 0 && hot ? MARK_ON : away ? { backgroundColor: MARK_AWAY } : {})} hover={MARK_ON}> </Text>
       )
       // The record's Box is the ONE keyed Box in it: every hover inside (title, meta, mark, actions) lights while the
       // pointer is anywhere on the record. A row Box with a key of its own scopes its hovers to that row (kit
