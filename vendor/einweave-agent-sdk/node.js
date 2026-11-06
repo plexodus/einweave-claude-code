@@ -633,7 +633,8 @@ function sessionLock(opts) {
       renameSync3(tmp, lockFile);
     } catch {}
   }
-  async function acquire(acquireOpts = {}) {
+  const sameHolder = (a, b) => !!a && !!b && a.pid === b.pid && a.procStart === b.procStart && a.version === b.version;
+  async function acquire(acquireOpts = {}, recheck = 2) {
     if (lost)
       return "lost";
     const procStart = await myProcStart();
@@ -648,6 +649,8 @@ function sessionLock(opts) {
           return "acquire";
         }
         if (rec && await holderIsLive(rec)) {
+          if (!sameHolder(readLockRecordForAcquire(), rec))
+            return recheck > 0 ? acquire(acquireOpts, recheck - 1) : "standby";
           if (held) {
             loseIt();
             return "lost";

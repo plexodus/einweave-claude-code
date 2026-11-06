@@ -961,7 +961,7 @@ function withDetails(base, details) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.29.0";
+var SDK_VERSION = "0.29.1";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
