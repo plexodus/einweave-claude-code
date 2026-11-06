@@ -1103,6 +1103,7 @@ describe("finding 4 (2026-09-27 re-review): the standby retry must not carry a s
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
   test("an explicit takeover whose WRITE fails (no permission) must not auto-take-over a genuinely NEWER holder on its own later retry", async () => {
+    const RETRY_MS = 2_000;
     // An OLDER live holder — decideLock always honours an explicit takeover regardless
     // of version, so it is the WRITE that has to fail for this attempt to land in
     // "standby" WITH takeover:true still attached to it (the confirm-ownership re-read
@@ -1119,7 +1120,11 @@ describe("finding 4 (2026-09-27 re-review): the standby retry must not carry a s
         CLAUDE_PLUGIN_DATA: dir, EINWEAVE_STATE_DIR: dir,
         EINWEAVE_API_URL: CLOSED_PORT_API_URL,
         EINWEAVE_SESSION_KEY: SESSION_ID, CLAUDE_CODE_SSE_PORT: "",
-        EINWEAVE_TEST: "1", EINWEAVE_TEST_LOCK_RETRY_MS: "300",
+        // 2 s, not 300 ms: the first standby retry must fire well AFTER the newer holder below is planted. A
+        // retry reads the record, then awaits holderIsLive (a `ps`), then writes; on a loaded runner a 300 ms
+        // retry read the OLDER record before the plant and wrote after the chmod below (main CI 2026-11-05;
+        // 1 in 12 locally with every CPU busy). That is the test's race, not the plugin's.
+        EINWEAVE_TEST: "1", EINWEAVE_TEST_LOCK_RETRY_MS: String(RETRY_MS),
       } as Record<string, string>,
     });
     const client = new Client({ name: "test-client", version: "0.0.0" }, { capabilities: {} });
@@ -1143,8 +1148,8 @@ describe("finding 4 (2026-09-27 re-review): the standby retry must not carry a s
       writeLock({ pid: process.pid, procStart: procStart(process.pid), sessionKey: SESSION_ID, at: new Date().toISOString(), version: "99.0.0" });
       chmodSync(locksDir, 0o700);
 
-      // Past several 300ms retry cycles.
-      await Bun.sleep(300 * 4);
+      // Past two retry cycles.
+      await Bun.sleep(RETRY_MS * 2 + 500);
 
       // THE BUG this pins: a retry that still carried `takeover: true` would win this
       // unconditionally (decideLock always honours an explicit takeover) even against a
