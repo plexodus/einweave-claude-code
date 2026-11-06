@@ -2,7 +2,7 @@
 var PROTOCOL_VERSION = 2;
 var MAX_ACK_IDS = 500;
 var CONTROL_FRAME_TYPES = ["authenticated", "reauthenticated", "error", "auth_required", "ping", "pong", "invalid_session", "drain"];
-var ADDRESSED_REASONS = ["target", "assignee", "mention", "thread"];
+var ADDRESSED_REASONS = ["target", "assignee", "mention", "thread", "reply"];
 var BROADCAST_REASONS = ["channel", "member", "type", "tag"];
 var DELIVERY_REASONS = [...ADDRESSED_REASONS, ...BROADCAST_REASONS];
 var ADDRESSED = new Set(ADDRESSED_REASONS);

@@ -39,6 +39,21 @@ export function senderGrant(msg: Inbound): string {
   return typeof raw === "string" && raw && !raw.startsWith("unattributed_") ? raw : "";
 }
 
+/** RFC-035 D3: who wrote the message a reply answers (null name = an erased person). */
+export function replySender(r: { senderName: string | null; senderHandle: string | null }): string {
+  return r.senderName ?? (r.senderHandle ? `@${r.senderHandle}` : "someone");
+}
+
+/**
+ * RFC-035 D8: the first line of a reply's text -- what it answers, so the model needs no fetch. The excerpt
+ * is the server's plain text (never Markdown), whitespace already collapsed; null = the target is gone.
+ */
+export function replyLine(r: NonNullable<Inbound["replyTo"]>): string {
+  // JSON-quoted: a `"` in the excerpt cannot close the quote and append text that reads as ours.
+  const what = r.excerpt === null ? "(message unavailable)" : JSON.stringify(r.excerpt);
+  return `↪ ${replySender(r)}: ${what}`;
+}
+
 export function renderMessage(msg: Inbound): Rendered {
   const meta = parseMetadata(msg.metadata);
   const out: ChannelMeta = {
@@ -52,6 +67,8 @@ export function renderMessage(msg: Inbound): Rendered {
     ...(msg.threadId ? { thread_id: msg.threadId } : {}),
     ts: msg.createdAt ?? "",
   };
+  // RFC-035 D8: the message this one answers (same channel, maybe another thread).
+  if (msg.replyTo) out.reply_to = msg.replyTo.id;
   if (str(meta.routedTo)) out.routed_to = str(meta.routedTo);
   // RFC-028 D3: another session of THIS agent posted into a thread this session holds. The
   // server stamps `contribution = {holder}`; replies to it come to the holder, not to the sibling.
@@ -62,7 +79,8 @@ export function renderMessage(msg: Inbound): Rendered {
   }
   const from = senderGrant(msg);
   if (from) out.sender_context_id = from;
-  return { content: msg.content ?? "", meta: out };
+  const content = msg.content ?? "";
+  return { content: msg.replyTo ? `${replyLine(msg.replyTo)}\n${content}` : content, meta: out };
 }
 
 /** `self`: this session's agent id — a work event is said from its side (a reassignment away says stop). */
