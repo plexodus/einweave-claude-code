@@ -129,6 +129,8 @@ function startLabelStub(opts: { stores?: boolean; storedLabel?: string | null } 
   // carries. A single `authFrame` (last-write-wins) would not distinguish
   // "never reconnected" from "reconnected and sent the same thing twice".
   const authFrames: any[] = [];
+  /** Every `session_details` frame received, in order. */
+  const detailFrames: any[] = [];
   // The current connection's server-side socket, captured off the first
   // frame we see on it — WS auth is always the first message. Lets a test
   // force a reconnect deterministically by closing the transport out from
@@ -168,6 +170,7 @@ function startLabelStub(opts: { stores?: boolean; storedLabel?: string | null } 
         } catch {
           return;
         }
+        if (frame.type === "session_details") detailFrames.push(frame);
         if (frame.type === "auth") {
           authFrames.push(frame);
           if (opts.stores && frame.sessionInfo?.sessionLabel) stored = frame.sessionInfo.sessionLabel;
@@ -191,6 +194,7 @@ function startLabelStub(opts: { stores?: boolean; storedLabel?: string | null } 
     port: server.port!,
     putSeen: () => putSeen,
     authFrames: () => authFrames,
+    detailFrames: () => detailFrames,
     closeLiveSocket: () => {
       try {
         liveWs?.close();
@@ -435,5 +439,68 @@ describe("a server that stores the label: a window sends one only as a change", 
       expect(all[1].sessionInfo?.sessionLabel).toBeUndefined();
       expect(await shownLabel(client)).toBe("Reviewer");
     });
+  }, 40_000);
+});
+
+// A checkout mid-session (Jörgen 2026-11-05, hand-over picker follow-up): the window re-reads its checkout and sends
+// `session_details` when it changed, so the picker and Sessions show the branch it is on now, not the one it started on.
+describe("session details follow a checkout mid-session", () => {
+  test("a checkout sends session_details once; nothing changed sends nothing; a reconnect's auth frame carries the new branch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "srt-details-"));
+    const repo = mkdtempSync(join(tmpdir(), "srt-repo-"));
+    const g = (...args: string[]) => {
+      const r = Bun.spawnSync(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+      if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+    };
+    g("init", "-q", "-b", "feat/one");
+    g("commit", "-q", "--allow-empty", "-m", "one");
+    const stub = startLabelStub({ stores: true });
+    const transport = new StdioClientTransport({
+      command: "bun",
+      args: [SERVER],
+      env: {
+        ...process.env,
+        CLAUDE_PLUGIN_DATA: dir,
+        EINWEAVE_STATE_DIR: dir,
+        EINWEAVE_API_URL: `http://127.0.0.1:${stub.port}`,
+        EINWEAVE_ENROLMENT_KEY: ENROLMENT_KEY, EINWEAVE_AUTOCONNECT: "1",
+        CLAUDE_CODE_SESSION_ID: SESSION_KEY,
+        CLAUDE_CODE_SSE_PORT: "",
+        CLAUDE_PROJECT_DIR: repo,
+        EINWEAVE_TEST: "1", EINWEAVE_TEST_DETAILS_REFRESH_MS: "200",
+      } as Record<string, string>,
+    });
+    const client = new Client({ name: "test-client", version: "0.0.0" }, { capabilities: {} });
+    const waitFor = async (ok: () => boolean, what: string) => {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline && !ok()) await Bun.sleep(50);
+      expect(ok(), what).toBe(true);
+    };
+    try {
+      await client.connect(transport);
+      await waitFor(() => stub.authFrames().length >= 1, "first auth frame");
+      expect(stub.authFrames()[0].sessionInfo?.branchName).toBe("feat/one");
+      // Several refreshes with nothing changed: no frame.
+      await Bun.sleep(1_000);
+      expect(stub.detailFrames(), "an unchanged checkout sends nothing").toHaveLength(0);
+      g("checkout", "-q", "-b", "feat/two");
+      await waitFor(() => stub.detailFrames().length >= 1, "a session_details frame after the checkout");
+      expect(stub.detailFrames()[0].details).toMatchObject({ branchName: "feat/two" });
+      await Bun.sleep(1_000);
+      expect(stub.detailFrames(), "sent once, not on every refresh").toHaveLength(1);
+      stub.closeLiveSocket();
+      await waitFor(() => stub.authFrames().length >= 2, "a reconnect's auth frame");
+      expect(stub.authFrames()[1].sessionInfo?.branchName).toBe("feat/two");
+      // A new Session (disconnect, connect) collects again: not the branch the window started on.
+      await client.callTool({ name: "disconnect", arguments: {} });
+      await client.callTool({ name: "connect", arguments: {} });
+      await waitFor(() => stub.authFrames().length >= 3, "a new Session's auth frame");
+      expect(stub.authFrames()[2].sessionInfo?.branchName).toBe("feat/two");
+    } finally {
+      await client.close().catch(() => {});
+      stub.stop();
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
   }, 40_000);
 });

@@ -1271,6 +1271,37 @@ function authSessionInfoForFrame(): Record<string, string> {
   return label ? { ...authSessionInfo, sessionLabel: label } : { ...authSessionInfo };
 }
 
+/**
+ * A checkout or a commit mid-session (Jörgen 2026-11-05, the hand-over picker's follow-up): every
+ * DETAILS_REFRESH_MS this window re-reads its checkout and, when the branch or HEAD moved, tells the server
+ * (`session_details`), so the picker and Sessions say what it works on NOW. A timer, not a turn report: it
+ * also sees a checkout made in another terminal, and needs no pane. The SDK carries the new details on its
+ * later auth frames; a new Session re-collects (the memo is dropped).
+ */
+const DETAILS_REFRESH_MS = testKnob("EINWEAVE_TEST_DETAILS_REFRESH_MS", (n) => Number.isInteger(n) && n >= 100) ?? 15_000;
+const DETAIL_KEYS = ["repoName", "worktreeName", "branchName", "headShortSha"] as const;
+const detailsOf = (info: Record<string, string>) => JSON.stringify(DETAIL_KEYS.map((k) => info[k] ?? ""));
+let detailsBusy = false;
+async function refreshDetails(): Promise<void> {
+  if (!PROJECT_DIR || detailsBusy || !session || Object.keys(authSessionInfo).length === 0) return;
+  detailsBusy = true;
+  try {
+    const info = await collectSessionInfo();
+    if (detailsOf(info) === detailsOf(authSessionInfo)) return;
+    for (const k of DETAIL_KEYS) {
+      if (info[k]) authSessionInfo[k] = info[k];
+      else delete authSessionInfo[k];
+    }
+    sessionInfoPromise = null;
+    session?.setDetails(info);
+  } catch {
+    // Enrichment only: the next tick tries again.
+  } finally {
+    detailsBusy = false;
+  }
+}
+setInterval(() => void refreshDetails(), DETAILS_REFRESH_MS).unref?.();
+
 let authenticatedAt: number | null = null;
 let reconnectAttempt = 0;
 let nextReconnectAt: number | null = null;
