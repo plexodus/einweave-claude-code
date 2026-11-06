@@ -563,6 +563,8 @@ interface Act {
   label: string
   hotkey: string
   onPress: (press: Press) => void
+  /** Dim words right after its button, wherever it is drawn (Undo's seconds left: `[ Undo ] 8s`). */
+  left?: string
 }
 
 /**
@@ -981,12 +983,13 @@ export const register: Register = on => {
     const handoverAct = (id: string): Act => ({ key: 'handover', label: 'Hand over', hotkey: 'h', onPress: togglePicker(id) })
     const hd = await read($, handed)
     const undoing = hd.threadId && now < hd.until ? hd : null
-    /** The seconds Undo has left, drawn dim beside it (`8s`, mock A); a redraw each second keeps it current. */
+    /** The seconds Undo has left, dim right after its button (`[ Undo ] 8s`, mock A); a redraw each second keeps it current. */
     const undoLeft = undoing ? `${Math.max(1, Math.ceil((undoing.until - now) / 1000))}s` : ''
     const undoAct = (id: string): Act => ({
       key: 'undo',
       label: 'Undo',
       hotkey: 'u',
+      left: undoLeft,
       onPress: () => detach(undoHandover($, id).then(toastFirst($)).catch(err => $.ui.toast(`Undo failed: ${String(err).slice(0, 120)}`))),
     })
     /** Hand the thread to window `w`; once it went, its Held row (or its tab's key bar) offers Undo for UNDO_MS. */
@@ -1199,6 +1202,7 @@ export const register: Register = on => {
                   {/* A space as text, not a gap: columnGap's cells let the record show through. */}
                   <Text> </Text>
                   <Button key={`${a.key}:${r.id}`} label={a.label} onPress={a.onPress} />
+                  {a.left ? <Text dimColor>{` ${a.left}`}</Text> : null}
                 </Box>
               ))}
             </Box>
@@ -1367,7 +1371,7 @@ export const register: Register = on => {
         title: [{ text: '↪ ' }, ...(u.channel ? [{ text: `#${u.channel} ` }] : []), { text: label }],
         dim: true,
         onOpen: () => detach(viewThread($, u.threadId, label)),
-        meta: [{ text: `handed to ${u.place} · ${undoLeft}`, tone: 'dim' }],
+        meta: [{ text: `handed to ${u.place}`, tone: 'dim' }],
         acts: [undoAct(u.threadId)],
         pin: true,
       })
@@ -2033,7 +2037,7 @@ export const register: Register = on => {
               ]
             : []),
           undoing?.threadId === id
-            ? headLine('head:thread:line', `handed to ${undoing.place} · Undo puts it back here · ${undoLeft}`, { dimColor: true })
+            ? headLine('head:thread:line', `handed to ${undoing.place} · Undo puts it back here`, { dimColor: true })
             : held
             ? headLine('head:thread:line', 'held by you · replies come here', { color: PALETTE.brand })
             : headLine('head:thread:line', 'not held here · Claude has not seen it · Take brings it here', { color: PALETTE.amber }),
@@ -2051,7 +2055,10 @@ export const register: Register = on => {
                 <Button key={`handover:${id}`} plain {...hot('h')} label="Hand over" dimColor onPress={togglePicker(id)} />
               </Box>
             ) : undoing?.threadId === id ? (
-              <Button key={`undo:${id}`} plain {...hot('u')} label="Undo" onPress={undoAct(id).onPress} />
+              <Box key={`undo-acts:${id}`} flexDirection="row">
+                <Button key={`undo:${id}`} plain {...hot('u')} label="Undo" onPress={undoAct(id).onPress} />
+                <Text dimColor>{` ${undoLeft}`}</Text>
+              </Box>
             ) : (
               <Button key={`take:${id}`} plain {...hot('t')} label="Take" onPress={take(id)} />
             )}
@@ -2153,6 +2160,7 @@ export const register: Register = on => {
             <Box key={`footact:${a.key}`} flexDirection="row">
               {n ? <Text dimColor> · </Text> : null}
               <Button key={`foot:${a.key}`} plain hotkey={a.hotkey} label={a.label} onPress={a.onPress} />
+              {a.left ? <Text dimColor>{` ${a.left}`}</Text> : null}
             </Box>
           ))}
           <Text dimColor>{`${footActs.length ? ' · ' : ''}enter: open · esc: back`}</Text>
