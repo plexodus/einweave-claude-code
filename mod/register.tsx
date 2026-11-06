@@ -258,7 +258,7 @@ async function editKeys($: EngineInterface, verb: 'bind' | 'unbind', asked?: str
   chordSeen = null
   $.ui.invalidate('ui.render')
   return verb === 'bind'
-    ? `Bound: ${chord} puts the keyboard in the pane from an empty prompt, and in the pane hands it back. Undo: /einweave unbind.`
+    ? `Bound: ${chord} puts the keyboard in the pane from an empty prompt, on every tab; Esc hands it back. Undo: /einweave unbind.`
     : `Unbound. ctrl+x tab still reaches the pane, after the band's buttons.`
 }
 
@@ -1922,7 +1922,8 @@ export const register: Register = on => {
       const layout = threadLayout(th.messages, width, sc?.open ?? {}, th.older, links, th.work ?? null)
       const optionClick = !links && (await isAppleTerminal($))
       // A desktop has no hotkeys: there the key bar is labels alone.
-      const hot = (key: string) => (desk ? {} : { hotkey: key })
+      // Letters only while the pane has the keyboard: without it they do nothing, and the actions are the mouse's.
+      const hot = (key: string) => (desk || !keys ? {} : { hotkey: key })
       const expand = (key: string, more: number) => () =>
         detach(update($, scrolls, m => {
           const was = m[id]
@@ -2045,13 +2046,14 @@ export const register: Register = on => {
         // Hand over's picker takes the body while open (Jörgen 2026-11-04, option B): the head and key bar stay
         // pinned, and Cancel brings the posts back where they were.
         blocks: pick ? [{ key: 'picker', rows: pick.rows, stop: true, focus: pick.keys, draw: () => pick.node }] : [...notes, ...ordered],
-        // The key bar: the thread's actions on their keys (`t: Take`), whatever has the keyboard.
+        // The thread's actions: on their keys (`t: Take`) with the keyboard; else under the pointer (the shell).
         keys: (
-          <Box key={`acts:${id}`} flexDirection="row" columnGap={1}>
+          // Spaces as text, never a columnGap: drawn over the resting key on hover, a gap's cells let it show through.
+          <Box key={`acts:${id}`} flexDirection="row">
             {held ? (
-              <Box key={`held-acts:${id}`} flexDirection="row" columnGap={1}>
+              <Box key={`held-acts:${id}`} flexDirection="row">
                 <Button key={`release:${id}`} plain {...hot('r')} label="Release" dimColor onPress={act('release', { ref: id })} />
-                <Text dimColor>·</Text>
+                <Text dimColor> · </Text>
                 <Button key={`handover:${id}`} plain {...hot('h')} label="Hand over" dimColor onPress={togglePicker(id)} />
               </Box>
             ) : undoing?.threadId === id ? (
@@ -2062,9 +2064,9 @@ export const register: Register = on => {
             ) : (
               <Button key={`take:${id}`} plain {...hot('t')} label="Take" onPress={take(id)} />
             )}
-            <Text dimColor>·</Text>
+            <Text dimColor> · </Text>
             <Button key={`new:${id}`} plain {...hot('n')} label="New session" dimColor onPress={newSession(id)} />
-            {held ? null : <Text key="sep:refresh" dimColor>·</Text>}
+            {held ? null : <Text key="sep:refresh" dimColor> · </Text>}
             {held ? null : <Button key={`refresh:${id}`} plain label="↻ Refresh" dimColor onPress={() => detach(loadThread($, id))} />}
           </Box>
         ),
@@ -2152,7 +2154,21 @@ export const register: Register = on => {
     ) : (
       <Button key="rest" plain dimColor action={PANE_ACTION} label={`${chord ?? 'ctrl+x tab'}: keys`} onPress={() => detach($.ui.open({ id: PANE, title: 'einweave', focus: true }))} />
     )
-    const left =
+    // A tab with actions of its own (a thread) keeps this one bar: with the keyboard, its actions on their letters;
+    // without it, the resting key the chord presses, and while the pointer is on the tab its actions IN ITS PLACE
+    // (Jörgen 2026-11-06: the thread tab drew only its actions, so the chord had nothing to press there). A hover
+    // cannot hide, only reveal: the actions are an absolute Box drawn over the resting key, as a record's are over
+    // its meta. Every thread's actions are longer than the resting key, so they cover it.
+    const keysScope = `keys:${frame.id}`.slice(0, 64)
+    const revealing = !desk && !keys && !!frame.keys
+    const left = revealing ? (
+      <Box key="keys-rest" flexDirection="row">
+        {resting}
+        <Box key="keys-reveal" position="absolute" top={0} left={0} flexDirection="row" display="none" hover={{ display: 'flex', scope: keysScope }}>
+          {frame.keys}
+        </Box>
+      </Box>
+    ) : (
       frame.keys ??
       (footOn ? (
         <Box key="footacts" flexDirection="row">
@@ -2168,9 +2184,10 @@ export const register: Register = on => {
       ) : (
         resting
       ))
+    )
     const cue = own ? cueText(hidden(body, off, room)) : ''
     const bar = (
-      <Box key={`keys:${frame.id}`} flexDirection="row" columnGap={1} height={1} overflow="hidden">
+      <Box key={`keys:${frame.id}`} flexDirection="row" columnGap={1} height={1} overflow="hidden" {...(revealing ? { hover: { scope: keysScope } } : {})}>
         {left}
         <Box flexGrow={1} />
         {cue ? <Text key="cue" dimColor>{cue}</Text> : null}
@@ -2188,13 +2205,13 @@ export const register: Register = on => {
       own ? (
         // Bottom-anchored once it overflows: the window's foot `off` rows up from the body's end. One that fits
         // starts under the head.
-        <Box key={`body:${frame.id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={body.total > room ? 'flex-end' : 'flex-start'} flexShrink={0}>
+        <Box key={`body:${frame.id}`} flexDirection="column" height={room} overflow="hidden" justifyContent={body.total > room ? 'flex-end' : 'flex-start'} flexShrink={0} {...(revealing ? { hover: { scope: keysScope } } : {})}>
           <Box flexDirection="column" marginBottom={-off} flexShrink={0}>
             {nodes}
           </Box>
         </Box>
       ) : (
-        <Box key={`body:${frame.id}`} flexDirection="column" flexGrow={1}>
+        <Box key={`body:${frame.id}`} flexDirection="column" flexGrow={1} {...(revealing ? { hover: { scope: keysScope } } : {})}>
           {nodes}
         </Box>
       ),
