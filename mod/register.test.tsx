@@ -266,7 +266,7 @@ test('the pane\'s key: the hint names the chord bound to pane:next (else ctrl+x 
   expect(asked[0]).toBe(`Bind ctrl+x p to put the keyboard in the einweave pane? It is saved in ${path}.`)
   expect(files[path]).toBe(before)
   answer = 'Bind it'
-  expect((await $.command.run({ command: 'einweave', args: 'bind' })).text).toMatch(/^Bound: ctrl\+x p puts the keyboard in the pane/)
+  expect((await $.command.run({ command: 'einweave', args: 'bind' })).text).toMatch(/^Bound: ctrl\+x p puts the keyboard in the pane from an empty prompt, on every tab; Esc hands it back\./)
   expect(JSON.parse(files[path]!).bindings).toEqual([{ context: 'Chat', bindings: { 'shift+enter': 'chat:newline', 'ctrl+x p': 'pane:next' } }])
   await ui.redraw()
   expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { label: 'ctrl+x p: keys' } })
@@ -1398,7 +1398,7 @@ test('a thread tab takes on t and copies the new-session command on n', async ($
   const thread = { thread: { id: T_OLD, title: 'Older ask' }, messages: [], has_older: false, older_count: 0 }
   const { clock } = engine(on, { polled: WAITING, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify(thread)) : undefined) })
   await start($, clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
   expect(await ui.find({ key: `take:${T_OLD}` })).toMatchObject({ props: { hotkey: 't' } })
@@ -2507,7 +2507,7 @@ test('Hand over from the thread tab: its key bar offers Undo on u (in place of T
     },
   })
   await start($, clock)
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
   await ui.press({ key: 'tab:held' })
   await ui.press({ key: `open:${HO_B}` })
   await clock.settle()
@@ -2524,6 +2524,33 @@ test('Hand over from the thread tab: its key bar offers Undo on u (in place of T
   await clock.settle()
   expect(calls.filter(c => c.tool === 'take').map(c => c.args)).toEqual([{ ref: HO_B }])
   expect(await ui.find({ key: `release:${HO_B}` })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a thread tab keeps the pane\'s one key bar: at rest the key that puts the keyboard here, its actions over it under the pointer, on their letters only with the keyboard', async ($, on) => {
+  // Jörgen 2026-11-06: the thread tab drew its own actions in place of `ctrl+x p: keys`, so the chord had no Button to
+  // press there and typed `p` into the prompt (live). Its actions are the mouse's under the pointer (no letters: they
+  // do not work without the keyboard) and the keyboard's with it (`t: Take`), as a record's are on the other tabs.
+  const snap = handSnap()
+  const { clock } = engine(on, { polled: snap })
+  await start($, clock)
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab:held' })
+  await ui.press({ key: `open:${HO_B}` })
+  await clock.settle()
+  // Without the keyboard: the resting key, pressed by the chord; the actions hidden until the pointer comes, no letters.
+  expect(await ui.find({ key: 'rest' })).toMatchObject({ props: { action: 'pane:next' } })
+  expect(await ui.find({ key: 'keys-reveal' })).toMatchObject({ props: { display: 'none', position: 'absolute', left: 0 } })
+  expect((await ui.find({ key: `release:${HO_B}` }))?.props).not.toHaveProperty('hotkey')
+  // Drawn over the resting key, so every cell is painted: a columnGap's cells let it show through (live: `Take+·`).
+  for (const k of [`acts:${HO_B}`, `held-acts:${HO_B}`]) expect((await ui.find({ key: k }))?.props, k).not.toHaveProperty('columnGap')
+  await ui.unmount()
+  // With the keyboard: the actions on their letters, no resting key.
+  ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'terminal' })
+  await clock.settle()
+  expect(await ui.find({ key: `release:${HO_B}` })).toMatchObject({ props: { hotkey: 'r', label: 'Release' } })
+  expect(await ui.find({ key: 'rest' })).toBeUndefined()
+  expect(await ui.find({ key: 'keys-reveal' })).toBeUndefined()
   await ui.unmount()
 })
 
