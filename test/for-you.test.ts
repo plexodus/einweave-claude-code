@@ -28,6 +28,7 @@ describe("for_you note", () => {
 
   test("each kind reads as what happened; no title falls back to the thread id; control characters are stripped", () => {
     expect(forYouNote([item({ entry: "message", why: "thread", title: "Fix\u001b[31m the\nbuild" })])).toContain('new reply in "Fix the build"');
+    expect(forYouNote([item({ entry: "message", why: "reply", title: "Deploy plan" })])).toContain('replied to your message in "Deploy plan"');
     expect(forYouNote([item({ entry: "message", why: "assignee", title: null })])).toContain("new post on thread t1, assigned to you");
     expect(forYouNote([item({ entry: "action_request", why: "health", threadId: null, title: null })])).toContain("action request health");
     expect(forYouNote([item({ why: "status" })])).toContain('status on "Renew the TLS wildcard"');

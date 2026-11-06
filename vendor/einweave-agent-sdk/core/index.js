@@ -112,7 +112,7 @@ import {
   userAgent,
   viewport,
   wsHtu
-} from "../index-e2fvvstq.js";
+} from "../index-c2gp7t6e.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,

@@ -37,6 +37,9 @@ function describe(item: ForYouItem): string {
       return `new reply in ${what}`;
     case "target":
       return `sent to you in ${what}`;
+    case "reply":
+      // RFC-035 D4: someone answered a message of this agent's (reply-to).
+      return `replied to your message in ${what}`;
     default:
       return `${stripControlChars(item.why)} in ${what}`;
   }

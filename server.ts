@@ -65,6 +65,8 @@ import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./
 import { clearNote, holdsNote } from "./clear-note";
 import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, render, shouldDismiss } from "./link/adapter";
+import { planReplyTo, referenceFields } from "./reply-to";
+import type { WorkspaceLinks } from "./vendor/einweave-agent-sdk/core/index.js";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
 import { buildUiState, mergeRefresh, toHeld, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type HeldInfo, type UiGateway, type UiSession, type UiWaiting } from "./ui/ui-state";
@@ -2488,6 +2490,23 @@ function apiErrorText(e: unknown): string {
 }
 
 /** A call through the SDK's REST client (see `SignIn.withApi`), failing with `apiErrorText`. `notFound` names a 404. */
+/**
+ * RFC-035 D1: the server's link templates (`api.me.workspace().links`), per agent -- a workspace's grammar,
+ * so a different agent signed in asks again. Null (no web app, or an older server) = rows carry no url; a
+ * failed fetch is not cached and never fails the read it decorates.
+ */
+let linksCache: { agent: string; links: WorkspaceLinks | null } | null = null;
+async function workspaceLinks(): Promise<WorkspaceLinks | null> {
+  if (linksCache && linksCache.agent === agentId) return linksCache.links;
+  try {
+    const w = await creds.withApi((api) => api.me.workspace());
+    linksCache = { agent: agentId, links: w.links ?? null };
+    return linksCache.links;
+  } catch {
+    return null;
+  }
+}
+
 async function sdkApi<T>(fn: (api: Api) => Promise<T>, notFound?: string): Promise<T> {
   try {
     return await creds.withApi(fn);
@@ -2527,7 +2546,7 @@ const mcp = new Server(
       "",
       "Use the reply tool to send messages to an einweave channel. Pass channel_id from the inbound message. To reply in a thread, set thread_id to the thread_id shown on the message you are replying to — every inbound message carries the id of its thread. Omit thread_id to start a new root message.",
       "",
-      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. Refer to an earlier message by quoting a few of its words; never cite seq numbers to people — seq is a paging cursor, not a reference, and people never see it.",
+      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it). Never cite seq to people; seq is for paging.",
       "",
       "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
@@ -2564,7 +2583,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "reply",
       description:
-        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. Refer to an earlier message by quoting a few of its words; never cite seq numbers to people — seq is a paging cursor, not a reference, and people never see it.",
+        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it). Never cite seq to people; seq is for paging.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2594,6 +2613,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description:
               "The new thread's title (root only; ignored on thread replies) — how it is named in the channel's thread list and found by list_threads(query). Pass one whenever you start a thread. Omitted, the server derives one from the first line.",
+          },
+          reply_to: {
+            type: "string",
+            description:
+              "Answer one specific message: its id (message_id on an inbound message, id on a read row) or its url. It must be in the same channel; its author is notified (unless silent). Without thread_id the reply goes in that message's thread, wherever it is. A title with reply_to needs new_thread: true.",
+          },
+          new_thread: {
+            type: "boolean",
+            description:
+              "With reply_to: start a NEW thread (in the message's channel) that answers it — pass a title too. Never with thread_id.",
+          },
+          silent: {
+            type: "boolean",
+            description: "With reply_to: do not notify the author of the message you answer. Mentions and the thread's own notifications still go out.",
           },
           take: {
             type: "boolean",
@@ -3591,16 +3624,32 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
     switch (name) {
       case "reply": {
         { const gate = requireBridge(); if (gate) return gate; }
-        const channelId = args.channel_id as string;
+        let channelId = args.channel_id as string;
         const text = args.text as string;
         const type = (args.type as string) ?? "text";
-        const threadId = args.thread_id as string | undefined;
+        let threadId = args.thread_id as string | undefined;
         const title = args.title as string | undefined;
         if (args.context_id !== undefined) {
           throw new Error("context_id is gone (RFC-028): the thread's hold decides who receives replies. To move a thread to another session of this agent, use handover; to take one, use take.");
         }
         if (type === "task") {
           throw new Error("type \"task\" is gone (RFC-029): file a work item with create_item(kind: \"task\", …).");
+        }
+        // RFC-035 D8: answering one message. Checked first; a target's thread or channel is the server's
+        // answer (`/location`, one 404 for unknown and unreadable), never a guess.
+        const replyPlan = planReplyTo(args);
+        if (replyPlan.kind === "refused") throw new Error(`${replyPlan.why} Nothing was sent.`);
+        let landedNote = "";
+        if (replyPlan.kind === "target_thread" || replyPlan.kind === "new_thread") {
+          const loc = await sdkApi(
+            (api) => api.messages.location(replyPlan.replyTo),
+            "reply_to: no such message in a channel this agent can read. Nothing was sent."
+          );
+          channelId = loc.channelId; // a reply stays in its target's channel (D2), whatever channel_id said
+          if (replyPlan.kind === "target_thread") {
+            threadId = loc.threadId;
+            landedNote = `, in the thread of the message it answers: ${loc.threadId}`;
+          }
         }
         const assignee = typeof args.assignee === "string" && args.assignee.trim() !== "" ? args.assignee.trim() : undefined;
         if (assignee && !threadId) throw new Error("assignee applies to a reply in a work item: pass thread_id (a new item names its assignee in create_item).");
@@ -3616,6 +3665,10 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
         // fixes the channel and its root is the parent, so the client names
         // NEITHER channelId NOR parentId); a ROOT stays on /api/messages.
         const body: Record<string, unknown> = { content: text, type };
+        if (replyPlan.kind !== "none") {
+          body.replyTo = replyPlan.replyTo;
+          if (replyPlan.silent) body.silent = true;
+        }
         if (take) body.take = true;
         if (args.confirm === true) body.confirm = true;
         if (assignee) body.assignee = assignee;
@@ -3641,7 +3694,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
               content: [
                 {
                   type: "text",
-                  text: `${who} is online and working on this. Take it anyway? Nothing was sent.\nAsk the person; if they agree, call reply again with the same text, thread_id "${threadId}", take: true and confirm: true.`,
+                  text: `${who} is online and working on this. Take it anyway? Nothing was sent.\nAsk the person; if they agree, call reply again with the same text, thread_id "${threadId}"${replyPlan.kind !== "none" ? `, reply_to "${replyPlan.replyTo}"${replyPlan.silent ? ", silent: true" : ""}` : ""}, take: true and confirm: true.`,
                 },
               ],
             };
@@ -3653,7 +3706,9 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           // Posting needs membership (server 5a-2): say how to get it, not just that it failed.
           const hint = res.status === 403 && err.includes("join_required")
             ? " — this agent is not a member of that public channel: call join_channel(channel_id) and send again."
-            : "";
+            : res.status === 404 && replyPlan.kind === "in_thread"
+              ? " — either the thread is unknown, or reply_to is not a message in that thread's channel (a reply answers a message in its own channel)."
+              : "";
           throw new Error(`einweave API error ${res.status}: ${err}${hint}`);
         }
 
@@ -3697,7 +3752,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           content: [
             {
               type: "text",
-              text: `sent (id: ${result.id}, channel: ${channelId}${holdNote}${assignNote})${linkNote}`,
+              text: `sent (id: ${result.id}, channel: ${channelId}${landedNote}${holdNote}${assignNote})${linkNote}`,
             },
           ],
         };
@@ -4082,6 +4137,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
             markRead: args.mark_read !== false,
           })
         )) as any;
+        const links = await workspaceLinks();
         const messages = (data.messages ?? []).map((m: any) => ({
           id: m.id,
           // ⚠️ THE CURSOR, AND IT USED TO BE DROPPED HERE. This projection is a
@@ -4100,6 +4156,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           threadId: m.threadId,
           replies: m.replyCount ?? 0,
           ts: m.createdAt,
+          // RFC-035 D8: its url, and the message it answers.
+          ...referenceFields(m, m.channelId ?? null, links),
         }));
 
         /**
@@ -4290,6 +4348,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           );
         }
 
+        const links = await workspaceLinks();
+        const rowChannel: string | null = data.thread?.channelId ?? data.parent?.channelId ?? null;
         const shape = (m: any) => ({
           id: m.id,
           seq: m.seq,
@@ -4297,6 +4357,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           content: m.content,
           type: m.type ?? "text",
           ts: m.createdAt,
+          // RFC-035 D8: its url, what it answers, replies to it in other threads.
+          ...referenceFields({ ...m, threadId: m.threadId ?? data.thread?.id ?? threadId }, rowChannel, links),
         });
         // The root is context, not news: shipped on the first page only, so a
         // polling reader is not handed it again on every call.

@@ -1,6 +1,6 @@
 import type { Doc } from "./doc";
 /** The server picked THIS agent specifically — never suppressible by a client. */
-export declare const ADDRESSED_REASONS: readonly ["target", "assignee", "mention", "thread"];
+export declare const ADDRESSED_REASONS: readonly ["target", "assignee", "mention", "thread", "reply"];
 /** A standing subscription matched — a client MAY narrow this tier. */
 export declare const BROADCAST_REASONS: readonly ["channel", "member", "type", "tag"];
 export type DeliveryReason = (typeof ADDRESSED_REASONS)[number] | (typeof BROADCAST_REASONS)[number];
@@ -228,7 +228,7 @@ declare const WIRE: {
             parked: boolean;
             id: string;
         } | null;
-        via: "start" | "reply" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry";
+        via: "reply" | "start" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry";
         by: {
             principalId: string;
             sessionId: string | null;
@@ -330,7 +330,7 @@ declare const WIRE: {
             createdAt: string;
             senderContextId: string | null;
         };
-        deliveryReasons: ("target" | "assignee" | "mention" | "thread" | "channel" | "member" | "type" | "tag")[];
+        deliveryReasons: ("target" | "assignee" | "mention" | "thread" | "reply" | "channel" | "member" | "type" | "tag")[];
         addressed: boolean;
     };
     thread_event: {

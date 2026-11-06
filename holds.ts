@@ -55,6 +55,19 @@ export function parseRef(raw: unknown): Ref {
   return { kind: "search", text: s };
 }
 
+/**
+ * RFC-035 D8 `reply_to`: a message id, or a message LINK (the server's `links.message` template ends in
+ * `/m/<message>`; the thread and channel ids in front of it are uuids too, so the id is the segment after
+ * `/m/`, never "some uuid in the string"). Anything else is null: refused, never guessed.
+ */
+export function parseMessageRef(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (new RegExp(`^${UUID}$`, "i").test(s)) return s.toLowerCase();
+  const link = new RegExp(`/m/(${UUID})(?:[/?#]|$)`, "i").exec(s);
+  return link ? link[1]!.toLowerCase() : null;
+}
+
 export interface ApiResult {
   status: number;
   body: any;

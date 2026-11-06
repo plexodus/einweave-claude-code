@@ -12,7 +12,7 @@
  * ("callers MUST call clear() … skipping it leaks both") rather than the
  * plugin's caller-specific workaround.
  */
-import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type Scope, type TurnState, type WorkspaceLinks } from "../core";
+import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type ReplyRef, type Scope, type TurnState, type WorkspaceLinks } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 export declare class ApiRequestError extends Error {
@@ -242,7 +242,25 @@ export interface MessageEnvelope {
     /** RFC-034: the parsed body, only when the read asked `include: "doc"`; `docV` 0 = render `content`. */
     doc?: Doc;
     docV?: number;
+    /** RFC-035 D3: the message this one answers (same channel, any thread); absent on a non-reply. */
+    replyTo?: ReplyRef;
+    /** RFC-035 D7 (thread reads): replies to THIS message in other threads (`messages.repliesElsewhere`). */
+    repliedElsewhere?: number;
     [k: string]: unknown;
+}
+/** RFC-035 D6: where a message is. */
+export interface MessageLocation {
+    channelId: string;
+    threadId: string;
+    seq: number;
+}
+/** RFC-035 D7: one reply to a message, posted in ANOTHER thread. */
+export interface ReplyElsewhere extends Omit<ReplyRef, "id" | "threadId" | "seq"> {
+    id: string;
+    threadId: string;
+    threadTitle: string | null;
+    seq: number;
+    createdAt: string;
 }
 /**
  * What a post may carry. There is NO `contextId` / `broadcast` (RFC-028 D7): the thread's
@@ -264,6 +282,15 @@ export interface SendBody {
      * `threads.create` instead.
      */
     assignee?: string;
+    /**
+     * RFC-035 D2: the message this post answers — in the SAME channel, any thread (a root may answer
+     * too: "following up on X" in a new thread). Fixed at send. Every miss (unknown, another channel,
+     * unreadable) is one 404 `ApiRequestError`; a system line is 400 `not_answerable`. The result and
+     * every frame carry `replyTo` (the preview). An older server ignores the field.
+     */
+    replyTo?: string;
+    /** RFC-035 D4: do not notify the target's author (no `reply` reason). Never suppresses `thread` / `mention`. */
+    silent?: boolean;
 }
 /** A session as a hold shows it (RFC-028 D3/D4). `parked`: not online and past the 120 s grace — nobody is there. */
 export interface HoldHolder {
@@ -1009,6 +1036,20 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
         create: (channelId: string, body: SendBody & {
             title?: string;
         }) => Promise<SendResult>;
+        /** RFC-035 D6: where a message is (link it with `messageUrl`). One 404 for unknown and unreadable. */
+        location: (id: string) => Promise<MessageLocation>;
+        /**
+         * RFC-035 D7: the replies to `id` posted in OTHER threads, oldest first. Paged: pass `nextSinceSeq` back as
+         * `sinceSeq` while `hasMore` (limit default 20, max 100).
+         */
+        repliesElsewhere: (id: string, p?: {
+            limit?: number;
+            sinceSeq?: number;
+        }) => Promise<{
+            replies: ReplyElsewhere[];
+            hasMore: boolean;
+            nextSinceSeq: number | null;
+        }>;
         receipts: (ids: string[]) => Promise<{
             receipts: unknown[];
         }>;

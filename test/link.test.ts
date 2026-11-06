@@ -64,6 +64,24 @@ describe("link/adapter — what reaches the model", () => {
     expect(r.meta).toMatchObject({ sender: "Kai", sender_handle: "kai", type: "question", sender_context_id: "01992f6e-0000-7000-8000-00000000bbbb" });
   });
 
+  test("RFC-035 D8: a reply leads with what it answers and names it in reply_to; a plain message has neither", () => {
+    const target = { id: "01992f6e-0000-7000-8000-0000000000b9", threadId: "01992f6e-0000-7000-8000-000000000f09", seq: 4, senderName: "Jörgen", senderHandle: "jorgen", senderType: "human" as const, excerpt: "Can you check the deploy?" };
+    const r = render(asEntry(msg("01992f6e-0000-7000-8000-0000000000a2", { replyTo: target, content: "Done." })));
+    expect(r.content).toBe('↪ Jörgen: "Can you check the deploy?"\nDone.');
+    expect(r.meta.reply_to).toBe(target.id);
+    // The hook's tag rule still holds with the extra attribute.
+    expect(Object.keys(r.meta).slice(0, 2)).toEqual(["channel_id", "message_id"]);
+    expect(deliveredEntryId(hostTag(r))).toBe(r.meta.message_id);
+    // An erased person and a gone target still read as a sentence.
+    const gone = render(asEntry(msg("01992f6e-0000-7000-8000-0000000000a3", { replyTo: { ...target, senderName: null, senderHandle: null, excerpt: null }, content: "x" })));
+    expect(gone.content).toBe("↪ someone: (message unavailable)\nx");
+    const quoted = render(asEntry(msg("01992f6e-0000-7000-8000-0000000000a5", { replyTo: { ...target, excerpt: 'say "yes" now' }, content: "y" })));
+    expect(quoted.content.split("\n")[0]).toBe('↪ Jörgen: "say \\"yes\\" now"');
+    const plain = render(asEntry(msg("01992f6e-0000-7000-8000-0000000000a4")));
+    expect(plain.content).toBe("body 01992f6e-0000-7000-8000-0000000000a4");
+    expect("reply_to" in plain.meta).toBe(false);
+  });
+
   test("thread events and action requests carry their entry id as message_id (after channel_id when there is one)", () => {
     const te: Entry = {
       kind: "thread_event",
