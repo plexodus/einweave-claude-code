@@ -356,6 +356,63 @@ function messageText(m, nameOf) {
 // ../protocol/src/v2/doc-corpus.ts
 var DOC_CORPUS = [
   {
+    name: "ref: a bare message link into this workspace",
+    content: "Same as https://app.example/w/01a1b2c7-546f-7000-ab08-cabf380e53ae/c/01a1b2c7-547b-7000-a54a-67fd1444703e/t/01a1b2c7-6fd2-7001-aa85-f1ec2ec906dc/m/01a1b2c7-7060-7000-a5ee-9e016da97563 still open?",
+    refs: {
+      origin: "https://app.example",
+      workspaceId: "01a1b2c7-546f-7000-ab08-cabf380e53ae"
+    },
+    doc: [
+      [
+        "p",
+        0,
+        "Same as ",
+        [
+          "ref",
+          {
+            m: "01a1b2c7-7060-7000-a5ee-9e016da97563",
+            bare: true
+          },
+          "https://app.example/w/01a1b2c7-546f-7000-ab08-cabf380e53ae/c/01a1b2c7-547b-7000-a54a-67fd1444703e/t/01a1b2c7-6fd2-7001-aa85-f1ec2ec906dc/m/01a1b2c7-7060-7000-a5ee-9e016da97563"
+        ],
+        " still open?"
+      ]
+    ],
+    text: "Same as https://app.example/w/01a1b2c7-546f-7000-ab08-cabf380e53ae/c/01a1b2c7-547b-7000-a54a-67fd1444703e/t/01a1b2c7-6fd2-7001-aa85-f1ec2ec906dc/m/01a1b2c7-7060-7000-a5ee-9e016da97563 still open?"
+  },
+  {
+    name: "ref: a labelled message link keeps its words; another workspace stays a link",
+    content: "See [the port discussion](https://app.example/w/01a1b2c7-546f-7000-ab08-cabf380e53ae/recent/t/01a1b2c7-6fd2-7001-aa85-f1ec2ec906dc/m/01a1b2c7-7060-7000-a5ee-9e016da97563) and [theirs](https://app.example/w/01a1b2c7-0000-7000-8000-00000000000f/c/01a1b2c7-547b-7000-a54a-67fd1444703e/t/01a1b2c7-6fd2-7001-aa85-f1ec2ec906dc/m/01a1b2c7-7060-7000-a5ee-9e016da97563).",
+    refs: {
+      origin: "https://app.example",
+      workspaceId: "01a1b2c7-546f-7000-ab08-cabf380e53ae"
+    },
+    doc: [
+      [
+        "p",
+        0,
+        "See ",
+        [
+          "ref",
+          {
+            m: "01a1b2c7-7060-7000-a5ee-9e016da97563"
+          },
+          "the port discussion"
+        ],
+        " and ",
+        [
+          "a",
+          {
+            href: "https://app.example/w/01a1b2c7-0000-7000-8000-00000000000f/c/01a1b2c7-547b-7000-a54a-67fd1444703e/t/01a1b2c7-6fd2-7001-aa85-f1ec2ec906dc/m/01a1b2c7-7060-7000-a5ee-9e016da97563"
+          },
+          "theirs"
+        ],
+        "."
+      ]
+    ],
+    text: "See the port discussion and theirs."
+  },
+  {
     name: "inline",
     content: "Hello **bold** _em_ ~~gone~~ `code`",
     doc: [

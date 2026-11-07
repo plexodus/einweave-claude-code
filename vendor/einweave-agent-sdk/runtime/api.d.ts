@@ -254,6 +254,10 @@ export interface MessageLocation {
     threadId: string;
     seq: number;
 }
+/** RFC-035 D5: a referenced message (a `ref` doc node's `m`) as the caller may see it. */
+export interface MessageRefPreview extends ReplyRef {
+    channelId: string;
+}
 /** RFC-035 D7: one reply to a message, posted in ANOTHER thread. */
 export interface ReplyElsewhere extends Omit<ReplyRef, "id" | "threadId" | "seq"> {
     id: string;
@@ -1049,6 +1053,14 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             replies: ReplyElsewhere[];
             hasMore: boolean;
             nextSinceSeq: number | null;
+        }>;
+        /**
+         * RFC-035 D5: hydrate `ref` doc nodes — at most 50 ids per call (the server's cap; it reads only the
+         * first 50). Only what the caller may read comes back; an absent id is "unavailable", whatever the
+         * reason. Rate-limited per principal (`refs`).
+         */
+        refs: (ids: string[]) => Promise<{
+            refs: Record<string, MessageRefPreview>;
         }>;
         receipts: (ids: string[]) => Promise<{
             receipts: unknown[];

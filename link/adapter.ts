@@ -9,7 +9,7 @@
  * those two keys come first in `meta`, in that order, for every kind — a thread event's
  * or an action's entry id rides as `message_id` too: it is the id the hook confirms.
  */
-import type { DeliveryAdapter, Entry, Inbound } from "../vendor/einweave-agent-sdk/index.js";
+import type { DeliveryAdapter, Entry, Inbound, MessageRefPreview } from "../vendor/einweave-agent-sdk/index.js";
 import { renderThreadEventContent } from "../work-tools";
 
 export type ChannelMeta = Record<string, string>;
@@ -39,22 +39,61 @@ export function senderGrant(msg: Inbound): string {
   return typeof raw === "string" && raw && !raw.startsWith("unattributed_") ? raw : "";
 }
 
-/** RFC-035 D3: who wrote the message a reply answers (null name = an erased person). */
-export function replySender(r: { senderName: string | null; senderHandle: string | null }): string {
+/**
+ * What the reader's side adds to a message's text: who "you" is (this agent's handle), and the
+ * previews of the messages it references (RFC-035 D5, hydrated by the caller; absent = not looked
+ * up, a missing id = a message this agent may not see).
+ */
+export interface RenderView {
+  selfHandle?: string;
+  refs?: ReadonlyMap<string, MessageRefPreview> | null;
+}
+
+/** RFC-035 D3: who wrote a referenced/answered message — "you" when it was this agent. */
+export function replySender(r: { senderName: string | null; senderHandle: string | null }, selfHandle?: string): string {
+  if (selfHandle && r.senderHandle === selfHandle) return "you";
   return r.senderName ?? (r.senderHandle ? `@${r.senderHandle}` : "someone");
+}
+
+/** RFC-035 D5: every message id a doc references (`ref` nodes), in order, once. */
+export function refIdsOf(doc: unknown, into: string[] = []): string[] {
+  if (!Array.isArray(doc)) return into;
+  for (const n of doc) {
+    if (!Array.isArray(n)) continue;
+    const [tag, attrs, ...kids] = n as [unknown, unknown, ...unknown[]];
+    const m = tag === "ref" && attrs && typeof attrs === "object" ? (attrs as { m?: unknown }).m : undefined;
+    if (typeof m === "string" && !into.includes(m)) into.push(m);
+    refIdsOf(kids, into);
+  }
+  return into;
+}
+
+/**
+ * RFC-035 D5: one line per message the text links to, so the agent knows what it points at without a
+ * fetch — and has its id (reply_to, read_thread via its thread). A message it may not see says so,
+ * the same for every reason.
+ */
+export function refLines(doc: unknown, view: RenderView): string[] {
+  if (!view.refs) return [];
+  return refIdsOf(doc).map((id) => {
+    const r = view.refs!.get(id);
+    if (!r) return `↳ links to a message you cannot see (${id})`;
+    const what = r.excerpt === null ? "(message unavailable)" : JSON.stringify(r.excerpt);
+    return `↳ links to ${replySender(r, view.selfHandle)}: ${what} (message ${id}, thread ${r.threadId})`;
+  });
 }
 
 /**
  * RFC-035 D8: the first line of a reply's text -- what it answers, so the model needs no fetch. The excerpt
  * is the server's plain text (never Markdown), whitespace already collapsed; null = the target is gone.
  */
-export function replyLine(r: NonNullable<Inbound["replyTo"]>): string {
+export function replyLine(r: NonNullable<Inbound["replyTo"]>, selfHandle?: string): string {
   // JSON-quoted: a `"` in the excerpt cannot close the quote and append text that reads as ours.
   const what = r.excerpt === null ? "(message unavailable)" : JSON.stringify(r.excerpt);
-  return `↪ ${replySender(r)}: ${what}`;
+  return `↪ ${replySender(r, selfHandle)}: ${what}`;
 }
 
-export function renderMessage(msg: Inbound): Rendered {
+export function renderMessage(msg: Inbound, view: RenderView = {}): Rendered {
   const meta = parseMetadata(msg.metadata);
   const out: ChannelMeta = {
     channel_id: msg.channelId ?? "",
@@ -79,15 +118,19 @@ export function renderMessage(msg: Inbound): Rendered {
   }
   const from = senderGrant(msg);
   if (from) out.sender_context_id = from;
-  const content = msg.content ?? "";
-  return { content: msg.replyTo ? `${replyLine(msg.replyTo)}\n${content}` : content, meta: out };
+  const lines = [
+    ...(msg.replyTo ? [replyLine(msg.replyTo, view.selfHandle)] : []),
+    msg.content ?? "",
+    ...refLines(msg.doc, view),
+  ];
+  return { content: lines.join("\n"), meta: out };
 }
 
 /** `self`: this session's agent id — a work event is said from its side (a reassignment away says stop). */
-export function render(entry: Entry, self: string | null = null): Rendered {
+export function render(entry: Entry, self: string | null = null, view: RenderView = {}): Rendered {
   switch (entry.kind) {
     case "message":
-      return renderMessage(entry.message);
+      return renderMessage(entry.message, view);
     case "thread_event": {
       // RFC-029 §6: something happened to a work item this agent is part of. `channel_id` then
       // `message_id` lead (the hook's tag rule); the entry id is what it confirms.
@@ -124,6 +167,10 @@ export interface AdapterDeps {
   /** This session's own grant id and agent id, once authenticated. */
   myGrant(): string;
   myAgentId(): string;
+  /** This agent's handle ("" before auth): a message it wrote reads "you". */
+  myHandle?(): string;
+  /** RFC-035 D5: previews for referenced message ids; null when the lookup failed (no lines then). */
+  loadRefs?(ids: string[]): Promise<ReadonlyMap<string, MessageRefPreview> | null>;
   /** An id this session sent (the reply tool records them). */
   isOwnSend(id: string): boolean;
   /** Our own send came back: settle it without surfacing (`ack dismissed`). */
@@ -165,7 +212,9 @@ export function channelAdapter(d: AdapterDeps): DeliveryAdapter {
       await d.ready();
       let rendered: Rendered;
       try {
-        rendered = render(entry, d.myAgentId() || null);
+        const ids = entry.kind === "message" ? refIdsOf(entry.message.doc) : [];
+        const refs = ids.length > 0 && d.loadRefs ? await d.loadRefs(ids) : undefined;
+        rendered = render(entry, d.myAgentId() || null, { selfHandle: d.myHandle?.() || undefined, refs });
         await d.notify(rendered);
       } catch (err) {
         try {

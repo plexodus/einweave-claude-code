@@ -1,4 +1,6 @@
-export type Tag = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "li" | "blockquote" | "pre" | "code" | "em" | "strong" | "s" | "a" | "img" | "table" | "thead" | "tbody" | "tr" | "th" | "td" | "hr" | "br" | "@";
+export type Tag = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "li" | "blockquote" | "pre" | "code" | "em" | "strong" | "s" | "a" | "img" | "table" | "thead" | "tbody" | "tr" | "th" | "td" | "hr" | "br" | "@"
+/** RFC-035 D5: a reference to a message in this workspace (`m` = its id); children = the link's own text. */
+ | "ref";
 export interface Attrs {
     lang?: string;
     checked?: boolean;
@@ -10,6 +12,13 @@ export interface Attrs {
     p?: string;
     /** `@`: its handle at send; null when it had none (clients fall back to a display name). */
     h?: string | null;
+    /** `ref`: the referenced message's id. Readers hydrate it (`GET /api/messages/refs`); the doc never carries its text. */
+    m?: string;
+    /**
+     * `ref`: the link's text WAS the link (a pasted URL) — a reader shows who wrote the message and what it
+     * said instead. Absent: the writer named it (`[the port discussion](…)`), and that name is shown.
+     */
+    bare?: boolean;
 }
 export type DocNode = string | DocEl;
 export type DocEl = [tag: Tag, attrs: Attrs | 0, ...children: DocNode[]];
@@ -24,6 +33,11 @@ export interface DocCase {
         p: string;
         h: string;
     }>;
+    /** RFC-035 D5: the send's web origin + workspace — message links into it become `ref`. */
+    refs?: {
+        origin: string;
+        workspaceId: string;
+    };
     doc: Doc;
     /** `docText(doc)`, no `nameOf`. */
     text: string;
