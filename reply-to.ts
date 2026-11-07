@@ -8,7 +8,8 @@
  */
 import { parseMessageRef } from "./holds";
 import { messageUrl, type ReplyRef, type WorkspaceLinks } from "./vendor/einweave-agent-sdk/core/index.js";
-import { replySender } from "./link/adapter";
+import type { MessageRefPreview } from "./vendor/einweave-agent-sdk/index.js";
+import { refIdsOf, replySender } from "./link/adapter";
 
 export type ReplyToPlan =
   | { kind: "none" }
@@ -50,9 +51,11 @@ export function planReplyTo(args: Record<string, unknown>): ReplyToPlan {
  * to OTHER threads (`replied_elsewhere`, thread reads only; absent when none).
  */
 export function referenceFields(
-  m: { id: string; threadId?: string | null; replyTo?: ReplyRef | null; repliedElsewhere?: number },
+  m: { id: string; threadId?: string | null; replyTo?: ReplyRef | null; repliedElsewhere?: number; doc?: unknown },
   channelId: string | null,
-  links: WorkspaceLinks | null
+  links: WorkspaceLinks | null,
+  refs?: ReadonlyMap<string, MessageRefPreview> | null,
+  selfHandle?: string
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (links && channelId && m.threadId) {
@@ -63,7 +66,18 @@ export function referenceFields(
     }
   }
   if (m.replyTo) {
-    out.reply_to = { id: m.replyTo.id, sender: replySender(m.replyTo), excerpt: m.replyTo.excerpt, thread_id: m.replyTo.threadId };
+    out.reply_to = { id: m.replyTo.id, sender: replySender(m.replyTo, selfHandle), excerpt: m.replyTo.excerpt, thread_id: m.replyTo.threadId };
+  }
+  // RFC-035 D5: the messages its text links to (when they were looked up): who and what, or that this
+  // agent may not see it. A failed lookup adds nothing — never a false "cannot see".
+  const ids = refs ? refIdsOf(m.doc) : [];
+  if (ids.length > 0) {
+    out.links_to = ids.map((id) => {
+      const r = refs!.get(id);
+      return r
+        ? { id, sender: replySender(r, selfHandle), excerpt: r.excerpt, thread_id: r.threadId, channel_id: r.channelId }
+        : { id, unavailable: true };
+    });
   }
   if (typeof m.repliedElsewhere === "number" && m.repliedElsewhere > 0) out.replied_elsewhere = m.repliedElsewhere;
   return out;

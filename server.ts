@@ -57,14 +57,14 @@ import { readOrphanedAt, decideStaleNotice, staleNoticeText, findInstalledVersio
 import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
-import { Session, createRuntime, isApiRequestError, type Api, type SearchRefusal, type SearchResponse, type SearchThreadRow, type SearchMessageRow, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop } from "./vendor/einweave-agent-sdk/index.js";
+import { Session, createRuntime, isApiRequestError, type Api, type SearchRefusal, type SearchResponse, type SearchThreadRow, type SearchMessageRow, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop, type MessageRefPreview } from "./vendor/einweave-agent-sdk/index.js";
 import { deadline, snippetParts, TURN_STATES, type SnippetPart, type TurnState } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
 import { clearNote, holdsNote } from "./clear-note";
 import type { SessionSource } from "./delivery/ctl-protocol";
-import { channelAdapter, render, shouldDismiss } from "./link/adapter";
+import { channelAdapter, refIdsOf, render, shouldDismiss } from "./link/adapter";
 import { planReplyTo, referenceFields } from "./reply-to";
 import type { WorkspaceLinks } from "./vendor/einweave-agent-sdk/core/index.js";
 import { MissedTracker } from "./delivery/missed";
@@ -1335,6 +1335,8 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
     ready: () => hostReady,
     myGrant: () => myContextId,
     myAgentId: () => agentId,
+    myHandle: () => agentHandle,
+    loadRefs: (ids) => loadRefs(ids),
     isOwnSend: (id) => ownSentIds.has(id),
     dismiss: (id) => owner()?.ack([id], "dismissed"),
     unhold: (id) => owner()?.pending.remove([id]),
@@ -2435,12 +2437,15 @@ async function readDeliveries(args: Record<string, unknown>): Promise<CallToolRe
   let bytes = 0;
   let cut = false;
   const deps = { myGrant: () => myContextId, myAgentId: () => agentId, isOwnSend: (id: string) => ownSentIds.has(id) };
+  // RFC-035 D5: the page's references, looked up once.
+  const pageRefIds = page.entries.flatMap((e) => (e.kind === "message" ? refIdsOf(e.message.doc) : []));
+  const pageRefs = pageRefIds.length > 0 ? await loadRefs([...new Set(pageRefIds)]) : undefined;
   for (const e of page.entries) {
     if (shouldDismiss(e, deps)) {
       echoes.push(e.id);
       continue;
     }
-    const r = render(e, agentId || null);
+    const r = render(e, agentId || null, { selfHandle: agentHandle || undefined, refs: pageRefs });
     const { channel_id, thread_id, ...meta } = r.meta; // the two ids ride at the top level, once
     const item = {
       kind: e.kind,
@@ -2507,6 +2512,24 @@ async function workspaceLinks(): Promise<WorkspaceLinks | null> {
   }
 }
 
+/**
+ * RFC-035 D5: previews for referenced message ids, in chunks of the server's cap (50). Null when a
+ * lookup failed: callers then add no reference lines — never "cannot see", which would be a claim.
+ */
+async function loadRefs(ids: readonly string[]): Promise<ReadonlyMap<string, MessageRefPreview> | null> {
+  if (ids.length === 0) return new Map();
+  try {
+    const out = new Map<string, MessageRefPreview>();
+    for (let i = 0; i < ids.length; i += 50) {
+      const r = await creds.withApi((api) => api.messages.refs(ids.slice(i, i + 50)));
+      for (const [id, ref] of Object.entries(r.refs ?? {})) out.set(id, ref);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 async function sdkApi<T>(fn: (api: Api) => Promise<T>, notFound?: string): Promise<T> {
   try {
     return await creds.withApi(fn);
@@ -2546,7 +2569,7 @@ const mcp = new Server(
       "",
       "Use the reply tool to send messages to an einweave channel. Pass channel_id from the inbound message. To reply in a thread, set thread_id to the thread_id shown on the message you are replying to — every inbound message carries the id of its thread. Omit thread_id to start a new root message.",
       "",
-      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it). Never cite seq to people; seq is for paging.",
+      "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it); a message that links to another one ends with a line naming it (↳ links to sender: \"excerpt\" (message id, thread id)), and read rows carry links_to. Never cite seq to people; seq is for paging.",
       "",
       "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
@@ -2583,7 +2606,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "reply",
       description:
-        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it). Never cite seq to people; seq is for paging.",
+        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it); a message that links to another one ends with a line naming it (↳ links to sender: \"excerpt\" (message id, thread id)), and read rows carry links_to. Never cite seq to people; seq is for paging.",
       inputSchema: {
         type: "object",
         properties: {
@@ -4135,9 +4158,11 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
             limit,
             ...(sinceSeq !== undefined ? { sinceSeq } : hasSince ? { since } : {}),
             markRead: args.mark_read !== false,
+            include: "doc",
           })
         )) as any;
         const links = await workspaceLinks();
+        const refs = await loadRefs([...new Set((data.messages ?? []).flatMap((m: any) => refIdsOf(m.doc)))] as string[]);
         const messages = (data.messages ?? []).map((m: any) => ({
           id: m.id,
           // ⚠️ THE CURSOR, AND IT USED TO BE DROPPED HERE. This projection is a
@@ -4157,7 +4182,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           replies: m.replyCount ?? 0,
           ts: m.createdAt,
           // RFC-035 D8: its url, and the message it answers.
-          ...referenceFields(m, m.channelId ?? null, links),
+          ...referenceFields(m, m.channelId ?? null, links, refs, agentHandle),
         }));
 
         /**
@@ -4331,7 +4356,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
         // The read AND its mark, by the SDK's one rule (`threads.read`): the run from
         // since_seq (or the start) to the last message returned, never further.
         const data = (await sdkApi(
-          (api) => api.threads.read(threadId, { limit, ...(sinceSeq !== undefined ? { sinceSeq } : {}), markRead: args.mark_read !== false }),
+          (api) => api.threads.read(threadId, { limit, ...(sinceSeq !== undefined ? { sinceSeq } : {}), markRead: args.mark_read !== false, include: "doc" }),
           `Thread ${threadId} not found, or not visible to this agent.`
         )) as any;
 
@@ -4349,6 +4374,9 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
         }
 
         const links = await workspaceLinks();
+        const threadRefs = await loadRefs([
+          ...new Set([...refIdsOf(data.parent?.doc), ...(data.replies ?? []).flatMap((r: any) => refIdsOf(r.doc))]),
+        ] as string[]);
         const rowChannel: string | null = data.thread?.channelId ?? data.parent?.channelId ?? null;
         const shape = (m: any) => ({
           id: m.id,
@@ -4358,7 +4386,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           type: m.type ?? "text",
           ts: m.createdAt,
           // RFC-035 D8: its url, what it answers, replies to it in other threads.
-          ...referenceFields({ ...m, threadId: m.threadId ?? data.thread?.id ?? threadId }, rowChannel, links),
+          ...referenceFields({ ...m, threadId: m.threadId ?? data.thread?.id ?? threadId }, rowChannel, links, threadRefs, agentHandle),
         });
         // The root is context, not news: shipped on the first page only, so a
         // polling reader is not handed it again on every call.

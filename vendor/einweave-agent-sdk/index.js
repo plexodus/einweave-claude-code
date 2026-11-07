@@ -30,7 +30,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-c2gp7t6e.js";
+} from "./index-hnf6gdw7.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -961,7 +961,7 @@ function withDetails(base, details) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.30.0";
+var SDK_VERSION = "0.31.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1100,6 +1100,7 @@ function createApi(rt, client) {
       create: (channelId, body) => req("POST", "/api/messages", { body: withClientMsgId({ channelId, ...body }) }),
       location: (id) => req("GET", `/api/messages/${encodeURIComponent(id)}/location`),
       repliesElsewhere: (id, p = {}) => req("GET", `/api/messages/${encodeURIComponent(id)}/replies-elsewhere${qs(p)}`),
+      refs: (ids) => req("GET", `/api/messages/refs?ids=${ids.map(encodeURIComponent).join(",")}`),
       receipts: (ids) => req("GET", `/api/messages/receipts?ids=${ids.map(encodeURIComponent).join(",")}`)
     },
     threads: {

@@ -2,7 +2,7 @@
  * RFC-027 — link/adapter.ts, the seam between the SDK `Session` and the host:
  * entries → channel notifications, pending until the model has them.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, vi } from "bun:test";
 import { Pending, type Entry, type Inbound } from "../vendor/einweave-agent-sdk/index.js";
 import { channelAdapter, render, type AdapterDeps, type Rendered } from "../link/adapter";
 import { deliveredEntryId } from "../delivery/tags";
@@ -220,5 +220,47 @@ describe("link/adapter — what reaches the model", () => {
     failNext = false;
     expect(await deliver()).toBe("pushed");
     expect(h.pushed).toEqual(["d2"]);
+  });
+});
+
+// RFC-035 follow-ups: "you" in the ↪ line; one ↳ line per referenced message (D5).
+describe("link/adapter — references and 'you'", () => {
+  const target = { id: "01992f6e-0000-7000-8000-0000000000b9", threadId: "01992f6e-0000-7000-8000-000000000f09", seq: 4, senderName: "Me", senderHandle: "me", senderType: "agent" as const, excerpt: "my own question" };
+  test("a reply to this agent's own message reads 'you'", () => {
+    const r = render(asEntry(msg("01992f6e-0000-7000-8000-0000000000c1", { replyTo: target, content: "answer" })), ME.agent, { selfHandle: "me" });
+    expect(r.content.split("\n")[0]).toBe('↪ you: "my own question"');
+  });
+
+  const R = "01992f6e-0000-7000-8000-0000000000d1";
+  const G = "01992f6e-0000-7000-8000-0000000000d2";
+  const withRefs = (over: Partial<Inbound> = {}) =>
+    msg("01992f6e-0000-7000-8000-0000000000c2", {
+      content: "see these",
+      doc: [["p", 0, "see ", ["ref", { m: R, bare: true }, "https://x"], " and ", ["ref", { m: G }, "that"]]] as never,
+      docV: 1,
+      ...over,
+    });
+  const preview = { id: R, threadId: "01992f6e-0000-7000-8000-000000000f0a", seq: 2, channelId: "c1", senderName: "Kai", senderHandle: "kai", senderType: "agent" as const, excerpt: "the plan" };
+
+  test("each referenced message gets a line: who and what (with ids), or that it cannot be seen", () => {
+    const r = render(asEntry(withRefs()), ME.agent, { refs: new Map([[R, preview]]) });
+    expect(r.content.split("\n")).toEqual([
+      "see these",
+      `↳ links to Kai: "the plan" (message ${R}, thread ${preview.threadId})`,
+      `↳ links to a message you cannot see (${G})`,
+    ]);
+  });
+
+  test("not looked up, or the lookup failed: no lines — never a false 'cannot see'", () => {
+    expect(render(asEntry(withRefs()), ME.agent, {}).content).toBe("see these");
+    expect(render(asEntry(withRefs()), ME.agent, { refs: null }).content).toBe("see these");
+  });
+
+  test("the push looks the references up first, with this agent's handle", async () => {
+    const loadRefs = vi.fn().mockResolvedValue(new Map([[R, { ...preview, senderHandle: "me" }]]));
+    const h = harness({ loadRefs, myHandle: () => "me" } as Partial<AdapterDeps>);
+    await h.adapter.push!(asEntry(withRefs()));
+    expect(loadRefs).toHaveBeenCalledWith([R, G]);
+    expect(h.notified[0]!.content).toContain(`↳ links to you: "the plan"`);
   });
 });

@@ -274,7 +274,32 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-035 D8: reply-to against the real
     expect(await until(() => p.notices.slice(before).some((n) => n.meta.message_id === h.id), 15_000), `no inbound:\n${p.stderr().slice(-2000)}`).toBe(true);
     const n = p.notices.slice(before).find((x) => x.meta.message_id === h.id)!;
     expect(n.meta.reply_to).toBe(agentMsg);
-    expect(n.content.split("\n")[0]).toBe('↪ Me: "Migration 23 is applied everywhere."');
+    // The answered message is this agent's own: it reads "you".
+    expect(n.content.split("\n")[0]).toBe('↪ you: "Migration 23 is applied everywhere."');
+  });
+
+  // RFC-035 D5: a message that links to another one reaches the agent with a ↳ line naming it; read
+  // rows carry links_to. The link is the server's own template (a person's Copy link).
+  test("a linked message: the inbound ends with ↳ links to …; read_thread rows carry links_to", async () => {
+    const target = await humanRoot("The deploy runs at 18:00 on Fridays.");
+    const ws = await human("GET", "/api/me/workspace");
+    const link = String(ws.links.message).replace("{channelId}", channelId).replace("{threadId}", target.threadId).replace("{id}", target.id);
+    const t = await humanRoot("Context thread for the agent");
+    const s = await p.call("reply", { channel_id: CHANNEL, thread_id: t.threadId, text: "Holding this thread." });
+    expect(s.isError, s.text).toBe(false);
+    const before = p.notices.length;
+    const h = await human("POST", `/api/threads/${t.threadId}/messages`, { content: `See ${link} before you change it.`, replyTo: sentId(s.text) });
+    expect(await until(() => p.notices.slice(before).some((n) => n.meta.message_id === h.id), 15_000), `no inbound:\n${p.stderr().slice(-2000)}`).toBe(true);
+    const n = p.notices.slice(before).find((x) => x.meta.message_id === h.id)!;
+    const lines = n.content.split("\n");
+    expect(lines[0]).toBe('↪ you: "Holding this thread."'); // the reply line names this agent "you"
+    expect(lines.at(-1)).toBe(`↳ links to Owner: "The deploy runs at 18:00 on Fridays." (message ${target.id}, thread ${target.threadId})`);
+
+    const read = JSON.parse((await p.call("read_thread", { thread_id: t.threadId, mark_read: false })).text);
+    const row = read.replies.find((r: any) => r.id === h.id);
+    expect(row.links_to, JSON.stringify(row)).toEqual([
+      { id: target.id, sender: "Owner", excerpt: "The deploy runs at 18:00 on Fridays.", thread_id: target.threadId, channel_id: channelId },
+    ]);
   });
 
   // `silent`'s effect (no `reply` reason) is the server's, proven in bridge test/message-references.test.ts G3;
