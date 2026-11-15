@@ -23,7 +23,7 @@ export interface WorkDeps {
   send: (body: Record<string, unknown>) => ReturnType<ApiCall>;
   /** This session's agent id ("" before it authenticates): an answer names it "you", never by id. */
   self?: () => string;
-  /** A root this session posted (create_item): its echo must be dismissed, and the feed shown it. */
+  /** A root this session posted (create_item): its echo must be dismissed. */
   onRootSent?: (r: { id: string; channelId: string; threadId: string; title: string; text: string }) => void;
 }
 

@@ -175,7 +175,7 @@ export interface AdapterDeps {
   isOwnSend(id: string): boolean;
   /** Our own send came back: settle it without surfacing (`ack dismissed`). */
   dismiss(id: string): void;
-  /** The host accepted it — the missed tracker and the feed tap hang off this. */
+  /** The host accepted it — the missed tracker hangs off this. */
   pushed(entry: Entry, rendered: Rendered): void;
   /**
    * A push threw: drop the entry from the SDK's pending set WITHOUT acking, so a redelivery or

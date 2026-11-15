@@ -46,7 +46,7 @@ import {
   CallToolRequestSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, mkdirSync, chmodSync, existsSync } from "fs";
+import { readFileSync, mkdirSync, chmodSync } from "fs";
 import { homedir, hostname, tmpdir } from "os";
 import { dirname, join } from "path";
 import { createLabelSetting } from "./session-settings";
@@ -81,7 +81,6 @@ import { deliveryState } from "./delivery/state";
 import { localIso } from "./local-time";
 import { sanitizeChannelParams, stripControlChars } from "./control-chars";
 import { prepareDoc } from "./doc-view";
-import { startFeedTap, sweepStaleFeedSockets, writeLauncher, launcherPath, type FeedTap } from "./feed-tap";
 import { procStartOf, procStartMatches } from "./proc-start";
 import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./state-dir";
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
@@ -808,7 +807,8 @@ function rememberSentMessage(id: string, type: string): void {
   }
 }
 
-// Channel name→id map, populated on first connect for name-based filtering
+// Channel name→id map. Loaded lazily: when a message names a channel not in it
+// (`warmChannelName`), for a starting scope, and by the pane and tools that name channels.
 let channelNameToId: Map<string, string> | null = null;
 let channelMapPromise: Promise<boolean> | null = null;
 let channelMapAttemptedAt = 0;
@@ -845,27 +845,6 @@ async function loadChannelMap(): Promise<boolean> {
   }
 }
 
-// RFC-022: this session's local feed (`tail` reads it). Null until boot opens it, and
-// inert if it could not open — nothing on the message path depends on it (feed-tap.ts).
-let feedTap: FeedTap | null = null;
-
-/**
- * Tell an attached tail what this session's link to Bridge is doing. Published from the
- * places that DECIDE — `authenticated`, scheduleReconnect (a retry is armed, or it is
- * not coming back), stopConnection, a supersession — never inferred at the socket's
- * close handler: the liveness watchdog and credentialFailure detach the socket before
- * closing it, so that handler never sees the very outages a status exists to show.
- * Deduped: a retry loop re-arms every backoff step and must not flood the feed.
- */
-let lastFeedStatus = "";
-function feedStatus(state: "connected" | "reconnecting" | "stopped", reason?: string): void {
-  const key = `${state}\n${reason ?? ""}`;
-  if (key === lastFeedStatus) return;
-  lastFeedStatus = key;
-  feedTap?.status(state, reason);
-}
-
-/** A channel's name for the feed, or "" when the map has not got it (yet). */
 /** A channel NAME or id (as typed) to its id via the loaded map; null when neither is known. */
 function channelIdOf(ref: string): string | null {
   const r = ref.replace(/^#/, "");
@@ -884,28 +863,15 @@ function channelNameOf(channelId: string): string {
 }
 
 /**
- * Run `publish` with the channel's name, for the feed. When the name is not known — the
- * map is only loaded eagerly for sessions with a filter, and a channel can post-date it
- * — refresh first (rate-limited, shared with the filter path) so a tail shows `#dev`,
- * not a uuid. Best-effort and detached: the message path never waits on this.
- *
- * LAZY on purpose. Loading the map at `authenticated` for every session would be one more
- * request per connect — and, against a credential the API refuses, one more 401 and
- * re-mint — for a feed nobody may be reading. A message is what makes the name worth
- * fetching. (The server sending the name on the frame removes the fetch: RFC-022 S3.1.)
- *
- * SERIALISED so the feed keeps arrival order: a message in a known channel must not
- * overtake an earlier one still waiting on the fetch.
+ * A message named a channel the map does not have: load the map in the background, so the
+ * text this session later shows the model (the missed-delivery notice, catchup, who_can_see)
+ * says `#dev`, not a uuid or "other". LAZY on purpose: one request per connect for every
+ * session would be one more 401 + re-mint against a refused credential; a message is what
+ * makes the name worth fetching. Fire-and-forget: the message path never waits on it.
+ * (This used to ride on the RFC-022 feed's own prefetch, removed in 0.48.0 with `tail`.)
  */
-let feedQueue: Promise<void> = Promise.resolve();
-function feedWithChannelName(channelId: string, publish: (channelName: string) => void): void {
-  // `path()` is "" for an inert tap (the feed could not open): no reader, so no fetch.
-  if (!feedTap?.path()) return;
-  feedQueue = feedQueue
-    .then(() => (channelId && !channelNameOf(channelId) ? ensureChannelMap() : undefined))
-    .catch(() => {})
-    .then(() => publish(channelNameOf(channelId)))
-    .catch(() => {});
+function warmChannelName(channelId: string | null | undefined): void {
+  if (channelId && !channelNameOf(channelId)) void ensureChannelMap().catch(() => {});
 }
 
 // Single in-flight load, rate-limited. Resolves once the map is as fresh as
@@ -1159,7 +1125,7 @@ function updateStatus(): Record<string, unknown> {
 // liveness watchdog, reconnect backoff, close classification, the session lock's
 // standby/takeover and the 15-minute reconcile are the SDK's (`Session`). What
 // stays here is what only this host has: the channel notifications (link/adapter.ts),
-// what the model is told, `status`, the proc registry and the feed.
+// what the model is told, `status` and the proc registry.
 //
 // An entry is PENDING from push until the model has it — the UserPromptSubmit hook
 // confirms it over the control socket (delivery/ctl-server.ts), or a read tool returns
@@ -1343,11 +1309,10 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
     pushed: (entry: Entry) => {
       pushedCount++;
       tracker.pushed(entry.id, Date.now());
-      // RFC-022 D8: the feed gets exactly what the host was handed, once it accepted it.
       if (entry.kind === "message") {
         const m = entry.message;
+        warmChannelName(m.channelId);
         if (m.threadId && serverHolds.includes(m.threadId)) heldMayHaveChanged();
-        feedWithChannelName(m.channelId, (channelName) => feedTap?.inbound(m, { channelName, targeted: m.addressed }));
       }
     },
     failed: (entry, err) => {
@@ -1807,7 +1772,6 @@ function onStatus(st: SessionStatus): void {
       // SDK's standby retry rather than openSession. The socket follows the lock.
       void ctlMgr?.ensure();
       process.stderr.write(`einweave channel: authenticated as ${agentName} (${agentId})${myContextId ? ` context ${myContextId}` : ""}\n`);
-      feedStatus("connected");
       return;
     }
     case "closed": {
@@ -1837,7 +1801,6 @@ function onStatus(st: SessionStatus): void {
       const delayMs = Math.round(st.delayMs * BACKOFF_SCALE); // what the timer actually waits
       reconnectAttempt = st.attempt;
       nextReconnectAt = Date.now() + delayMs;
-      feedStatus("reconnecting");
       process.stderr.write(`einweave channel: reconnecting in ${(delayMs / 1000).toFixed(1)}s (attempt ${st.attempt})\n`);
       return;
     }
@@ -1861,8 +1824,13 @@ function onStatus(st: SessionStatus): void {
       // RFC-027 D5: broadcasts over the resume budget come as counts, never bodies.
       const busy = st.channels.filter((c) => c.count > 0);
       if (busy.length === 0) return;
-      const where = busy.map((c) => `#${channelNameOf(c.channelId) || c.channelId} ×${c.count}`).join(", ");
-      notifyModel(`einweave: broadcasts arrived while this session was away (${where}) — read_messages returns them.`, "status");
+      const say = () => {
+        const where = busy.map((c) => `#${channelNameOf(c.channelId) || c.channelId} ×${c.count}`).join(", ");
+        notifyModel(`einweave: broadcasts arrived while this session was away (${where}) — read_messages returns them.`, "status");
+      };
+      // Names, not uuids: a fresh process has no map yet. Bounded by the map load; said either way.
+      if (busy.some((c) => !channelNameOf(c.channelId))) void ensureChannelMap().catch(() => {}).then(say);
+      else say();
       return;
     }
     case "invalid_session":
@@ -1939,7 +1907,6 @@ function onStopped(stop: SessionStop): void {
   if (stop.kind === "superseded") {
     superseded = true;
     updateProcState(STATE_DIR, process.pid, "superseded");
-    feedStatus("stopped", "another window took over this session");
     // From the server (a 4008 "session superseded", holder read by the SDK) or from the
     // LOCAL lock (another live process now holds the file — no close at all): then the
     // holder is read here, best-effort.
@@ -1966,7 +1933,6 @@ function onStopped(stop: SessionStop): void {
     lastClose = { cls: "revoked", reason: msg };
     lastServerError = msg;
     waitingFor = waitFor(stop.credential);
-    feedStatus("stopped", msg);
     process.stderr.write(`einweave channel: no credential for auth: ${msg}\n`);
     // Each distinct refusal once per episode: the model already knows, and `status` shows it.
     if (notifiedRefusal !== msg) {
@@ -1990,7 +1956,6 @@ function onStopped(stop: SessionStop): void {
   }
   const why = describeClose(cls, c?.code, c?.reason, { keyDeleted: c?.keyDeleted, myVersion: PLUGIN_VERSION });
   process.stderr.write(`einweave channel: not reconnecting — ${why}\n`);
-  feedStatus("stopped", why);
   notifyConnectionRefused(cls, c?.code, c?.reason, { keyDeleted: c?.keyDeleted, myVersion: PLUGIN_VERSION });
 }
 
@@ -2143,7 +2108,6 @@ function rekeyTo(conversationId: string, source = ""): boolean {
 function stopConnection(): void {
   wantConnected = false;
   closeSession();
-  feedStatus("stopped", "disconnected");
   // An explicit disconnect ends a superseded episode: the next plain `connect` competes normally.
   superseded = false;
   notifiedStandbyFor = null;
@@ -3209,7 +3173,7 @@ const holds = createHolds({
 });
 
 // RFC-029 §7: the work-item tools' HTTP, through apiFetch (a proof per request). A root that
-// create_item posted is this session's own send: its echo is dismissed, and the feed shows it.
+// create_item posted is this session's own send: its echo is dismissed.
 const workDeps: WorkDeps = {
   self: () => agentId,
   api: async (method, path, body) => {
@@ -3232,19 +3196,6 @@ const workDeps: WorkDeps = {
   },
   onRootSent: (r) => {
     rememberOwnSend(r.id);
-    feedWithChannelName(r.channelId, (channelName) =>
-      feedTap?.outbound({
-        id: r.id,
-        channelId: r.channelId,
-        channelName,
-        threadId: "",
-        resultThreadId: r.threadId,
-        title: r.title,
-        type: "text",
-        text: r.text,
-        self: { id: agentId, handle: agentHandle || agentName },
-      })
-    );
   },
 };
 
@@ -3741,26 +3692,6 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           rememberOwnSend(result.id);
           rememberSentMessage(result.id, type);
         }
-        // RFC-022 D8: an accepted send goes to the feed — the host shows a reply as
-        // `Called plugin:einweave:einweave` with no text, so `tail` is where it can be read.
-        {
-          // The server's id for the channel: a reply names only its thread, and a root
-          // may have been addressed by channel NAME.
-          const sentChannelId = String(result.channelId ?? channelId ?? "");
-          feedWithChannelName(sentChannelId, (channelName) =>
-            feedTap?.outbound({
-              id: String(result.id ?? ""),
-              channelId: sentChannelId,
-              channelName,
-              threadId: threadId ?? "",
-              resultThreadId: String(result.threadId ?? ""),
-              title: title ?? "",
-              type,
-              text,
-              self: { id: agentId, handle: agentHandle || agentName },
-            })
-          );
-        }
         const holdNote = describeSendHold(result.hold, result.threadId ?? threadId);
         // RFC-029 D4: the assignment made with this reply (same transaction as the post).
         const assignNote = result.assign?.assignee
@@ -3888,6 +3819,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           const channelId = data?.thread?.channelId ?? data?.parent?.channelId;
           if (typeof channelId !== "string") throw new Error(`thread ${threadId}: not found, or not readable by this agent`);
           path = `/api/channels/${encodeURIComponent(channelId)}/audience`;
+          if (!channelNameOf(channelId)) await ensureChannelMap().catch(() => {});
           subject = `thread ${threadId} (#${channelNameOf(channelId) || channelId})`;
         } else {
           const { channelId, channelName } = await resolveChannelRef(args.channel_id);
@@ -4824,8 +4756,6 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
                   auth: creds.status(),
                   // The RAW label (what was typed), not the server's suffixed "Name · #id" form.
                   label: labelSetting.current() || null,
-                  // RFC-022 D10: run this in a split terminal to read messages in full.
-                  tail: feedTap?.path() && existsSync(launcherPath(STATE_DIR)) ? launcherPath(STATE_DIR) : null,
                 },
                 null,
                 2
@@ -4879,9 +4809,6 @@ function shutdown(): void {
   closeSession();
   ctlMgr?.close();
   removeProc(STATE_DIR, process.pid); // RFC-017 D2
-  // RFC-022: tell an attached tail the session is going, and remove the socket file.
-  // Detached — the exit below does not wait on a feed client.
-  void feedTap?.stop();
   // A mint cut off here has left its attempt on disk: the next start replays it (E6b).
   void Bun.sleep(SHUTDOWN_GRACE_MS).finally(() => {
     creds.stop();
@@ -4951,28 +4878,6 @@ sessionKeySettled = true;
 // at startup only, and the session lock record (P3) reuses this exact same identity.
 // Initial `state` is "disconnected": acquireSessionLock() below decides connected vs
 // standby, and updates it. Best-effort: writeProc() never throws.
-// RFC-022 D5/D10: open this session's local feed and (re)write the launcher BEFORE the
-// record below, so the record can advertise the socket and a waiting `tail` attaches to
-// a session that is already serving. The socket is named for the PROCESS, not the
-// session key: a standby window of the same session is a different process with its own
-// (idle) feed, and must not collide with the holder's. Never fatal — startFeedTap
-// resolves to an inert tap if the socket cannot open.
-sweepStaleFeedSockets(STATE_DIR, pidAlive, (line) => process.stderr.write(line + "\n"));
-feedTap = await startFeedTap({
-  stateDir: STATE_DIR,
-  sessionKey: `p${process.pid}`,
-  hello: () => ({
-    software_id: PLUGIN_CLIENT_ID,
-    software_version: PLUGIN_VERSION,
-    agent: { id: agentId, handle: agentHandle || agentName },
-    context_id: myContextId || SESSION_KEY,
-    ...(labelSetting.current() ? { label: labelSetting.current() } : {}),
-    ...(process.env.CLAUDE_PROJECT_DIR ? { cwd: process.env.CLAUDE_PROJECT_DIR } : {}),
-  }),
-  log: (line) => process.stderr.write(line + "\n"),
-});
-// A shutdown that arrived during the await above found `feedTap` null and closed nothing.
-if (shuttingDown) void feedTap.stop();
 // RFC-027 D7: the control socket the UserPromptSubmit / Stop hooks reach — keyed by the
 // Claude Code pid, the one identifier the hook (CLAUDE_PID) and this process (the
 // ancestry walk) share. No pid (no `ps`): no hook confirmations; `status` says so.
@@ -5033,14 +4938,6 @@ function watchForClaudePid(): void {
   if (claudePid !== null) await startCtl(claudePid);
   else if (ANCESTRY_WORKS && CLAUDE_PID_LATE_MS > 0) watchForClaudePid();
 }
-// Only a CURRENT copy writes the launcher. An old window restarting from an orphaned
-// plugin root (a newer version is installed; this directory is on its deletion clock)
-// would otherwise point the launcher back at a directory that is about to disappear.
-try {
-  if (!CLAUDE_PLUGIN_ROOT || readOrphanedAt(CLAUDE_PLUGIN_ROOT) === null) writeLauncher(STATE_DIR, import.meta.dir);
-} catch (err) {
-  process.stderr.write(`einweave channel: could not write the tail launcher: ${err instanceof Error ? err.message : String(err)}\n`);
-}
 {
   const id = myIdentity();
   myProc = {
@@ -5055,7 +4952,6 @@ try {
     termProgram: id.termProgram,
     cwd: id.cwd,
     state: "disconnected",
-    ...(feedTap.path() ? { feed: feedTap.path() } : {}),
   };
   writeProc(STATE_DIR, myProc);
 }

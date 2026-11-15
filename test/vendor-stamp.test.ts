@@ -1,6 +1,6 @@
 /**
- * The vendored `@bridge/agent-sdk` build is what `tail` and the local feed run on
- * (RFC-022 D6, RFC-018 D5). `VERSION` is `<semver>+<git sha>` of the Bridge repo commit
+ * The vendored `@einweave/agent-sdk` build is what the session runs on (RFC-018 D5).
+ * `VERSION` is `<semver>+<git sha>` of the einweave repo commit
  * it was built from, with `+dirty` appended when that tree had uncommitted changes.
  *
  * A `+dirty` stamp, or none, means the copy in this repo was never a commit anyone can
@@ -17,8 +17,8 @@ test("the vendored SDK carries a clean <semver>+<sha> stamp", () => {
   expect(stamp).toMatch(/^\d+\.\d+\.\d+\+[0-9a-f]{7,40}$/);
 });
 
-test("the entry points the plugin imports and launches are present", () => {
-  for (const f of ["index.js", "index.d.ts", "node.js", "node.d.ts", "core/index.js", "core/index.d.ts", "tail-cli.js"]) {
+test("the entry points the plugin imports are present", () => {
+  for (const f of ["index.js", "index.d.ts", "node.js", "node.d.ts", "core/index.js", "core/index.d.ts"]) {
     expect(existsSync(join(VENDOR, f)), f).toBe(true);
   }
 });

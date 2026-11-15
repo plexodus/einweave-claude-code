@@ -1,7 +1,7 @@
 /**
  * The per-session control socket between this plugin's hooks and its MCP server
  * (RFC-027 D7): `<state>/ctl/c<claude-pid>.sock`, 0600. One NDJSON request and one
- * response per connection. Not the feed socket — that one stays read-only (#228).
+ * response per connection.
  *
  * Five operations, nothing else:
  * - `prompt` (UserPromptSubmit): `id` is the entry the prompt delivered, if any
