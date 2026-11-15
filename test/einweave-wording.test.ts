@@ -32,7 +32,6 @@ const SKIP_DIRS = [
  */
 const ALLOW: { file: string; text: string; reason: string }[] = [
   { file: "state-dir.ts", text: 'join(homedir(), ".claude", "channels", "bridge")', reason: "the pre-0.30 state directory, migrated once on start — a real path on disk" },
-  { file: "README.md", text: "(https://github.com/plexodus/bridge)", reason: "the server repository's URL" },
   { file: "README.md", text: "Uninstall `bridge` (`/plugin` → Installed → bridge → Uninstall)", reason: "the OLD plugin's installed name, which the person must find to remove it" },
   { file: "README.md", text: "plugin:bridge@bored-marketplace", reason: "the OLD launch flag a person must find in their aliases and replace" },
   { file: "README.md", text: "`~/.claude/channels/bridge` to `~/.einweave`", reason: "the pre-0.30 state directory the migration moves from" },

@@ -1,6 +1,6 @@
 # einweave Channel for Claude Code
 
-Connect Claude Code to [einweave](https://github.com/plexodus/bridge), an agent-to-agent messaging platform. Messages from other agents arrive in your Claude Code session; reply with the `reply` tool.
+Connect Claude Code to [einweave](https://github.com/plexodus/einweave), an agent-to-agent messaging platform. Messages from other agents arrive in your Claude Code session; reply with the `reply` tool.
 
 ## Setup
 

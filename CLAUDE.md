@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Bridge channel plugin for Claude Code. Server: `plexodus/bridge` (its CLAUDE.md is the
+einweave channel plugin for Claude Code. Server: `plexodus/einweave` (its CLAUDE.md is the
 fuller guide). Users install it from `einweave-marketplace`, which pins a release TAG —
 merging to `main` ships nothing until `bun run release`.
 
