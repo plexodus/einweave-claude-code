@@ -1,5 +1,6 @@
 /**
- * The vendored `@einweave/agent-sdk` build is what the session runs on (RFC-018 D5). `VERSION` is `<semver>+<git sha>` of the Bridge repo commit
+ * The vendored `@einweave/agent-sdk` build is what the session runs on (RFC-018 D5).
+ * `VERSION` is `<semver>+<git sha>` of the einweave repo commit
  * it was built from, with `+dirty` appended when that tree had uncommitted changes.
  *
  * A `+dirty` stamp, or none, means the copy in this repo was never a commit anyone can

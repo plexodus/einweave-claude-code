@@ -46,7 +46,7 @@ import {
   CallToolRequestSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, mkdirSync, chmodSync, existsSync } from "fs";
+import { readFileSync, mkdirSync, chmodSync } from "fs";
 import { homedir, hostname, tmpdir } from "os";
 import { dirname, join } from "path";
 import { createLabelSetting } from "./session-settings";
@@ -807,7 +807,8 @@ function rememberSentMessage(id: string, type: string): void {
   }
 }
 
-// Channel name→id map, populated on first connect for name-based filtering
+// Channel name→id map. Loaded lazily: when a message names a channel not in it
+// (`warmChannelName`), for a starting scope, and by the pane and tools that name channels.
 let channelNameToId: Map<string, string> | null = null;
 let channelMapPromise: Promise<boolean> | null = null;
 let channelMapAttemptedAt = 0;
@@ -859,6 +860,18 @@ function channelNameOf(channelId: string): string {
   if (!channelNameToId) return "";
   for (const [name, id] of channelNameToId) if (id === channelId) return name;
   return "";
+}
+
+/**
+ * A message named a channel the map does not have: load the map in the background, so the
+ * text this session later shows the model (the missed-delivery notice, catchup, who_can_see)
+ * says `#dev`, not a uuid or "other". LAZY on purpose: one request per connect for every
+ * session would be one more 401 + re-mint against a refused credential; a message is what
+ * makes the name worth fetching. Fire-and-forget: the message path never waits on it.
+ * (This used to ride on the RFC-022 feed's own prefetch, removed in 0.48.0 with `tail`.)
+ */
+function warmChannelName(channelId: string | null | undefined): void {
+  if (channelId && !channelNameOf(channelId)) void ensureChannelMap().catch(() => {});
 }
 
 // Single in-flight load, rate-limited. Resolves once the map is as fresh as
@@ -1298,6 +1311,7 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
       tracker.pushed(entry.id, Date.now());
       if (entry.kind === "message") {
         const m = entry.message;
+        warmChannelName(m.channelId);
         if (m.threadId && serverHolds.includes(m.threadId)) heldMayHaveChanged();
       }
     },
@@ -1810,8 +1824,13 @@ function onStatus(st: SessionStatus): void {
       // RFC-027 D5: broadcasts over the resume budget come as counts, never bodies.
       const busy = st.channels.filter((c) => c.count > 0);
       if (busy.length === 0) return;
-      const where = busy.map((c) => `#${channelNameOf(c.channelId) || c.channelId} ×${c.count}`).join(", ");
-      notifyModel(`einweave: broadcasts arrived while this session was away (${where}) — read_messages returns them.`, "status");
+      const say = () => {
+        const where = busy.map((c) => `#${channelNameOf(c.channelId) || c.channelId} ×${c.count}`).join(", ");
+        notifyModel(`einweave: broadcasts arrived while this session was away (${where}) — read_messages returns them.`, "status");
+      };
+      // Names, not uuids: a fresh process has no map yet. Bounded by the map load; said either way.
+      if (busy.some((c) => !channelNameOf(c.channelId))) void ensureChannelMap().catch(() => {}).then(say);
+      else say();
       return;
     }
     case "invalid_session":
@@ -3800,6 +3819,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           const channelId = data?.thread?.channelId ?? data?.parent?.channelId;
           if (typeof channelId !== "string") throw new Error(`thread ${threadId}: not found, or not readable by this agent`);
           path = `/api/channels/${encodeURIComponent(channelId)}/audience`;
+          if (!channelNameOf(channelId)) await ensureChannelMap().catch(() => {});
           subject = `thread ${threadId} (#${channelNameOf(channelId) || channelId})`;
         } else {
           const { channelId, channelName } = await resolveChannelRef(args.channel_id);

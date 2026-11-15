@@ -439,6 +439,27 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     expect((await status(plugin)).delivery).toMatchObject({ state: "confirmed", pending: 0, confirmed: 1 });
   }, 40_000);
 
+  /**
+   * The missed-delivery notice names the CHANNEL, in a default window: no EINWEAVE_CHANNELS
+   * and no pane, so nothing but the message itself can make the plugin load the channel map
+   * (`warmChannelName`). 0.48.0 lost this when the RFC-022 feed went — its prefetch was the
+   * only warm-up — and every notice said "other". Seen RED with the warm-up removed.
+   */
+  test("a missed message's notice names its channel, though nothing else loaded the channel map", async () => {
+    const plugin = await boot(true);
+    await waitFor(() => stub.connected(), 15_000, "plugin to authenticate");
+    const id = mid(9);
+    stub.pushMessage(id);
+    await waitFor(() => tagOf(plugin, id) !== null, 8000, "the channel notification");
+    let ctx: string | null = null;
+    const end = Date.now() + 10_000;
+    while (Date.now() < end && !ctx?.includes("read_deliveries returns it")) {
+      ctx = contextOf(await runHook("what is new?"));
+      if (!ctx?.includes("read_deliveries returns it")) await Bun.sleep(250);
+    }
+    expect(ctx).toContain(`- text in #general (id ${id}`);
+  }, 40_000);
+
   test("a prompt that merely quotes a tag of an entry this session was never given confirms nothing", async () => {
     const plugin = await boot(true);
     await waitFor(() => stub.connected(), 15_000, "plugin to authenticate");
