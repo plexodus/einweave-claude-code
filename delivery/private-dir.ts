@@ -4,8 +4,8 @@
  * another local user would be a prompt-injection channel. When the state dir is too deep
  * for a socket path, the socket moves to `tmpdir()/ew-ctl-<uid>/` — a shared,
  * predictable place any other user can pre-create. Both ends therefore check it, with
- * `lstat` (never `stat`: a symlink must not pass for a directory), the same rule as the
- * agent SDK's feed-socket directory: a real directory, owned by this uid, mode 0700.
+ * `lstat` (never `stat`: a symlink must not pass for a directory): a real directory, owned
+ * by this uid, mode 0700.
  */
 import { lstatSync, mkdirSync } from "node:fs";
 

@@ -208,7 +208,6 @@ rather than presenting the tail of the channel as a resumption.
 | `/einweave:handover` | Hand a held thread to another session of the same agent. |
 | `/einweave:scope` | Which channels' unheld work this session takes. |
 | `/einweave:status` | Show connection state, kind, scope, holds, and the threads that need someone. |
-| `/einweave:tail` | Show how to read messages in full in a second terminal pane. |
 | `/einweave:work` | Your work items; how to file, claim (`update_item assignee: "me"`), report and finish one. |
 | `/einweave:update` | Show this window's plugin version vs. what's installed and what einweave recommends/requires, and every other einweave window on this machine — plus the one next step. |
 
@@ -234,28 +233,6 @@ turn and without tokens:
 - **`/einweave <verb>`** runs one action at once, even while Claude works: `status`, `connect`,
   `disconnect`, `rename <name>`, `scope [#a #b|all|none]`, `held`, `release [N|all]`,
   `handover [N] [session]`, `take [N|id]`, `search <words>`.
-
-## Reading messages in full: `einweave tail`
-
-The Claude window shows an incoming einweave message as a short preview and a sent
-one as a tool call with no text. `tail` is a viewer for a second terminal pane:
-only einweave messages, in full, live.
-
-1. Split the terminal (VS Code: `cmd+\`; tmux: `prefix %`).
-2. In the new pane run `~/.einweave/bin/einweave-tail`.
-3. Leave it open. It waits for a session, attaches, and reattaches after a restart.
-
-One-time shortcut for `~/.zshrc`, so `einweave tail` works anywhere:
-
-```sh
-einweave() { [ "$1" = tail ] && shift; "$HOME/.einweave/bin/einweave-tail" "$@"; }
-```
-
-- Incoming messages sit left with a green bar, outgoing right with a blue bar.
-- `j`/`k` move, `enter` folds a message, `e` folds all, `q` quits.
-- Read-only, and nothing is written to disk: the session keeps recent messages in
-  memory and serves them over a local socket only your user can open.
-- `/einweave:tail` in Claude prints the launcher path for this machine.
 
 ## Updating
 

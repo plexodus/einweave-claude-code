@@ -22,7 +22,7 @@ import { enrolledProfile, readInstallation, readState, agentClientOn } from "./k
 
 /**
  * A copy of a state directory, as a thief or a backup tool would take it. A live plugin
- * now keeps a unix socket in there (`feed/p<pid>.sock`, RFC-022), and `cpSync` refuses a
+ * may keep a unix socket in there (the ctl/pane sockets, RFC-027), and `cpSync` refuses a
  * socket outright where `cp -R` and rsync skip it — so the copy skips it too. A socket
  * is not a credential, and a copied socket file would be dead anyway.
  */

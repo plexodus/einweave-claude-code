@@ -22,8 +22,7 @@ Arguments passed: `$ARGUMENTS`
 configured-but-idle, or connected, which decides everything else below.
 
 It returns `{ configured, wantConnected, websocket, receiving_messages,
-agent, context_id, kind, scope, holds, threads_that_need_someone, delivery, auth, label, tail }` (`tail` = the launcher
-for the full-message viewer, see `/einweave:tail`; `auth` = the sign-in:
+agent, context_id, kind, scope, holds, threads_that_need_someone, delivery, auth, label }` (`auth` = the sign-in:
 profile, credential, installation, `key_storage`, `key_thumbprint`, `problem`).
 
 ### 1. Unconfigured (`configured: false`)
