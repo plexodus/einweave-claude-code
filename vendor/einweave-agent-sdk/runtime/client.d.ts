@@ -33,7 +33,11 @@ export interface AgentClientOptions {
 }
 /** Hooks around an enrolment's write (a login that replaces this store's installation). */
 export interface EnrolOptions {
-    /** The new installation is durably written; the previous one is not yet revoked. */
+    /**
+     * The new installation is durably written (and the previous one superseded, where the server
+     * can). Runs UNDER the store lock: start a reconnect here, never await a mint — a mint waits
+     * for this very lock.
+     */
     onWritten?: () => void | Promise<void>;
     /** The previous installation could not be revoked: it stays enrolled server-side. */
     onPreviousRevokeFailed?: (previous: Installation, err: unknown) => void;

@@ -6,7 +6,7 @@
  *
  * SOURCE: plugin c8b0db6 `auth/core/index.ts` (provenance; the byte-identity guard was
  * retired in RFC-028 A3b). The SDK-only modules (reconnect-policy, lock-decision, format-guard,
- * software, wire, dedupe, control-chars, feed, tail-render, tail-state) are re-exported first,
+ * software, wire, dedupe, control-chars) are re-exported first,
  * then the modules extracted from the plugin.
  */
 export * from "./reconnect-policy";
@@ -17,9 +17,6 @@ export * from "./wire";
 export * from "./doc";
 export * from "./dedupe";
 export * from "./control-chars";
-export * from "./feed";
-export * from "./tail-render";
-export * from "./tail-state";
 export * from "./principal-label";
 export * from "./links";
 export * from "./search";
@@ -32,8 +29,8 @@ export { type Signer, type KeyStorage, softwareSigner, generateSoftwareKey } fro
 export { type Deadline, deadline } from "./deadline";
 export { type EcPublicJwk, type EcPrivateJwk, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint } from "./jwk";
 export { type ProofInput, dpopProof, wsHtu, httpHtu, apiOrigin, normalizeHtu } from "./dpop";
-export { clientAssertion, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S } from "./assertion";
+export { clientAssertion, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, supersedeAssertion, SUPERSEDE_ASSERTION_TYP } from "./assertion";
 export { Clock, MAX_CLOCK_OFFSET_MS } from "./clock";
 export { isJoinState, joinStateSeq } from "./join-state";
 export { type TokenAction, type InstallationGoneReason, type OAuthErrorInit, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, classifyTokenError, assertNever, } from "./token-errors";
-export { type AuthMetadata, type EnrolGrant, type MintGrant, type MintInput, type RevokeInput, type CallOpts, type DeviceAuthorization, type TokenClientOptions, type FetchLike, TokenClient, supportsKeyCredentials, isKeyAlreadyEnrolled, METADATA_TTL_MS, MINT_BUDGET_MS, MINT_TIMEOUT_MS, } from "./protocol";
+export { type AuthMetadata, type EnrolGrant, type MintGrant, type MintInput, type RevokeInput, type SupersedeInput, type CallOpts, type DeviceAuthorization, type TokenClientOptions, type FetchLike, TokenClient, supportsKeyCredentials, isKeyAlreadyEnrolled, METADATA_TTL_MS, MINT_BUDGET_MS, MINT_TIMEOUT_MS, } from "./protocol";

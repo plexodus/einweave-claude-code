@@ -1,37 +1,13 @@
 import {
-  TAIL_ENTER,
-  TAIL_LEAVE,
-  TAIL_USAGE,
-  feedClient,
-  legacyProcStartOf,
-  parseTailArgs,
-  pidAlive,
-  procStartMatches,
-  procStartOf,
-  runTail,
-  tailEnter,
-  tailLeave,
-  tailMain
-} from "./index-t38bvd9b.js";
-import"./index-0nd9zcgb.js";
-import {
-  FEED_PROTOCOL_VERSION,
-  FEED_RING_MAX_BYTES,
-  FEED_RING_MAX_EVENTS,
-  FeedError,
-  FeedLineDecoder,
-  FeedRing,
   KNOWN_FORMAT,
   classifyVersioned,
   deadline,
   decideLock,
-  encodeFrame,
   isJoinState,
   isP256PrivateJwk,
   joinStateSeq,
-  parseClientFrame,
   randomB64url
-} from "./index-hnf6gdw7.js";
+} from "./index-x1asrd29.js";
 
 // src/node/store.ts
 import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync as readdirSync2, statSync as statSync2, unlinkSync as unlinkSync2 } from "node:fs";
@@ -507,6 +483,42 @@ function sweepOrphanTemps(dir, minAgeMs = 60000) {
 // src/node/session-lock.ts
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync2, renameSync as renameSync3, unlinkSync as unlinkSync3, statSync as statSync3 } from "node:fs";
 import { join as join3 } from "node:path";
+
+// src/node/proc-start.ts
+import { execFile } from "node:child_process";
+var __psExec = {
+  run(pid, env) {
+    return new Promise((resolve) => {
+      execFile("ps", ["-o", "lstart=", "-p", String(pid)], { env }, (err, stdout) => {
+        resolve(err ? "" : String(stdout).trim());
+      });
+    });
+  }
+};
+function procStartOf(pid) {
+  return __psExec.run(pid, { ...process.env, TZ: "UTC", LC_ALL: "C" });
+}
+function legacyProcStartOf(pid) {
+  return __psExec.run(pid, process.env);
+}
+async function procStartMatches(pid, recorded) {
+  if (!recorded)
+    return false;
+  const [norm, legacy] = await Promise.all([procStartOf(pid), legacyProcStartOf(pid)]);
+  return recorded === norm || recorded === legacy;
+}
+function pidAlive(pid) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === "EPERM";
+  }
+}
+
+// src/node/session-lock.ts
 var LOCK_RECORD_FORMAT = 0;
 function sessionLock(opts) {
   const lockDir = join3(opts.dir, "locks");
@@ -734,264 +746,21 @@ import { hostname as osHostname } from "node:os";
 function hostname() {
   return osHostname();
 }
-// src/node/feed-server.ts
-import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync as mkdirSync5, unlinkSync as unlinkSync4 } from "node:fs";
-import * as net from "node:net";
-import { tmpdir } from "node:os";
-import { join as join4 } from "node:path";
-var DEFAULT_BACKLOG = 1024 * 1024;
-var DEFAULT_HISTORY_TIMEOUT_MS = 15000;
-var DEFAULT_HISTORY_INFLIGHT = 4;
-var HISTORY_MAX_LIMIT = 200;
-var PROBE_TIMEOUT_MS = 1000;
-var CLOSE_GRACE_MS = 500;
-var SAFE_NAME = /^[A-Za-z0-9._-]+$/;
-function defaultMaxPathBytes() {
-  return process.platform === "darwin" ? 103 : 107;
-}
-function mkdirOnce(dir) {
-  try {
-    mkdirSync5(dir, { mode: 448 });
-  } catch (e) {
-    if (e.code !== "EEXIST")
-      throw e;
-  }
-}
-function resolveFeedSocketPath(o) {
-  if (!SAFE_NAME.test(o.contextId))
-    throw new FeedError("bad_path", `context id is not usable in a file name: ${JSON.stringify(o.contextId)}`);
-  const max = o.maxPathBytes ?? defaultMaxPathBytes();
-  const preferredDir = join4(o.stateDir, "feed");
-  const preferred = join4(preferredDir, `${o.contextId}.sock`);
-  if (Buffer.byteLength(preferred) <= max) {
-    mkdirSync5(preferredDir, { recursive: true, mode: 448 });
-    chmodSync(preferredDir, 448);
-    return preferred;
-  }
-  const uid = o.uid ?? process.getuid?.();
-  const dir = join4(o.tmpRoot ?? tmpdir(), `einweave-feed-${uid ?? "user"}`);
-  const hash = createHash("sha256").update(o.contextId).digest("hex").slice(0, 12);
-  const fallback = join4(dir, `bf-${hash}.sock`);
-  if (Buffer.byteLength(fallback) > max)
-    throw new FeedError("bad_path", `no socket path short enough (${Buffer.byteLength(fallback)} > ${max} bytes): ${fallback}`);
-  mkdirOnce(dir);
-  const st = lstatSync(dir);
-  if (!st.isDirectory())
-    throw new FeedError("unsafe_dir", `${dir} is not a real directory`);
-  if (uid !== undefined && st.uid !== uid)
-    throw new FeedError("unsafe_dir", `${dir} is owned by uid ${st.uid}, not ${uid}`);
-  if ((st.mode & 511) !== 448)
-    throw new FeedError("unsafe_dir", `${dir} has mode ${(st.mode & 511).toString(8)}, not 700`);
-  return fallback;
-}
-function probe(path) {
-  return new Promise((resolve, reject) => {
-    const d = deadline(PROBE_TIMEOUT_MS);
-    const sock = net.connect(path);
-    const done = (fn) => {
-      d.clear();
-      sock.destroy();
-      fn();
-    };
-    d.signal.addEventListener("abort", () => done(() => resolve("live")), { once: true });
-    sock.once("connect", () => done(() => resolve("live")));
-    sock.once("error", (e) => {
-      if (e.code === "ECONNREFUSED" || e.code === "ENOENT")
-        done(() => resolve("dead"));
-      else
-        done(() => reject(e));
-    });
-  });
-}
-async function clearStale(path) {
-  let st;
-  try {
-    st = lstatSync(path);
-  } catch (e) {
-    if (e.code === "ENOENT")
-      return;
-    throw e;
-  }
-  if (!st.isSocket())
-    throw new FeedError("not_a_socket", `${path} exists and is not a socket; not removing it`);
-  if (await probe(path) === "live")
-    throw new FeedError("in_use", `another process is already serving a feed at ${path}`);
-  try {
-    unlinkSync4(path);
-  } catch (e) {
-    if (e.code !== "ENOENT")
-      throw e;
-  }
-}
-async function feedServer(options) {
-  const path = resolveFeedSocketPath(options);
-  await clearStale(path);
-  const ring = new FeedRing(options.maxEvents ?? FEED_RING_MAX_EVENTS, options.maxBytes ?? FEED_RING_MAX_BYTES);
-  const maxBacklog = options.maxBacklogBytes ?? DEFAULT_BACKLOG;
-  const historyTimeoutMs = options.historyTimeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS;
-  const maxInflight = options.maxHistoryInflight ?? DEFAULT_HISTORY_INFLIGHT;
-  const clients = new Set;
-  function drop(c) {
-    c.dead = true;
-    clients.delete(c);
-    c.socket.destroy();
-  }
-  function send(c, line) {
-    if (c.dead || c.socket.destroyed || !c.socket.writable)
-      return;
-    try {
-      if (c.socket.writableLength > c.allowance) {
-        c.socket.write(encodeFrame({ t: "error", code: "slow_consumer", message: "feed client too slow; dropped" }));
-        drop(c);
-        return;
-      }
-      c.socket.write(line);
-    } catch {
-      drop(c);
-    }
-  }
-  function sendFrame(c, frame) {
-    send(c, encodeFrame(frame));
-  }
-  async function handleHistory(c, req) {
-    const handler = options.history;
-    if (!handler)
-      return sendFrame(c, { t: "error", req: req.req, code: "no_history", message: "this session cannot fetch history" });
-    if (c.inflight >= maxInflight)
-      return sendFrame(c, { t: "error", req: req.req, code: "busy", message: "too many history requests in flight" });
-    c.inflight++;
-    const d = deadline(historyTimeoutMs);
-    try {
-      const aborted = new Promise((_, reject) => d.signal.addEventListener("abort", () => reject(d.signal.reason), { once: true }));
-      const result = await Promise.race([handler({ ...req, limit: Math.min(req.limit, HISTORY_MAX_LIMIT) }, d.signal), aborted]);
-      sendFrame(c, { t: "history", req: req.req, messages: result.messages, more: result.more });
-    } catch (e) {
-      const timedOut = e?.name === "TimeoutError";
-      sendFrame(c, { t: "error", req: req.req, code: timedOut ? "history_timeout" : "history_failed", message: timedOut ? "history request timed out" : "history request failed" });
-    } finally {
-      d.clear();
-      c.inflight--;
-    }
-  }
-  function onConnection(socket) {
-    const c = { socket, subscribed: false, dead: false, inflight: 0, allowance: maxBacklog };
-    clients.add(c);
-    socket.on("error", () => drop(c));
-    socket.on("close", () => {
-      c.dead = true;
-      clients.delete(c);
-    });
-    socket.setEncoding("utf8");
-    const decoder = new FeedLineDecoder;
-    try {
-      sendFrame(c, { t: "hello", v: FEED_PROTOCOL_VERSION, ...options.hello() });
-    } catch {
-      return drop(c);
-    }
-    socket.on("data", (chunk) => {
-      for (const line of decoder.push(chunk)) {
-        if (c.dead)
-          return;
-        if (line.kind === "error") {
-          sendFrame(c, { t: "error", code: line.code === "line_too_long" ? "line_too_long" : "bad_frame", message: line.message });
-          if (line.code === "line_too_long")
-            return drop(c);
-          continue;
-        }
-        const parsed = parseClientFrame(line.value);
-        if (parsed.kind === "skip")
-          continue;
-        if (parsed.kind === "error") {
-          sendFrame(c, { t: "error", code: "bad_frame", message: parsed.message });
-          continue;
-        }
-        const frame = parsed.frame;
-        if (frame.t === "subscribe") {
-          if (c.subscribed) {
-            sendFrame(c, { t: "error", code: "already_subscribed", message: "already subscribed" });
-            continue;
-          }
-          const replay = ring.last(frame.replay ?? 0);
-          c.allowance = maxBacklog + replay.reduce((n, e) => n + e.bytes, 0);
-          for (const e of replay)
-            send(c, e.line);
-          sendFrame(c, { t: "replayed", count: replay.length });
-          c.subscribed = true;
-        } else if (!c.subscribed) {
-          sendFrame(c, { t: "error", req: frame.req, code: "not_subscribed", message: "subscribe first" });
-        } else {
-          handleHistory(c, frame);
-        }
-      }
-    });
-  }
-  const server = net.createServer(onConnection);
-  await new Promise((resolve, reject) => {
-    server.once("error", (e) => reject(e.code === "EADDRINUSE" ? new FeedError("in_use", `another process is already serving a feed at ${path}`, { cause: e }) : e));
-    server.listen(path, () => resolve());
-  });
-  server.on("error", () => {});
-  chmodSync(path, 384);
-  const ino = lstatSync(path).ino;
-  let closing;
-  return {
-    path,
-    publish(event) {
-      try {
-        const entry = ring.push(event);
-        for (const c of [...clients])
-          if (c.subscribed)
-            send(c, entry.line);
-      } catch {}
-    },
-    clientCount: () => [...clients].filter((c) => c.subscribed).length,
-    close() {
-      closing ??= (async () => {
-        const stopped = new Promise((resolve) => server.close(() => resolve()));
-        for (const c of [...clients]) {
-          c.dead = true;
-          c.socket.end();
-        }
-        const d = deadline(CLOSE_GRACE_MS);
-        d.signal.addEventListener("abort", () => clients.forEach((c) => c.socket.destroy()), { once: true });
-        await stopped;
-        d.clear();
-        try {
-          if (lstatSync(path).ino === ino)
-            unlinkSync4(path);
-        } catch {}
-      })();
-      return closing;
-    }
-  };
-}
 export {
   HOLD_BUDGET_MS,
   LOCK_DIR_NAME,
   LOCK_WAIT_MS,
   STALE_MS,
-  TAIL_ENTER,
-  TAIL_LEAVE,
-  TAIL_USAGE,
-  feedClient,
-  feedServer,
   fileSeqStore,
   fileStore,
   hostname,
   legacyProcStartOf,
-  parseTailArgs,
   pidAlive,
   procStartMatches,
   procStartOf,
   readVersioned,
-  resolveFeedSocketPath,
-  runTail,
   sessionLock,
   sweepLockTombstones,
   sweepOrphanTemps,
-  tailEnter,
-  tailLeave,
-  tailMain,
   withInstallationLock
 };

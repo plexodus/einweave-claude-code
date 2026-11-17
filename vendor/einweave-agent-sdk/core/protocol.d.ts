@@ -31,6 +31,8 @@ export interface AuthMetadata {
     device_authorization_endpoint: string;
     token_endpoint: string;
     revocation_endpoint: string;
+    /** RFC-016 §10 (extension): where a re-signed-in installation supersedes its predecessor. Absent on older servers. */
+    einweave_supersede_endpoint?: string;
     grant_types_supported?: string[];
     dpop_signing_alg_values_supported?: string[];
     einweave_connect_done_uri?: string;
@@ -92,6 +94,18 @@ export interface RevokeInput {
     attempt: string | null;
     scope: "installation" | "session";
     sessionKey?: string;
+}
+/** RFC-016 §10: the NEW installation (authenticated as for §3.5) superseding `old`, whose key signs the proof. */
+export interface SupersedeInput {
+    installationId: string;
+    joinState: string;
+    attempt: string | null;
+    old: {
+        installationId: string;
+        joinState: string;
+        attempt: string | null;
+        signer: Signer;
+    };
 }
 export interface TokenClientOptions {
     /** The server clock estimate (E12); every token-endpoint `Date` teaches it. */
@@ -177,6 +191,14 @@ export declare class TokenClient {
     mint(m: AuthMetadata, signer: Signer, p: MintInput, o?: CallOpts): Promise<MintGrant>;
     /** RFC-016 §3.5: verified, NOT advanced. The caller holds the installation lock. C11: success is `{"ok":true}`. */
     revoke(m: AuthMetadata, signer: Signer, p: RevokeInput, o?: CallOpts): Promise<void>;
+    /**
+     * RFC-016 §10: as the NEW installation (assertion + DPoP + its join state, verified not
+     * advanced), supersede the old one — its live sessions move to the new installation, it is
+     * revoked. The old installation's id when it was superseded, `null` when nothing live was
+     * there. Throws when the server has no supersede endpoint (`supersede_unsupported`).
+     * The caller holds the installation lock.
+     */
+    supersede(m: AuthMetadata, signer: Signer, p: SupersedeInput, o?: CallOpts): Promise<string | null>;
 }
 /** C6: the enrolment was refused because this key is already registered — retry once with a fresh key. */
 export declare function isKeyAlreadyEnrolled(e: unknown): boolean;

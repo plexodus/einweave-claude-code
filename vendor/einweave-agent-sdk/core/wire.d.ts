@@ -228,7 +228,7 @@ declare const WIRE: {
             parked: boolean;
             id: string;
         } | null;
-        via: "reply" | "start" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry";
+        via: "reply" | "start" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry" | "lease";
         by: {
             principalId: string;
             sessionId: string | null;

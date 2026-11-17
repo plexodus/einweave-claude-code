@@ -27,6 +27,8 @@ const COOKIE_PREFIX = "einweave";
 const [apiDir, secret] = process.argv.slice(2);
 if (!apiDir || !secret) throw new Error("usage: real-api-seed.ts <EINWEAVE_API_DIR> <BETTER_AUTH_SECRET>");
 
+// The API's config refuses to load without its rate-key secret (go-live P0 1c-ii).
+process.env.EINWEAVE_RATE_KEY_SECRET ??= "test-rate-key-secret-at-least-32-chars";
 const api: any = await import(join(apiDir, "src/db/index.ts"));
 await api.runMigrations();
 const q = (sql: string, params: unknown[] = []) => api.pool.query(sql, params);
