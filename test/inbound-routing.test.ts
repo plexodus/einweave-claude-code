@@ -126,6 +126,8 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("inbound routing", () => {
       // against an empty database without this line yields a server that boots
       // and then fails on every query.
       process.env.DATABASE_URL = dbUrl;
+      // The API's config refuses to load without its rate-key secret (go-live P0 1c-ii).
+      process.env.EINWEAVE_RATE_KEY_SECRET ??= "test-rate-key-secret-at-least-32-chars";
       const api: any = await import(join(API_DIR, "src/db/index.ts"));
       await api.runMigrations();
       closeApiPool = async () => { await api.closePool(); };
@@ -180,6 +182,8 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("inbound routing", () => {
           EINWEAVE_PUBLIC_URL: URL_,
           FORGE_OIDC_CLIENT_SECRET: "x",
           BETTER_AUTH_SECRET: "test-secret-at-least-32-characters-long",
+          // The API refuses to boot without its rate-key secret (go-live P0 1c-ii).
+          EINWEAVE_RATE_KEY_SECRET: "test-rate-key-secret-at-least-32-chars",
           NODE_ENV: "test",
         },
         stdout: "ignore", stderr: "ignore",

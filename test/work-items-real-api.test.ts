@@ -67,6 +67,8 @@ async function startApi(): Promise<void> {
       EINWEAVE_PUBLIC_URL: apiUrl,
       FORGE_OIDC_CLIENT_SECRET: "x",
       BETTER_AUTH_SECRET: AUTH_SECRET,
+      // The API refuses to boot without its rate-key secret (go-live P0 1c-ii).
+      EINWEAVE_RATE_KEY_SECRET: "test-rate-key-secret-at-least-32-chars",
       NODE_ENV: "test",
       ANON_BURST: "1000",
       OPENCLAW_GATEWAY_URL: "http://127.0.0.1:1",

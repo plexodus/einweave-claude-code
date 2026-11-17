@@ -43,14 +43,6 @@ export interface ProcInfo {
     termProgram: string;
     cwd: string;
     state: ProcState;
-    /**
-     * RFC-022 D5: the session's local feed socket, so a `tail` finds sessions by listing
-     * this registry rather than scanning directories. OPTIONAL and additive — a record
-     * without it (every older build, or a session whose feed failed to open) is still
-     * valid, and an older reader ignores the unknown key — so PROC_FORMAT does not move
-     * (bumping it would make every older build skip these records entirely, D8).
-     */
-    feed?: string;
 }
 export interface ProcRecord extends ProcInfo {
     format: number;
@@ -103,23 +95,12 @@ export declare function removeProc(dir: string, pid: number): void;
  * entries — a dead pid, or a reused one — are swept, never returned. A record at a
  * newer format is left exactly as found. An UNVERIFIABLE one is neither: listed
  * with `verified: false`.
- *
- * `options` is for a VIEWER (RFC-022 `tail`), which must not own the registry's
- * housekeeping: it may run in another PID namespace sharing the state dir, where every
- * live session's pid looks dead and a sweep would delete its record every poll.
- * `sweep: false` lists the same set but unlinks nothing. `skipCheck` returns true for a
- * record the caller already trusts (one it is attached to): it is listed, unverified,
- * without the `ps` probe a re-check would spawn.
  */
-export interface ListProcsOptions {
-    sweep?: boolean;
-    skipCheck?: (rec: ProcRecord) => boolean;
-}
-export declare function listProcs(dir: string, excludePid?: number, options?: ListProcsOptions): Promise<ListedProc[]>;
+export declare function listProcs(dir: string, excludePid?: number): Promise<ListedProc[]>;
 /** Ergonomic wrapper binding the four functions above to one `dir` (RFC-018 S1.4). */
 export declare function procRegistry(dir: string): {
     write(info: ProcInfo): void;
     updateState(pid: number, state: ProcState): void;
     remove(pid: number): void;
-    list(excludePid?: number, options?: ListProcsOptions): Promise<ListedProc[]>;
+    list(excludePid?: number): Promise<ListedProc[]>;
 };

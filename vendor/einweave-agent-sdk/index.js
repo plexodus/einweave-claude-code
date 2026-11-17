@@ -1,7 +1,4 @@
 import {
-  AsyncChannel
-} from "./index-0nd9zcgb.js";
-import {
   CONNECTION_KINDS,
   Clock,
   MAX_ACK_IDS,
@@ -30,7 +27,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-hnf6gdw7.js";
+} from "./index-x1asrd29.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -104,6 +101,47 @@ var TERMINAL = new Set([
 ]);
 function isTerminalCredentialError(e) {
   return isAgentClientError(e) && TERMINAL.has(e.code);
+}
+
+// src/runtime/async-channel.ts
+class AsyncChannel {
+  maxSize;
+  buf = [];
+  waiting = [];
+  ended = false;
+  constructor(maxSize = 0) {
+    this.maxSize = maxSize;
+  }
+  push(item) {
+    if (this.ended)
+      return;
+    if (this.waiting.length > 0) {
+      this.waiting.shift()({ value: item, done: false });
+      return;
+    }
+    this.buf.push(item);
+    if (this.maxSize > 0 && this.buf.length > this.maxSize)
+      return this.buf.shift();
+    return;
+  }
+  end() {
+    if (this.ended)
+      return;
+    this.ended = true;
+    for (const resolve of this.waiting.splice(0))
+      resolve({ value: undefined, done: true });
+  }
+  [Symbol.asyncIterator]() {
+    return {
+      next: () => {
+        if (this.buf.length > 0)
+          return Promise.resolve({ value: this.buf.shift(), done: false });
+        if (this.ended)
+          return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => this.waiting.push(resolve));
+      }
+    };
+  }
 }
 
 // src/runtime/pending.ts
@@ -961,7 +999,7 @@ function withDetails(base, details) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.31.0";
+var SDK_VERSION = "0.34.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1691,6 +1729,24 @@ class AgentClient {
       }
       throw e;
     }
+    const previous = old && old.installation.installationId !== g.installation_id ? old : null;
+    let superseded = false;
+    if (previous) {
+      try {
+        const answer = await this.tokens.supersede(meta, key.signer, {
+          installationId: g.installation_id,
+          joinState: g.join_state,
+          attempt: null,
+          old: {
+            installationId: previous.installation.installationId,
+            joinState: previous.joinState,
+            attempt: oldAttempt,
+            signer: await softwareSigner(previous.privateJwk)
+          }
+        }, { signal });
+        superseded = answer === null || answer === previous.installation.installationId;
+      } catch {}
+    }
     this.access = null;
     this.stopped = null;
     this.sessionBlocked = false;
@@ -1700,12 +1756,14 @@ class AgentClient {
     try {
       await opts.onWritten?.();
     } catch {}
-    if (old && old.installation.installationId !== g.installation_id) {
+    if (previous && !superseded) {
       try {
-        await this.revokeRecord(old, oldAttempt, signal);
+        await this.revokeRecord(previous, oldAttempt, signal);
       } catch (e) {
+        if (isOAuthError(e) && e.error === "invalid_client" && e.description === "installation_revoked")
+          return;
         try {
-          opts.onPreviousRevokeFailed?.(old.installation, e);
+          opts.onPreviousRevokeFailed?.(previous.installation, e);
         } catch {}
       }
     }
