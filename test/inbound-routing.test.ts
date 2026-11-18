@@ -128,6 +128,8 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("inbound routing", () => {
       process.env.DATABASE_URL = dbUrl;
       // The API's config refuses to load without its rate-key secret (go-live P0 1c-ii).
       process.env.EINWEAVE_RATE_KEY_SECRET ??= "test-rate-key-secret-at-least-32-chars";
+      // ...and, since go-live P0, without its auth secret: the same one the api process below is started with.
+      process.env.BETTER_AUTH_SECRET ??= "test-secret-at-least-32-characters-long";
       const api: any = await import(join(API_DIR, "src/db/index.ts"));
       await api.runMigrations();
       closeApiPool = async () => { await api.closePool(); };

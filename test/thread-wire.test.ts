@@ -80,6 +80,10 @@ function startStub(): Stub {
         // result.hold (RFC-028: held, or a contribution to a sibling's hold); echo enough to keep it honest.
         return Response.json({ id: `srv-${sends.length}`, ...(state.hold ? { hold: state.hold } : {}) });
       }
+      // PR K: `threads.resolveRef` reads the workspace before parsing a non-uuid thread_id.
+      if (url.pathname === "/api/me/workspace") {
+        return Response.json({ workspaceId: "ws-1", webUrl: "https://app.example", links: { thread: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}", message: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}/m/{messageId}" }, itemPrefix: "EW", itemPrefixAliases: [] });
+      }
       // Receipts are decorative here; the handler already tolerates failure.
       if (url.pathname === "/api/messages/receipts") return Response.json({ receipts: {} });
       return new Response("no", { status: 404 });
@@ -193,20 +197,54 @@ describe("reply posts a threaded reply to the thread-native route", () => {
   }
 
   test("a threaded reply hits /api/threads/<id>/messages with no channelId or parentId", async () => {
-    const r = await callTool("reply", { channel_id: "general", text: "in the thread", thread_id: "thr-abc" });
+    const r = await callTool("reply", { channel_id: "general", text: "in the thread", thread_id: "01a1499b-dbc7-7001-a4bb-00000000a0bc" });
     expect(r.isError).toBe(false);
     expect(stub.sends.length).toBe(1);
     const s = stub.sends[0];
-    expect(s.path).toBe("/api/threads/thr-abc/messages");
+    expect(s.path).toBe("/api/threads/01a1499b-dbc7-7001-a4bb-00000000a0bc/messages");
     expect(s.body.content).toBe("in the thread");
     // The thread fixes the channel and its root is the parent — the client names neither.
     expect(s.body).not.toHaveProperty("channelId");
     expect(s.body).not.toHaveProperty("parentId");
   });
 
-  test("a thread id with URL-significant chars is percent-encoded into the path", async () => {
-    await callTool("reply", { channel_id: "general", text: "hi", thread_id: "a b/c" });
-    expect(stub.sends[0].path).toBe("/api/threads/a%20b%2Fc/messages");
+  // PR K: a thread_id is a thread id, a link of this workspace or an item key; anything else is refused before a send.
+  test("a thread_id that names no thread is refused and nothing is sent", async () => {
+    const r = await callTool("reply", { channel_id: "general", text: "hi", thread_id: "a b/c" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('thread_id: "a b/c" is not a thread id');
+    expect(stub.sends.length).toBe(0);
+  });
+
+  // PR K: the source scan in thread-ref.test.ts guards the handlers; this guards what the MODEL is told, from
+  // the live tool list, so a new tool (or a nested param) that names a thread cannot skip the key wording.
+  test("every tool parameter that names a thread says it takes a work item key", async () => {
+    const id = nextId++;
+    send({ jsonrpc: "2.0", id, method: "tools/list", params: {} });
+    const tools: { name: string; inputSchema: any }[] = (await waitForId(id)).result.tools;
+    const seen: string[] = [];
+    const bad: string[] = [];
+    const walk = (schema: any, at: string) => {
+      for (const [name, prop] of Object.entries<any>(schema?.properties ?? {})) {
+        if (/thread|parent|duplicate/i.test(name) && prop.type === "string") {
+          seen.push(`${at}.${name}`);
+          if (!String(prop.description ?? "").includes("a work item key")) bad.push(`${at}.${name}`);
+        }
+        walk(prop, `${at}.${name}`);
+        walk(prop.items, `${at}.${name}[]`);
+      }
+    };
+    for (const t of tools) walk(t.inputSchema, t.name);
+    expect(seen).toContain("reply.thread_id");
+    expect(seen).toContain("add_activity.proposed.duplicate_of");
+    expect(bad).toEqual([]);
+  });
+
+  test("a whitespace thread_id is refused, never sent as a new root", async () => {
+    const r = await callTool("reply", { channel_id: "general", text: "hi", thread_id: "  " });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("thread_id is required");
+    expect(stub.sends.length).toBe(0);
   });
 
   test("a root send (no thread_id) stays on /api/messages with channelId", async () => {
@@ -227,20 +265,20 @@ describe("reply posts a threaded reply to the thread-native route", () => {
   });
 
   test("a threaded reply carries no title even if one is passed (title is root-only)", async () => {
-    await callTool("reply", { channel_id: "general", text: "reply", thread_id: "thr-xyz", type: "question", title: "ignored" });
+    await callTool("reply", { channel_id: "general", text: "reply", thread_id: "01a1499b-dbc7-7001-a4bb-00000000e1e2", type: "question", title: "ignored" });
     const s = stub.sends[0];
-    expect(s.path).toBe("/api/threads/thr-xyz/messages");
+    expect(s.path).toBe("/api/threads/01a1499b-dbc7-7001-a4bb-00000000e1e2/messages");
     expect(s.body).not.toHaveProperty("title");
   });
 
   // RFC-028 D7: `context_id` and `broadcast` are removed from the wire; the thread's hold is the target.
   test("a reply names no session: no contextId, no broadcast -- and a context_id argument is refused, not silently dropped", async () => {
-    const ok = await callTool("reply", { channel_id: "general", text: "hi", thread_id: "thr-1" });
+    const ok = await callTool("reply", { channel_id: "general", text: "hi", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001" });
     expect(ok.isError).toBe(false);
     expect(stub.sends[0]!.body).not.toHaveProperty("contextId");
     expect(stub.sends[0]!.body).not.toHaveProperty("broadcast");
     for (const context_id of ["01992f6e-0000-7000-8000-00000000bbbb", ""]) {
-      const bad = await callTool("reply", { channel_id: "general", text: "aimed", thread_id: "thr-1", context_id });
+      const bad = await callTool("reply", { channel_id: "general", text: "aimed", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001", context_id });
       expect(bad.isError).toBe(true);
       expect(bad.text).toContain("handover");
     }
@@ -248,7 +286,7 @@ describe("reply posts a threaded reply to the thread-native route", () => {
   });
 
   test("take and confirm ride the thread reply; take without a thread is refused", async () => {
-    await callTool("reply", { channel_id: "general", text: "mine now", thread_id: "thr-1", take: true });
+    await callTool("reply", { channel_id: "general", text: "mine now", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001", take: true });
     expect(stub.sends[0]!.body).toMatchObject({ take: true });
     expect(stub.sends[0]!.body).not.toHaveProperty("confirm");
     const bad = await callTool("reply", { channel_id: "general", text: "a root", take: true });
@@ -259,41 +297,41 @@ describe("reply posts a threaded reply to the thread-native route", () => {
 
   test("the result says whether this session holds the thread or only contributed to a sibling's", async () => {
     stub.setHold({ state: "held", holder: { id: "ctx-under-test", label: "me", online: true } });
-    expect((await callTool("reply", { channel_id: "general", text: "a", thread_id: "thr-1" })).text).toContain("this session holds the thread");
+    expect((await callTool("reply", { channel_id: "general", text: "a", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001" })).text).toContain("this session holds the thread");
     stub.setHold({ state: "contribution", holder: { id: "ctx-sibling", label: "Bellman #cd34", online: true } });
-    const online = (await callTool("reply", { channel_id: "general", text: "b", thread_id: "thr-1" })).text;
+    const online = (await callTool("reply", { channel_id: "general", text: "b", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001" })).text;
     expect(online).toContain("contribution: Bellman #cd34 (online) holds this thread");
     expect(online).toContain("take: true and confirm: true after the person agrees");
     stub.setHold({ state: "contribution", holder: { id: "ctx-sibling", label: "Bellman #cd34", online: false, parked: true } });
-    const parked = (await callTool("reply", { channel_id: "general", text: "c", thread_id: "thr-1" })).text;
+    const parked = (await callTool("reply", { channel_id: "general", text: "c", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001" })).text;
     expect(parked).toContain("(offline, parked)");
     expect(parked).not.toContain("confirm: true");
     stub.setHold(null);
-    expect((await callTool("reply", { channel_id: "general", text: "d", thread_id: "thr-1" })).text).not.toContain("holds");
+    expect((await callTool("reply", { channel_id: "general", text: "d", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001" })).text).not.toContain("holds");
   });
 
   test("M1: reply take:true against an ONLINE holder asks the same question as the take tool, sends nothing, and binds confirm to that thread", async () => {
     stub.setHolderOnline(true);
-    const asked = await callTool("reply", { channel_id: "general", text: "mine", thread_id: "thr-1", take: true });
+    const asked = await callTool("reply", { channel_id: "general", text: "mine", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001", take: true });
     expect(asked.isError).toBe(false);
     expect(asked.text).toContain("Bellman #cd34 is online and working on this. Take it anyway?");
     expect(asked.text).toContain("Nothing was sent");
-    expect(asked.text).toContain('thread_id "thr-1"');
+    expect(asked.text).toContain('thread_id "01a1499b-dbc7-7001-a4bb-000000000001"');
     expect(stub.sends.length).toBe(0);
     // A yes about thr-1 is not a yes about thr-2, nor about a reply that does not take.
     for (const args of [
-      { thread_id: "thr-2", take: true, confirm: true },
-      { thread_id: "thr-1", confirm: true },
+      { thread_id: "01a1499b-dbc7-7001-a4bb-000000000002", take: true, confirm: true },
+      { thread_id: "01a1499b-dbc7-7001-a4bb-000000000001", confirm: true },
     ]) {
       const refused = await callTool("reply", { channel_id: "general", text: "x", ...args });
       expect(refused.text).toContain("Nothing was sent");
       expect(stub.sends.length).toBe(0);
     }
-    const ok = await callTool("reply", { channel_id: "general", text: "mine", thread_id: "thr-1", take: true, confirm: true });
+    const ok = await callTool("reply", { channel_id: "general", text: "mine", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001", take: true, confirm: true });
     expect(ok.isError).toBe(false);
     expect(stub.sends[0]!.body).toMatchObject({ take: true, confirm: true });
     // One yes, one take: the same confirmation does not authorise a second one (the holder may have changed).
-    const again = await callTool("reply", { channel_id: "general", text: "mine again", thread_id: "thr-1", take: true, confirm: true });
+    const again = await callTool("reply", { channel_id: "general", text: "mine again", thread_id: "01a1499b-dbc7-7001-a4bb-000000000001", take: true, confirm: true });
     expect(again.text).toContain("Nothing was sent");
     expect(stub.sends.length).toBe(1);
   });

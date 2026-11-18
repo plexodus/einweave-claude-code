@@ -31,6 +31,18 @@ function heldRow(id: string, title: string, over: Record<string, unknown> = {}) 
   return { thread: { id, title, lastActivityAt: "2026-11-03T10:00:00.000Z", unseenByModel: 0, last: null, ...over }, channel: { id: CH_A, name: "general" }, hold: { state: "held", holder: { id: ME, label: "me", online: true, parked: false } } };
 }
 
+/**
+ * `threads.resolveRef` as the SDK answers it for the workspace `ws` on einweave.example: a thread link of
+ * it names its thread; any other link (another workspace, a channel link) is other_workspace; a key that
+ * nothing answers is not_found. Tests that need a key override it.
+ */
+const sdkResolve: HoldsDeps["resolveThread"] = async (input) => {
+  const link = new RegExp(`^https://einweave\\.example/w/ws/c/[^/]+/t/([0-9a-f-]{36})(?:[?#].*)?$`, "i").exec(input);
+  if (link) return { ok: true, threadId: link[1]!.toLowerCase(), via: "url" };
+  if (/^https?:\/\//i.test(input)) return { ok: false, reason: "other_workspace" };
+  return /^[a-z][a-z0-9]*-\d+$/i.test(input) ? { ok: false, reason: "not_found" } : { ok: false, reason: "invalid" };
+};
+
 function fake(routes: (c: Call) => ApiResult | undefined, over: Partial<HoldsDeps> = {}) {
   const calls: Call[] = [];
   let scope: any = null;
@@ -45,6 +57,7 @@ function fake(routes: (c: Call) => ApiResult | undefined, over: Partial<HoldsDep
     resolveChannelId: async (r) => ({ a: CH_A, b: CH_B }[r] ?? null),
     onScope: (s) => (scope = s),
     currentScope: () => scope,
+    resolveThread: sdkResolve,
     ...over,
   };
   return { holds: createHolds(deps), calls, scope: () => scope };
@@ -56,16 +69,14 @@ const list3 = (c: Call): ApiResult | undefined =>
     : undefined;
 
 describe("parseRef", () => {
-  test("a number, a link or id (the last uuid), all, words, nothing", () => {
+  test("a number, an id, a link (left to the SDK), all, words, nothing", () => {
     expect(parseRef("2")).toEqual({ kind: "index", n: 2 });
     expect(parseRef("#12")).toEqual({ kind: "index", n: 12 });
     expect(parseRef(T1)).toEqual({ kind: "id", id: T1 });
-    const W = "03000000-0000-7000-8000-0000000000aa";
-    // The web thread URL: /w/<workspace>/c/<channel>/t/<thread>. Workspace and channel ids are uuids too.
-    expect(parseRef(`https://einweave.example/w/${W}/c/${CH_A}/t/${T2}`)).toEqual({ kind: "id", id: T2 });
-    expect(parseRef(`https://einweave.example/w/${W}/c/${CH_A}/t/${T2}?x=1#top`)).toEqual({ kind: "id", id: T2 });
-    // A link with no /t/ segment is not a thread: it must not be read as the channel or workspace id.
-    expect(parseRef(`https://einweave.example/w/${W}/c/${CH_A}`)).toEqual({ kind: "search", text: `https://einweave.example/w/${W}/c/${CH_A}` });
+    // A link is never mined for a uuid here: only the workspace's own templates say which segment is the thread.
+    const link = `https://einweave.example/w/ws/c/${CH_A}/t/${T2}?x=1#top`;
+    expect(parseRef(` ${link} `)).toEqual({ kind: "link", text: link });
+    expect(parseRef(`HTTP://x/c/${CH_A}`)).toEqual({ kind: "link", text: `HTTP://x/c/${CH_A}` });
     expect(parseRef("ALL")).toEqual({ kind: "all" });
     expect(parseRef("fix the build")).toEqual({ kind: "search", text: "fix the build" });
     expect(parseRef("  ")).toEqual({ kind: "none" });
@@ -226,6 +237,18 @@ describe("take from an online holder asks first", () => {
     expect(await f.holds.take({ ref: T1, confirm: true })).toContain("none is pending");
   });
 
+  test("PR K: the yes may name the asked-about thread by its item key or its link", async () => {
+    const resolveThread: HoldsDeps["resolveThread"] = async (input) =>
+      /^ew-1$/i.test(input) ? { ok: true, threadId: T1, via: "key", key: "EW-1" } : await sdkResolve(input);
+    const f = fake(online, { resolveThread });
+    await f.holds.take({ ref: "EW-1" }); // asks about T1
+    expect(await f.holds.take({ ref: "ew-1", confirm: true })).toContain("now holds EW-1");
+    expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T1}/hold`, body: { action: "take", confirm: true } });
+    await f.holds.take({ ref: T1 }); // asks again
+    expect(await f.holds.take({ ref: `https://einweave.example/w/ws/c/${CH_A}/t/${T1}`, confirm: true })).toContain("now holds");
+    expect(f.calls.at(-1)!.body).toEqual({ action: "take", confirm: true });
+  });
+
   test("a new conversation (forget) drops the pending question: a yes asked before /clear takes nothing after it", async () => {
     const f = fake((c) => (c.method === "POST" ? online(c) : list3(c)));
     await f.holds.take({ ref: T1 }); // asks about T1
@@ -300,6 +323,13 @@ describe("release and handover", () => {
     // Words pick the session too.
     await f.holds.handover({ ref: T2, to: "cd34" });
     expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T2}/hold`, body: { action: "handover", to: S2 } });
+  });
+
+  test("PR K: handover names the thread by its item key", async () => {
+    const f = fake(routes, { resolveThread: async (input) => (/^ew-2$/i.test(input) ? { ok: true, threadId: T2, via: "key", key: "EW-2" } : { ok: false, reason: "not_found" }) });
+    const done = await f.holds.handover({ ref: "ew-2", to: "cd34" });
+    expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T2}/hold`, body: { action: "handover", to: S2 } });
+    expect(done).toContain("Handed EW-2 to Bellman #cd34");
   });
 
   test("handover: a ref number cannot carry step 2 -- the pending thread is replaced by a new ref, and no POST goes out", async () => {
@@ -447,5 +477,53 @@ describe("held (the mod's Held tab) and sessionsView (gateway + Hand over picker
         activity: { state: "working", since: "2026-11-05T10:00:00.000Z" }, holds: { title: "Fix the build", count: 3 } },
       { id: S2, label: "old", kind: "session", online: true, name: null, folder: null, branch: null, activity: null, holds: { title: null, count: 0 } },
     ]);
+  });
+});
+
+describe("PR K: item keys", () => {
+  const resolveThread: HoldsDeps["resolveThread"] = async (input) =>
+    /^ew-1$/i.test(input) ? { ok: true, threadId: T1, via: "key", key: "EW-1" } : await sdkResolve(input);
+  const keyedRows = (c: Call): ApiResult | undefined =>
+    c.method === "GET" && c.path.startsWith("/api/threads?takeable=1")
+      ? { status: 200, body: { threads: [{ ...takeableRow(T2, "Fix UTF-8 export"), thread: { id: T2, title: "Fix UTF-8 export", key: "EW-2" } }], next: null } }
+      : c.method === "GET" && c.path.startsWith("/api/threads?held=1")
+        ? { status: 200, body: { threads: [heldRow(T3, "Deploy plan", { key: "EW-3" })], next: null } }
+        : c.method === "POST"
+          ? { status: 200, body: { changed: true } }
+          : undefined;
+
+  test("lists name a thread by its key first", async () => {
+    const f = fake(keyedRows, { resolveThread });
+    expect(await f.holds.take({})).toContain("1. #general · EW-2 Fix UTF-8 export — unheld");
+    expect(await f.holds.release({})).toContain("1. #general · EW-3 Deploy plan");
+  });
+
+  test("take / release / handover: a key names that item, found by the server even outside the list", async () => {
+    const f = fake(keyedRows, { resolveThread });
+    expect(await f.holds.take({ ref: "ew-1" })).toContain("This session now holds EW-1.");
+    expect(await f.holds.release({ ref: "EW-1" })).toBe("Released EW-1.");
+    const posts = f.calls.filter((c) => c.method === "POST").map((c) => c.path);
+    expect(posts).toEqual([`/api/threads/${T1}/hold`, `/api/threads/${T1}/hold`]);
+  });
+
+  test("a link of another workspace, or one that is no thread link, is refused; nothing is taken, released or handed over", async () => {
+    const f = fake(keyedRows, { resolveThread });
+    for (const ref of [`https://other.example/w/ws/c/${CH_A}/t/${T1}`, `https://einweave.example/w/ws/c/${CH_A}`]) {
+      await expect(f.holds.take({ ref })).rejects.toThrow("is not a thread link of this workspace");
+      await expect(f.holds.release({ ref })).rejects.toThrow("is not a thread link of this workspace");
+      await expect(f.holds.handover({ ref, to: "1" })).rejects.toThrow("is not a thread link of this workspace");
+    }
+    expect(f.calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  test("a key lookup that fails (429, offline) still lets the words search titles", async () => {
+    const f = fake(keyedRows, { resolveThread: async () => { throw new Error("einweave API error 429"); } });
+    expect(await f.holds.take({ ref: "UTF-8" })).toContain("This session now holds #general · EW-2 Fix UTF-8 export");
+  });
+
+  test("key-shaped words that name no item are title words: UTF-8 still finds its thread", async () => {
+    const f = fake(keyedRows, { resolveThread });
+    expect(await f.holds.take({ ref: "UTF-8" })).toContain("This session now holds #general · EW-2 Fix UTF-8 export");
+    expect(f.calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual([`/api/threads/${T2}/hold`]);
   });
 });

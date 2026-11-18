@@ -52,7 +52,47 @@ export interface MyWorkspace {
     workspaceId: string | null;
     webUrl: string | null;
     links: WorkspaceLinks | null;
+    /**
+     * PR K: the prefix of this workspace's work item keys (`EW` in `EW-112`) and the ones it used to
+     * have — hand both to core `matchItemKeys` to find keys in text. Absent from an older server.
+     */
+    itemPrefix?: string | null;
+    itemPrefixAliases?: string[];
 }
+/** One resolved key of `GET /api/threads/keys`. */
+export interface ResolvedItemKey {
+    threadId: string;
+    /** The item's key as it is shown NOW — the asked one may have carried a retired prefix. */
+    key: string;
+    title: string;
+    kind: string;
+    status: string;
+    channelId: string;
+    archived: boolean;
+}
+/**
+ * `GET /api/threads/keys`. `items` is keyed by the asked key, upper-cased; a key that names nothing
+ * the caller may read — unknown, private, another workspace's, malformed — is simply absent.
+ */
+export interface ItemKeysResult {
+    /** The CALLER's acting workspace. `items` is empty when it is not the `workspace` asked for. */
+    workspaceId: string | null;
+    items: Record<string, ResolvedItemKey>;
+}
+/**
+ * What `threads.resolveRef` answers: the thread a typed reference names, or why none.
+ * `other_workspace`: a link that is not this workspace's. `not_found`: a key that names nothing the
+ * caller may read (which of "unknown" and "not yours to read" the server never says).
+ */
+export type ResolvedThreadRef = {
+    ok: true;
+    threadId: string;
+    via: "id" | "url" | "key";
+    key?: string;
+} | {
+    ok: false;
+    reason: "invalid" | "other_workspace" | "not_found";
+};
 /** RFC-031: a principal as search names one (`PrincipalRef` on the server); null fields when none is left. */
 export interface SearchPrincipalRef {
     id: string;
@@ -89,6 +129,8 @@ export interface SearchResponse<T> {
 export interface SearchThreadRow {
     thread: {
         id: string;
+        /** PR K: the work item key; null for a thread that never was a work item. Absent from an older server. */
+        key?: string | null;
         title: string;
         kind: string;
         status: string;
@@ -98,7 +140,8 @@ export interface SearchThreadRow {
         replyCount: number;
     };
     match: {
-        in: "title" | "fields" | "conclusion" | "message";
+        /** `key` (PR K): the query IS this item's key. */
+        in: "key" | "title" | "fields" | "conclusion" | "message";
         snippet: string;
         /** Set when `in` is "message": the best matching reply. */
         messageId?: string;
@@ -119,6 +162,7 @@ export interface SearchMessageRow {
     };
     thread: {
         id: string;
+        key?: string | null;
         title: string;
         kind: string;
         status: string;
@@ -141,6 +185,7 @@ export interface SearchJumpResponse {
     }[];
     threads: {
         id: string;
+        key?: string | null;
         title: string;
         kind: string;
         status: string;
@@ -262,6 +307,8 @@ export interface MessageRefPreview extends ReplyRef {
 export interface ReplyElsewhere extends Omit<ReplyRef, "id" | "threadId" | "seq"> {
     id: string;
     threadId: string;
+    /** PR K: that thread's work item key; null when it never was a work item. Absent from an older server. */
+    threadKey?: string | null;
     threadTitle: string | null;
     seq: number;
     createdAt: string;
@@ -340,6 +387,8 @@ export interface NewestMessage {
 /** The thread of an agent's thread-list row (takeable, held): the server builds both lists' rows with one function. */
 export interface ThreadRowThread {
     id: string;
+    /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+    key?: string | null;
     title: string;
     kind?: string;
     status?: string;
@@ -456,6 +505,7 @@ export interface AgentSession {
     /** The held threads the CALLER may read, named (same order as `holds`). Sent since RFC-028 D8. */
     heldThreads: Array<{
         id: string;
+        key?: string | null;
         title: string;
         channelId: string;
         channelName: string;
@@ -463,6 +513,8 @@ export interface AgentSession {
 }
 export interface ThreadSummary {
     id: string;
+    /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+    key?: string | null;
     title: string;
     kind?: ThreadKind;
     status?: string;
@@ -492,6 +544,8 @@ export interface ThreadResult {
 export interface ThreadMessagesResult {
     thread: {
         id: string;
+        /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+        key?: string | null;
         channelId: string;
         title: string;
         kind?: string;
@@ -599,6 +653,8 @@ export interface CreateItemBody extends Omit<SendBody, "take" | "confirm" | "ass
 /** A similar thread, as create (and its 409 `similar_exists`) names it. `reason`: a resolved one's reason. */
 export interface SimilarThread {
     threadId: string;
+    /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+    key?: string | null;
     /** The candidate's root message (null for a thread with none). */
     rootMessageId: string | null;
     title: string;
@@ -617,6 +673,8 @@ export interface CreateItemResult extends SendResult {
      */
     item?: {
         threadId: string;
+        /** PR K: the new item's key (`EW-112`). Absent from an older server. */
+        key?: string | null;
         kind: WorkKind;
         status: WorkStatus;
         /** Named, never a bare id: a `WorkPrincipal`. */
@@ -741,6 +799,8 @@ export interface WorkPrincipal {
 /** A thread as a header names it (`@einweave/threads` `WorkHeaderThreadRef`). */
 export interface WorkThreadRef {
     id: string;
+    /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+    key?: string | null;
     title: string;
     kind: ThreadKind;
     status: string;
@@ -759,6 +819,8 @@ export interface WorkHeaderPrincipal {
  */
 export interface WorkItemFrame {
     threadId: string;
+    /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+    key?: string | null;
     channelId: string;
     title: string;
     titleSource?: string;
@@ -868,6 +930,7 @@ export interface WorkChildren {
     threadId: string;
     children: {
         threadId: string;
+        key?: string | null;
         kind: WorkKind;
         status: WorkStatus;
         title: string;
@@ -908,6 +971,8 @@ export interface WorkListQuery {
 }
 export interface WorkListItem {
     threadId: string;
+    /** PR K: the work item key (`EW-112`); null for a thread that never was a work item. Absent from an older server. */
+    key?: string | null;
     kind: WorkKind;
     status: WorkStatus;
     title: string;
@@ -974,6 +1039,9 @@ export interface WorkSchema {
         color: string | null;
         description: string | null;
     }[];
+    /** PR K: the workspace's work item key prefix, and the ones it used to have. Absent from an older server. */
+    itemPrefix?: string | null;
+    itemPrefixAliases?: string[];
     /** With `channel`: that channel's settings. */
     channel?: {
         id: string;
@@ -1074,6 +1142,24 @@ export declare function createApi(rt: Runtime, client: AgentClient): {
             channelId: string | null;
             threads: ThreadSummary[];
         }>;
+        /**
+         * PR K: work item keys → the threads they name (≤ 50 per call). `workspace` is the workspace the
+         * keys were typed in (`me.workspace().workspaceId`); the server answers only when it is the
+         * caller's acting one. A key that names nothing the caller may read is absent from `items`.
+         * An older server has no such route (404, an `ApiRequestError`).
+         */
+        keys: (p: {
+            workspace: string;
+            keys: readonly string[];
+        }) => Promise<ItemKeysResult>;
+        /**
+         * THE one place typed text becomes a thread id: a thread id, a thread / message link of the
+         * caller's own workspace, or a work item key (`EW-112`, any case, a retired prefix too). Use
+         * it for every tool parameter that names a thread (`thread_id`, `duplicate_of`, `parent`).
+         * A key costs one lookup; an id or a link is answered from `workspace` alone. Pass a
+         * `workspace` you already hold (`me.workspace()`) to save its request.
+         */
+        resolveRef: (input: string, workspace?: MyWorkspace) => Promise<ResolvedThreadRef>;
         /**
          * RFC-028 D8: the open threads this session could take — addressed to the agent or posted in by it, not held
          * by this session: unheld › parked › held by another live session, newest first, cursor-paged (default 10).

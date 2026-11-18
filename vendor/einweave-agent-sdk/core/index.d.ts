@@ -19,6 +19,7 @@ export * from "./dedupe";
 export * from "./control-chars";
 export * from "./principal-label";
 export * from "./links";
+export * from "./item-key";
 export * from "./search";
 /**
  * auth/core's public surface — the future `@einweave/agent-sdk` entry point. Encoding

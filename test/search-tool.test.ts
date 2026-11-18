@@ -27,7 +27,7 @@ const threadPage = {
   results: [
     {
       thread: {
-        id: "t-1", title: "Deploy\u001b[31m window today", kind: "question", status: "open",
+        id: "t-1", key: null, title: "Deploy\u001b[31m window today", kind: "question", status: "open",
         channel: { id: "ch-1", name: "ops", archived: false }, assignee: { id: "p-1", name: "Kevin", handle: "kevin", kind: "human" },
         lastActivityAt: "2026-11-03T09:40:00.000Z", replyCount: 4,
       },
@@ -36,7 +36,7 @@ const threadPage = {
     },
     {
       thread: {
-        id: "t-2", title: "Deployment checklist", kind: "task", status: "todo",
+        id: "t-2", key: "EW-2", title: "Deployment checklist", kind: "task", status: "todo",
         channel: { id: "ch-1", name: "ops", archived: false }, assignee: null,
         lastActivityAt: "2026-11-01T09:40:00.000Z", replyCount: 0,
       },
@@ -52,7 +52,7 @@ const messagePage = {
   results: [
     {
       message: { id: "m-9", threadId: "t-1", seq: 12, sender: { id: "a-1", name: "Brian", handle: "brian", kind: "agent" }, createdAt: "2026-11-03T09:41:00.000Z" },
-      thread: { id: "t-1", title: "Deploy window today", kind: "question", status: "open" },
+      thread: { id: "t-1", key: "EW-1", title: "Deploy window today", kind: "task", status: "open" },
       channel: { id: "ch-1", name: "ops", archived: false },
       snippet: `is the ${S}deploy${E} still on`,
     },
@@ -200,7 +200,9 @@ describe("search tool", () => {
       assignee: "@kevin", snippet: "pushing after the **deploy** **window** closes", similar_title: false,
     });
     expect(body.results[0].title).toBe("Deploy window today");
-    expect(body.results[1]).toMatchObject({ thread_id: "t-2", similar_title: true, snippet: "Deployment checklist", assignee: null });
+    expect(body.results[1]).toMatchObject({ thread_id: "t-2", key: "EW-2", similar_title: true, snippet: "Deployment checklist", assignee: null });
+    // PR K: a thread that never was a work item has no key, and the row says nothing about one.
+    expect("key" in body.results[0]).toBe(false);
     expect(body.hint).toContain("cursor");
   });
 
@@ -212,7 +214,7 @@ describe("search tool", () => {
     expect(body.total).toBe("1");
     expect(body.next).toBeNull();
     expect(body.results).toEqual([
-      { message_id: "m-9", thread_id: "t-1", thread_title: "Deploy window today", kind: "question", status: "open", channel_id: "ch-1", channel: "ops", channel_archived: false, sender: "@brian", created_at: "2026-11-03T09:41:00.000Z", snippet: "is the **deploy** still on" },
+      { message_id: "m-9", thread_id: "t-1", thread_key: "EW-1", thread_title: "Deploy window today", kind: "task", status: "open", channel_id: "ch-1", channel: "ops", channel_archived: false, sender: "@brian", created_at: "2026-11-03T09:41:00.000Z", snippet: "is the **deploy** still on" },
     ]);
   });
 

@@ -14,6 +14,7 @@
  */
 
 import { principalLabel } from "./vendor/einweave-agent-sdk/core/index.js";
+import { resolveOptionalThreadArg, resolveThreadArg, THREAD_REF_DOC, type ResolveRef } from "./thread-ref";
 
 export type ApiCall = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any; text: string }>;
 
@@ -23,6 +24,8 @@ export interface WorkDeps {
   send: (body: Record<string, unknown>) => ReturnType<ApiCall>;
   /** This session's agent id ("" before it authenticates): an answer names it "you", never by id. */
   self?: () => string;
+  /** PR K: what a thread parameter names (a thread id, a link, an item key) → its id (`thread-ref.ts`). */
+  resolveThread: ResolveRef;
   /** A root this session posted (create_item): its echo must be dismissed. */
   onRootSent?: (r: { id: string; channelId: string; threadId: string; title: string; text: string }) => void;
 }
@@ -50,12 +53,12 @@ function fixOf(v: unknown): unknown {
   return v === null ? undefined : v;
 }
 
-function proposedOf(v: unknown): unknown {
+async function proposedOf(v: unknown, resolve: ResolveRef): Promise<unknown> {
   if (!v || typeof v !== "object") return v ?? undefined;
   const p = v as Record<string, unknown>;
   return given([
     ["reason", p.reason],
-    ["duplicateOf", p.duplicate_of],
+    ["duplicateOf", await resolveOptionalThreadArg(p.duplicate_of, "proposed.duplicate_of", resolve)],
   ]);
 }
 
@@ -124,6 +127,7 @@ export function describeRefusal(status: number, body: any, text: string): string
 function similarRow(s: any) {
   return given([
     ["thread_id", s.threadId],
+    ["key", s.key ?? undefined],
     ["title", s.title],
     ["kind", s.kind],
     ["status", s.status],
@@ -149,6 +153,7 @@ export function itemView(f: any, self: string | null = null): Record<string, unk
   const la = f.latestActivity;
   return given([
     ["thread_id", f.threadId],
+    ["key", f.key ?? undefined],
     ["title", f.title],
     ["kind", f.kind],
     ["status", f.status],
@@ -159,7 +164,7 @@ export function itemView(f: any, self: string | null = null): Record<string, unk
     ["assignee_joined", f.assigneeJoined],
     ["due", f.dueAt ?? undefined],
     ["labels", Array.isArray(f.labels) && f.labels.length > 0 ? f.labels : undefined],
-    ["parent", f.parent ? { thread_id: f.parent.id, title: f.parent.title, status: f.parent.status } : undefined],
+    ["parent", f.parent ? given([["thread_id", f.parent.id], ["key", f.parent.key ?? undefined], ["title", f.parent.title], ["status", f.parent.status]]) : undefined],
     ["children", f.children && f.children.n > 0 ? f.children : undefined],
     ["links", typeof f.links === "number" && f.links > 0 ? f.links : undefined],
     ["latest_activity", la ? `${la.action}${la.by ? ` by ${who(la.by)}` : ""}${la.text ? `: ${la.text}` : ""}` : undefined],
@@ -172,6 +177,8 @@ export function itemView(f: any, self: string | null = null): Record<string, unk
 const json = (o: unknown) => JSON.stringify(o, null, 2);
 
 const ASSIGNEE_DOC = "A handle (@name), a principal id, or \"me\".";
+
+const ITEM_DOC = `The item: ${THREAD_REF_DOC}.`;
 
 export const WORK_TOOLS = [
   {
@@ -192,7 +199,7 @@ export const WORK_TOOLS = [
         assignee: { type: "string", description: `Who does it. ${ASSIGNEE_DOC}` },
         labels: { type: "array", items: { type: "string" }, description: "Label names (item_schema lists the workspace's)." },
         due: { type: "string", description: "A calendar date, YYYY-MM-DD (422 due_must_be_date otherwise)." },
-        parent_thread_id: { type: "string", description: "Make it a sub-item of this item (same channel)." },
+        parent_thread_id: { type: "string", description: `Make it a sub-item of this item (same channel): ${THREAD_REF_DOC}.` },
         review: { type: "boolean", description: "Override the channel's review policy for this item (false needs an assignee)." },
         confirm_new: { type: "boolean", description: "File the bug although a near-identical one exists (only after a 409 similar_exists, having read the candidates)." },
       },
@@ -209,7 +216,7 @@ export const WORK_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string", description: "The item's thread_id." },
+        thread_id: { type: "string", description: ITEM_DOC },
         kind: { type: "string", enum: ["task", "bug", "feature", "request", "discussion", "question"] },
         status: { type: "string", enum: ["todo", "in_progress", "needs_input", "in_review"], description: "An open-side status." },
         text: { type: "string", description: "Why (required when sending an in_review item back: changes requested)." },
@@ -232,9 +239,9 @@ export const WORK_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        thread_id: { type: "string", description: ITEM_DOC },
         reason: { type: "string", enum: ["done", "not_planned", "duplicate", "outdated", "cannot_reproduce"] },
-        duplicate_of: { type: "string", description: "With reason duplicate: the original's thread_id." },
+        duplicate_of: { type: "string", description: `With reason duplicate: the original, ${THREAD_REF_DOC}.` },
         fix: { type: "object", description: "{type, url, title?} — the fix (pull_request, commit, …); url http(s) only.", properties: { type: { type: "string" }, url: { type: "string" }, title: { type: "string" } } },
         resolved_in: { type: "object", description: "{component, version} the fix shipped in — both, or leave it out.", properties: { component: { type: "string" }, version: { type: "string" } } },
         conclusion: { type: "string", description: "What was concluded (a done item needs a fix or a conclusion)." },
@@ -251,7 +258,7 @@ export const WORK_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        thread_id: { type: "string", description: ITEM_DOC },
         regression: { type: "boolean" },
         message_id: { type: "string", description: "The reply in this thread that reports the regression." },
         text: { type: "string", description: "Why it is reopened." },
@@ -267,11 +274,11 @@ export const WORK_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        thread_id: { type: "string", description: ITEM_DOC },
         action: { type: "string", enum: ["accept", "decline", "duplicate"] },
         assignee: { type: "string", description: `accept: ${ASSIGNEE_DOC}` },
         reason: { type: "string", description: "decline: why." },
-        duplicate_of: { type: "string", description: "duplicate: the original's thread_id." },
+        duplicate_of: { type: "string", description: `duplicate: the original, ${THREAD_REF_DOC}.` },
         expected_status: { type: "string" },
       },
       required: ["thread_id", "action"],
@@ -286,14 +293,14 @@ export const WORK_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        thread_id: { type: "string", description: ITEM_DOC },
         type: { type: "string", enum: ["plan", "progress", "needs_input", "result", "failed"] },
         items: { type: "array", description: "plan: the steps — strings, or {text, done?}.", items: { type: ["string", "object"] } },
         text: { type: "string", description: "progress / needs_input / result / failed: what happened." },
         to: { type: "array", items: { type: "string" }, description: "needs_input: who must answer (1-5 handles/ids who can read the item; default the requester)." },
         fix: { type: "object", description: "result: {type, url, title?} (pull_request, commit, branch, …); url http(s) only.", properties: { type: { type: "string" }, url: { type: "string" }, title: { type: "string" } } },
         conclusion: { type: "string", description: "result: what was concluded (when there is no fix)." },
-        proposed: { type: "object", description: "result: {reason, duplicate_of?} — the resolution you propose.", properties: { reason: { type: "string" }, duplicate_of: { type: "string" } } },
+        proposed: { type: "object", description: "result: {reason, duplicate_of?} — the resolution you propose.", properties: { reason: { type: "string" }, duplicate_of: { type: "string", description: `The original, ${THREAD_REF_DOC}.` } } },
         expected_status: { type: "string" },
       },
       required: ["thread_id", "type"],
@@ -305,7 +312,7 @@ export const WORK_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        thread_id: { type: "string", description: ITEM_DOC },
         type: { type: "string", enum: ["pull_request", "commit", "branch", "issue", "build", "deploy", "release", "url"] },
         url: { type: "string", description: "http(s) only." },
         title: { type: "string" },
@@ -319,7 +326,7 @@ export const WORK_TOOLS = [
     description: "Remove a link from a work item (its adder, or who governs the item).",
     inputSchema: {
       type: "object",
-      properties: { thread_id: { type: "string" }, link_id: { type: "string" } },
+      properties: { thread_id: { type: "string", description: ITEM_DOC }, link_id: { type: "string" } },
       required: ["thread_id", "link_id"],
     },
   },
@@ -335,7 +342,7 @@ export const WORK_TOOLS = [
         status: { type: "string", description: "Comma list (default: the open side: triage, todo, in_progress, needs_input, in_review); resolved for closed ones." },
         assignee: { type: "string", description: "me | none | a handle | an id." },
         channel: { type: "string", description: "One channel (id or name)." },
-        parent: { type: "string", description: "A parent item's thread_id." },
+        parent: { type: "string", description: `A parent item: ${THREAD_REF_DOC}.` },
         label: { type: "string" },
         severity: { type: "string", description: "Bugs: comma list." },
         due_before: { type: "string", description: "YYYY-MM-DD." },
@@ -382,7 +389,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["assignee", args.assignee],
         ["labels", listOf(args.labels)],
         ["due", args.due],
-        ["parent", args.parent_thread_id],
+        ["parent", await resolveOptionalThreadArg(args.parent_thread_id, "parent_thread_id", deps.resolveThread)],
         ["review", args.review],
         ["confirmNew", args.confirm_new === true ? true : undefined],
       ]);
@@ -398,6 +405,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       return json(
         given([
           ["thread_id", r?.threadId],
+          ["key", item?.key ?? undefined],
           ["message_id", r?.id],
           ["kind", item?.kind ?? kind],
           ["status", status],
@@ -413,7 +421,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     }
 
     case "update_item": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const labels = args.labels && typeof args.labels === "object" ? (args.labels as Record<string, unknown>) : undefined;
       const body = given([
         ["kind", args.kind],
@@ -432,14 +440,14 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     }
 
     case "resolve_item": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const ri = args.resolved_in as Record<string, unknown> | undefined;
       if (ri !== undefined && ri !== null && !(typeof ri === "object" && isStr(ri.component) && isStr(ri.version))) {
         throw new Error('resolved_in needs both component and version, e.g. {component: "api", version: "1.2.3"} — nothing was sent.');
       }
       const body = given([
         ["reason", args.reason],
-        ["duplicateOf", args.duplicate_of],
+        ["duplicateOf", await resolveOptionalThreadArg(args.duplicate_of, "duplicate_of", deps.resolveThread)],
         ["conclusion", args.conclusion],
         ["fix", fixOf(args.fix)],
         ["resolvedIn", ri && typeof ri === "object" ? given([["component", ri.component], ["version", ri.version]]) : undefined],
@@ -451,7 +459,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     }
 
     case "reopen_item": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const body = given([
         ["regression", args.regression === true ? true : undefined],
         ["messageId", args.message_id],
@@ -462,19 +470,19 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     }
 
     case "triage_item": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const action = need(args, "action", "accept, decline or duplicate");
       let body: Record<string, unknown>;
       if (action === "accept") body = given([["action", action], ["assignee", args.assignee]]);
       else if (action === "decline") body = { action, reason: need(args, "reason", "why it is declined") };
-      else if (action === "duplicate") body = { action, duplicateOf: need(args, "duplicate_of", "the original's thread_id") };
+      else if (action === "duplicate") body = { action, duplicateOf: await resolveThreadArg(args.duplicate_of, "duplicate_of", deps.resolveThread) };
       else throw new Error(`action must be accept, decline or duplicate, got ${JSON.stringify(action)}`);
       if (args.expected_status !== undefined) body.expectedStatus = args.expected_status;
       return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/triage`, body), deps.self?.()));
     }
 
     case "add_activity": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const type = need(args, "type", "plan, progress, needs_input, result or failed");
       const items = Array.isArray(args.items) ? args.items.map((i) => (typeof i === "string" ? { text: i } : i)) : args.items;
       const body = given([
@@ -484,7 +492,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["to", listOf(args.to)],
         ["fix", fixOf(args.fix)],
         ["conclusion", args.conclusion],
-        ["proposed", proposedOf(args.proposed)],
+        ["proposed", await proposedOf(args.proposed, deps.resolveThread)],
         ["expectedStatus", args.expected_status],
       ]);
       const r = await call(deps, "POST", `/api/threads/${enc(threadId)}/activity`, body);
@@ -492,7 +500,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     }
 
     case "add_link": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const body = given([
         ["type", need(args, "type")],
         ["url", need(args, "url")],
@@ -511,7 +519,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
     }
 
     case "remove_link": {
-      const threadId = need(args, "thread_id");
+      const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const linkId = need(args, "link_id");
       const r = await call(deps, "DELETE", `/api/threads/${enc(threadId)}/links/${enc(linkId)}`);
       return json({ removed: r?.removed === true, link_id: linkId });
@@ -529,7 +537,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       set("status", args.status);
       set("assignee", args.assignee);
       set("label", args.label);
-      set("parent", args.parent);
+      set("parent", await resolveOptionalThreadArg(args.parent, "parent", deps.resolveThread));
       set("severity", args.severity);
       set("dueBefore", args.due_before);
       set("resolvedIn", args.resolved_in);
@@ -544,6 +552,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       const rows = (r?.items ?? []).map((i: any) =>
         given([
           ["thread_id", i.threadId],
+          ["key", i.key ?? undefined],
           ["kind", i.kind],
           ["status", i.status],
           ["title", i.title],
@@ -621,11 +630,12 @@ function namer(self: string | null, names: Readonly<Record<string, string>> | nu
 }
 
 /** A detail, said in one short line: labels bare, free text quoted, objects as JSON, principals named. */
-function detailLine(action: string, detail: Record<string, unknown>, skip: ReadonlySet<string>, n: Namer): string {
+function detailLine(action: string, detail: Record<string, unknown>, skip: ReadonlySet<string>, n: Namer, threads: Readonly<Record<string, string>>): string {
   const parts: string[] = [];
   const principal = new Set(PRINCIPAL_KEYS[action] ?? []);
-  // A principal key is always a name; any other string is renamed only when it IS a known principal.
-  const say = (k: string, x: unknown) => (typeof x !== "string" ? x : principal.has(k) ? n.name(x) : (n.known(x) ?? x));
+  // A principal key is always a name; any other string is renamed only when it IS a known principal,
+  // or said by its item key when it is a thread the payload's `threads` names (PR K: duplicateOf, childId, parentId).
+  const say = (k: string, x: unknown) => (typeof x !== "string" ? x : principal.has(k) ? n.name(x) : (n.known(x) ?? keyOf(threads, x) ?? x));
   for (const [k, v] of Object.entries(detail)) {
     if (v === null || v === undefined || skip.has(k)) continue;
     const free = FREE_TEXT.has(k);
@@ -634,6 +644,11 @@ function detailLine(action: string, detail: Record<string, unknown>, skip: Reado
     parts.push(`${k}: ${clip(s)}`);
   }
   return parts.join("; ");
+}
+
+/** A thread id's item key from a payload's `threads` map (id → key), or null. */
+function keyOf(threads: Readonly<Record<string, string>>, id: string): string | null {
+  return Object.hasOwn(threads, id) && isStr(threads[id]) ? threads[id]! : null;
 }
 
 /** What the event means to THIS agent, in words — the parts that change what it should do. */
@@ -677,6 +692,8 @@ function headline(action: string, d: Record<string, unknown>, n: Namer): { what:
 export function renderThreadEventContent(
   e: {
     threadId: string;
+    /** PR K: the item's key; null/absent for a thread that never was a work item (or an older server). */
+    key?: string | null;
     action: string;
     detail: Record<string, unknown> | null;
     actorType: string;
@@ -684,6 +701,8 @@ export function renderThreadEventContent(
     status: string | null;
     work: { text: string } | null;
     names?: Record<string, string> | null;
+    /** PR K: thread id → item key, for the threads `detail` names by id. */
+    threads?: Record<string, string> | null;
   },
   self: string | null = null
 ): string {
@@ -694,8 +713,10 @@ export function renderThreadEventContent(
   const by = actor === null ? "" : actor === "you" ? " — by you" : ` — by ${e.actorType} ${actor}`;
   const detail = e.detail && typeof e.detail === "object" ? e.detail : {};
   const h = headline(e.action, detail, n);
-  const d = detailLine(e.action, detail, h.skip, n);
-  const head = `Work item ${e.threadId}: ${h.what}${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
-  const tail = `read_thread(thread_id: "${e.threadId}") shows it in full.`;
+  const d = detailLine(e.action, detail, h.skip, n, e.threads && typeof e.threads === "object" ? e.threads : {});
+  // The key names the item for people and for every thread parameter; the id only when it has none.
+  const item = isStr(e.key) ? e.key : e.threadId;
+  const head = `Work item ${item}: ${h.what}${by}${e.status ? ` (status ${e.status})` : ""}${d ? ` — ${d}` : ""}`;
+  const tail = `read_thread(thread_id: "${item}") shows it in full.`;
   return e.work?.text ? `${head}\n${e.work.text}\n${tail}` : `${head}\n${tail}`;
 }

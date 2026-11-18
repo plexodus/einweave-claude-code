@@ -14,6 +14,7 @@ type Sent = { method: string; path: string; body?: unknown };
 function fake(answer: (s: Sent) => { status: number; body: any } = () => ({ status: 200, body: {} }), self = "agent-me") {
   const sent: Sent[] = [];
   const roots: unknown[] = [];
+  const resolved: string[] = [];
   const deps: WorkDeps = {
     api: async (method, path, body) => {
       const s = { method, path, ...(body !== undefined ? { body } : {}) };
@@ -30,11 +31,20 @@ function fake(answer: (s: Sent) => { status: number; body: any } = () => ({ stat
     },
     onRootSent: (r) => roots.push(r),
     self: () => self,
+    // PR K: `EW-<n>` names thread KEYED(n); `EW-404` names nothing; anything else passes as an id
+    // (the older tests here use short ids like "p1"; thread-ref.test.ts pins the real rule).
+    resolveThread: async (input) => {
+      resolved.push(input);
+      const k = /^ew-(\d+)$/i.exec(input);
+      if (!k) return { ok: true, threadId: input, via: "id" };
+      return k[1] === "404" ? { ok: false, reason: "not_found" } : { ok: true, threadId: KEYED(Number(k[1])), via: "key", key: `EW-${k[1]}` };
+    },
   };
-  return { deps, sent, roots };
+  return { deps, sent, roots, resolved };
 }
 
 const T = "01a1499b-dbc7-7001-a4bb-d6b6fa14e01b";
+const KEYED = (n: number) => `01a1499b-0000-7000-8000-${String(n).padStart(12, "0")}`;
 
 describe("work tools → SDK 0.8.0 routes and bodies", () => {
   test("the tool set is RFC §7's", () => {
@@ -406,5 +416,74 @@ describe("an inbound thread_event, said from this agent's side", () => {
     expect(t).toContain('declineReason: "out of scope"');
     expect(t).not.toContain('"not_planned"');
     expect(ev("result", { text: "shipped it" })).toContain('text: "shipped it"');
+  });
+});
+
+describe("PR K: work item keys", () => {
+  test("every thread param takes a key: the route and body carry the id it names", async () => {
+    const f = fake(() => ({ status: 200, body: { threadId: KEYED(7), key: "EW-7", status: "todo", items: [] } }));
+    await callWorkTool("update_item", { thread_id: "ew-7", status: "todo" }, f.deps);
+    await callWorkTool("resolve_item", { thread_id: "EW-7", reason: "duplicate", duplicate_of: "EW-8" }, f.deps);
+    await callWorkTool("triage_item", { thread_id: "EW-7", action: "duplicate", duplicate_of: "EW-9" }, f.deps);
+    await callWorkTool("add_activity", { thread_id: "EW-7", type: "result", proposed: { reason: "duplicate", duplicate_of: "EW-10" } }, f.deps);
+    await callWorkTool("reopen_item", { thread_id: "EW-7" }, f.deps);
+    await callWorkTool("add_link", { thread_id: "EW-7", type: "pr", url: "https://x/1" }, f.deps);
+    await callWorkTool("remove_link", { thread_id: "EW-7", link_id: "l1" }, f.deps);
+    await callWorkTool("list_items", { parent: "EW-11" }, f.deps);
+    await callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "t", parent_thread_id: "EW-12" }, f.deps);
+    expect(f.sent.map((s) => `${s.method} ${s.path}`)).toEqual([
+      `PUT /api/threads/${KEYED(7)}/work`,
+      `POST /api/threads/${KEYED(7)}/resolve`,
+      `POST /api/threads/${KEYED(7)}/triage`,
+      `POST /api/threads/${KEYED(7)}/activity`,
+      `POST /api/threads/${KEYED(7)}/reopen`,
+      `POST /api/threads/${KEYED(7)}/links`,
+      `DELETE /api/threads/${KEYED(7)}/links/l1`,
+      `GET /api/threads?scope=work&parent=${encodeURIComponent(KEYED(11))}`,
+      "POST /api/messages",
+    ]);
+    expect((f.sent[1]!.body as any).duplicateOf).toBe(KEYED(8));
+    expect((f.sent[2]!.body as any).duplicateOf).toBe(KEYED(9));
+    expect((f.sent[3]!.body as any).proposed.duplicateOf).toBe(KEYED(10));
+    expect((f.sent[8]!.body as any).parent).toBe(KEYED(12));
+  });
+
+  test("a key that names nothing refuses by its param, and nothing is sent", async () => {
+    const f = fake();
+    await expect(callWorkTool("update_item", { thread_id: "EW-404", status: "todo" }, f.deps)).rejects.toThrow("thread_id: no work item EW-404");
+    await expect(callWorkTool("resolve_item", { thread_id: "EW-1", reason: "duplicate", duplicate_of: "EW-404" }, f.deps)).rejects.toThrow("duplicate_of: no work item EW-404");
+    await expect(callWorkTool("create_item", { channel_id: "dev", kind: "task", title: "t", parent_thread_id: "EW-404" }, f.deps)).rejects.toThrow("parent_thread_id: no work item EW-404");
+    expect(f.sent).toEqual([]);
+  });
+
+  test("answers name the item by key: write answers (+ parent), create (+ similar), list rows; a null key is left out", async () => {
+    const frame = { threadId: T, key: "EW-3", title: "x", kind: "bug", status: "todo", parent: { id: KEYED(1), key: "EW-1", title: "p", status: "todo" } };
+    const f = fake((s) =>
+      s.path === "/api/messages"
+        ? { status: 200, body: { id: "m1", threadId: T, item: { threadId: T, key: "EW-3", kind: "bug", status: "todo" }, similar: [{ threadId: KEYED(2), key: "EW-2", title: "s", status: "todo", kind: "bug", score: 1 }, { threadId: KEYED(4), key: null, title: "d", status: "open", kind: "discussion", score: 1 }] } }
+        : s.method === "GET"
+          ? { status: 200, body: { items: [{ threadId: T, key: "EW-3", kind: "bug", status: "todo", title: "x" }], next: null } }
+          : { status: 200, body: frame }
+    );
+    const upd = JSON.parse(await callWorkTool("update_item", { thread_id: T, status: "todo" }, f.deps));
+    expect(upd).toMatchObject({ thread_id: T, key: "EW-3", parent: { thread_id: KEYED(1), key: "EW-1" } });
+    const created = JSON.parse(await callWorkTool("create_item", { channel_id: "dev", kind: "bug", title: "x" }, f.deps));
+    expect(created.key).toBe("EW-3");
+    expect(created.similar[0].key).toBe("EW-2");
+    expect("key" in created.similar[1]).toBe(false);
+    const listed = JSON.parse(await callWorkTool("list_items", {}, f.deps));
+    expect(listed.items[0].key).toBe("EW-3");
+  });
+
+  test("event line: the item by its key (head and read_thread hint), threads in the detail by theirs; the id when it has no key", () => {
+    const base = { threadId: T, action: "resolve", actorType: "system", actorId: null, status: "done", work: null };
+    const keyed = renderThreadEventContent({ ...base, key: "EW-3", detail: { reason: "duplicate", duplicateOf: KEYED(1) }, threads: { [KEYED(1)]: "EW-1" } }, null);
+    expect(keyed).toContain("Work item EW-3: resolved (reason: duplicate)");
+    expect(keyed).toContain("duplicateOf: EW-1");
+    expect(keyed).toContain('read_thread(thread_id: "EW-3")');
+    expect(keyed).not.toContain(T);
+    const bare = renderThreadEventContent({ ...base, key: null, detail: { reason: "duplicate", duplicateOf: KEYED(1) } }, null);
+    expect(bare).toContain(`Work item ${T}:`);
+    expect(bare).toContain(`duplicateOf: ${KEYED(1)}`);
   });
 });
