@@ -56,6 +56,8 @@ type Stub = {
   stop: () => void;
 };
 type State = {
+  /** PR K: `me.workspace()` answers no workspace id (a server that cannot say yet). */
+  noWorkspaceId?: boolean;
   root: Row | null;
   replies: Row[];
   threadStatus: number; // status for GET /api/threads/:id/messages
@@ -105,7 +107,7 @@ function startStub(): Stub {
       }
       // PR K: the workspace (its link templates) and the key lookup that `threads.resolveRef` reads.
       if (url.pathname === "/api/me/workspace") {
-        return Response.json({ workspaceId: "ws-1", webUrl: "https://app.example", links: { thread: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}", message: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}/m/{messageId}" }, itemPrefix: "EW", itemPrefixAliases: [] });
+        return Response.json({ workspaceId: st.noWorkspaceId ? null : "ws-1", webUrl: "https://app.example", links: { thread: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}", message: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}/m/{messageId}" }, itemPrefix: "EW", itemPrefixAliases: [] });
       }
       if (url.pathname === "/api/threads/keys") {
         const asked = (url.searchParams.get("keys") ?? "").toUpperCase();
@@ -800,5 +802,15 @@ describe("read_thread / list_threads", () => {
     expect(listed.threads.map((t: any) => [t.thread_id, t.key])).toEqual([[THREAD, "EW-7"], ["t2", undefined]]);
     // The workspace a key is parsed against is asked once per agent, shared with the link templates.
     expect(stub.calls.filter((c) => c === "GET /api/me/workspace")).toHaveLength(1);
+  });
+
+  test("PR K: a workspace with no id is not remembered, so a key works once the server names the workspace", async () => {
+    stub.set({ noWorkspaceId: true, work: { text: "bug · todo" } });
+    const early = await callTool("read_thread", { thread_id: "EW-7", mark_read: false });
+    expect(early.isError).toBe(true);
+    stub.set({ noWorkspaceId: false });
+    const later = await ok("read_thread", { thread_id: "EW-7", mark_read: false });
+    expect(later.thread).toMatchObject({ id: THREAD });
+    expect(stub.calls.filter((c) => c === "GET /api/me/workspace")).toHaveLength(2);
   });
 });

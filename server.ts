@@ -2470,7 +2470,8 @@ async function myWorkspace(): Promise<MyWorkspace> {
   if (workspaceCache && workspaceCache.agent === agentId) return workspaceCache.ws;
   const agent = agentId;
   const ws = await sdkApi((api) => api.me.workspace());
-  workspaceCache = { agent, ws };
+  // No workspace id (a server that cannot say yet): every key would read "no work item" for good. Ask again next time.
+  if (ws.workspaceId) workspaceCache = { agent, ws };
   return ws;
 }
 
