@@ -383,9 +383,42 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     expect(root.text).toContain("pass thread_id");
   });
 
+  test("PR K: an item has a key; every thread param takes it; a renamed prefix keeps the old key working", async () => {
+    const made = JSON.parse((await p.call("create_item", { channel_id: CHANNEL, kind: "task", title: "Keyed task", fields: { goal: "a key" } })).text);
+    expect(made.key, JSON.stringify(made)).toMatch(/^[A-Z][A-Z0-9]{1,4}-[1-9][0-9]*$/);
+    const n = made.key.split("-")[1];
+
+    const read = JSON.parse((await p.call("read_thread", { thread_id: made.key.toLowerCase(), mark_read: false })).text);
+    expect(read.thread).toMatchObject({ id: made.thread_id, key: made.key });
+    // An agent's item starts in triage; claiming by key is tried on a person's task.
+    const tid = await humanTask("Keyed person task");
+    const key = JSON.parse((await p.call("read_thread", { thread_id: tid, mark_read: false })).text).thread.key;
+    expect(key).toMatch(/^[A-Z][A-Z0-9]{1,4}-[1-9][0-9]*$/);
+    const upd = await p.call("update_item", { thread_id: key, assignee: "me" });
+    expect(upd.isError, upd.text).toBe(false);
+    expect(JSON.parse(upd.text)).toMatchObject({ thread_id: tid, key, assignee: "you" });
+    const said = await p.call("reply", { channel_id: CHANNEL, thread_id: key, text: "on it" });
+    expect(said.isError, said.text).toBe(false);
+    const replies = JSON.parse((await p.call("read_thread", { thread_id: tid, mark_read: false })).text).replies;
+    expect(replies.map((r: any) => r.content)).toContain("on it");
+    expect((await p.call("list_items", { assignee: "me" })).text).toContain(`"key": "${key}"`);
+
+    await human("PUT", "/api/workspaces/current", { itemPrefix: "KT" });
+    const renamed = JSON.parse((await p.call("read_thread", { thread_id: made.key, mark_read: false })).text);
+    expect(renamed.thread).toMatchObject({ id: made.thread_id, key: `KT-${n}` });
+    const byNew = JSON.parse((await p.call("read_thread", { thread_id: `KT-${n}`, mark_read: false })).text);
+    expect(byNew.thread.id).toBe(made.thread_id);
+
+    const missing = await p.call("read_thread", { thread_id: "KT-99999" });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("thread_id: no work item KT-99999");
+  });
+
   test("a thread_event reaches the model live, and on resume, ONCE each", async () => {
-    const eventLine = (tid: string) => `Work item ${tid}: assigned`;
-    const count = (pl: Plugin, tid: string) => pl.notices.filter((n) => n.includes(eventLine(tid))).length;
+    // PR K: an event line names the item by its key (read as the person, so nothing is marked read).
+    const keyOf = async (tid: string): Promise<string> => (await human("GET", `/api/threads/${tid}/messages?limit=1`)).thread.key;
+    const eventLine = (key: string) => `Work item ${key}: assigned`;
+    const count = (pl: Plugin, key: string) => pl.notices.filter((n) => n.includes(eventLine(key))).length;
 
     // Scope none (the default, #40): an assignment is NOT pushed to this window -- the server says
     // `for_you` (bridge #323) and the plugin keeps it for the next prompt (delivery-ctl.test.ts: the line).
@@ -393,21 +426,23 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     await human("PUT", `/api/threads/${t0}/work`, { assignee: seed.agentId });
     const forYou = /for you \(not pushed here\): thread_event \S+ \(assigned\)/;
     expect(await until(() => forYou.test(p.stderr()), 15_000), `no for_you:\n${p.stderr()}`).toBe(true);
-    expect(count(p, t0), "scope none: the entry itself is not pushed").toBe(0);
+    expect(count(p, await keyOf(t0)), "scope none: the entry itself is not pushed").toBe(0);
 
     // A window whose scope takes the channel gets it live.
     expect((await p.call("scope", { channels: CHANNEL })).isError).toBe(false);
     // Live: a person assigns an item to the agent while it is connected.
     const t1 = await humanTask("Renew the TLS wildcard");
     await human("PUT", `/api/threads/${t1}/work`, { assignee: seed.agentId });
-    expect(await until(() => count(p, t1) > 0, 15_000), `no live thread_event:\n${p.notices.join("\n---\n")}`).toBe(true);
+    const k1 = await keyOf(t1);
+    expect(await until(() => count(p, k1) > 0, 15_000), `no live thread_event:\n${p.notices.join("\n---\n")}`).toBe(true);
     await Bun.sleep(2000);
-    expect(count(p, t1)).toBe(1);
-    const live = p.notices.find((n) => n.includes(eventLine(t1)))!;
+    expect(count(p, k1)).toBe(1);
+    const live = p.notices.find((n) => n.includes(eventLine(k1)))!;
     expect(live).toContain("task · todo"); // the item NOW (work.text)
     // S13: said from this agent's side, the person NAMED by the payload's names — no raw ids.
     const line = live.split("\n")[0]!;
-    expect(line).toContain(`Work item ${t1}: assigned to you — by human `);
+    expect(line).toContain(`Work item ${k1}: assigned to you — by human `);
+    expect(line).not.toContain(t1);
     expect(line).not.toContain(seed.userId);
     expect(line).not.toContain(seed.agentId);
     // The model has it: read_deliveries returns it and acks it (`model`).
@@ -418,20 +453,21 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-029 work items against the real A
     await p.close();
     const t2 = await humanTask("Rotate the API signing key");
     await human("PUT", `/api/threads/${t2}/work`, { assignee: seed.agentId });
+    const k2 = await keyOf(t2);
 
     // Resume: the same profile and session key — the event drains on the new connection.
     p = await plugin(dir, { EINWEAVE_SESSION_KEY: "work-s1", EINWEAVE_CHANNELS: CHANNEL });
     expect(await until(p.connected, 20_000), p.stderr()).toBe(true);
-    expect(await until(() => count(p, t2) > 0, 15_000), `no thread_event on resume:\n${p.notices.join("\n---\n")}`).toBe(true);
+    expect(await until(() => count(p, k2) > 0, 15_000), `no thread_event on resume:\n${p.notices.join("\n---\n")}`).toBe(true);
     await Bun.sleep(3000);
-    expect(count(p, t2)).toBe(1);
+    expect(count(p, k2)).toBe(1);
     // The one the model already had is not handed over again.
-    expect(count(p, t1)).toBe(0);
+    expect(count(p, k1)).toBe(0);
 
     // Taken AWAY (the person unassigns it — a takeover is unassign, then assign): the agent is
     // told, as previous_assignee, to stop.
     await human("PUT", `/api/threads/${t2}/work`, { assignee: null });
-    const away = `Work item ${t2}: unassigned from you`;
+    const away = `Work item ${k2}: unassigned from you`;
     expect(await until(() => p.notices.some((n) => n.includes(away)), 15_000), `no reassignment notice:\n${p.notices.join("\n---\n")}`).toBe(true);
     expect(p.notices.find((n) => n.includes(away))).toContain("STOP working on it");
   }, 90_000);

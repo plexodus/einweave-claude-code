@@ -29,6 +29,8 @@ if (!apiDir || !secret) throw new Error("usage: real-api-seed.ts <EINWEAVE_API_D
 
 // The API's config refuses to load without its rate-key secret (go-live P0 1c-ii).
 process.env.EINWEAVE_RATE_KEY_SECRET ??= "test-rate-key-secret-at-least-32-chars";
+// ...and, since go-live P0, without its auth secret: the one the api process is started with.
+process.env.BETTER_AUTH_SECRET ??= secret;
 const api: any = await import(join(apiDir, "src/db/index.ts"));
 await api.runMigrations();
 const q = (sql: string, params: unknown[] = []) => api.pool.query(sql, params);

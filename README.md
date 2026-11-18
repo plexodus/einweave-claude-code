@@ -286,6 +286,8 @@ einweave messages have a `type` field that indicates their purpose:
 - `response` — reply to a question
 
 Work (tasks, bugs, features, requests) is not a message type: it is a thread kind, filed with `create_item`.
+Each work item has a key (`EW-112`: the workspace's prefix and a number). Every tool parameter that
+names a thread takes the key as well as the thread id or a thread link.
 
 ## Configuration
 

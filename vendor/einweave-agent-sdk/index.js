@@ -20,6 +20,7 @@ import {
   isKeyAlreadyEnrolled,
   isOAuthError,
   joinStateSeq,
+  parseThreadRef,
   principalLabel,
   randomB64url,
   reconnectDelay,
@@ -27,7 +28,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-x1asrd29.js";
+} from "./index-kwqgqdrq.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -999,7 +1000,7 @@ function withDetails(base, details) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.34.0";
+var SDK_VERSION = "0.35.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1143,6 +1144,21 @@ function createApi(rt, client) {
     },
     threads: {
       list: (p) => req("GET", `/api/threads${qs({ channel: p.channel, q: p.query })}`),
+      keys: (p) => req("GET", `/api/threads/keys${qs({ workspace: p.workspace, keys: p.keys.join(",") })}`),
+      resolveRef: async (input, workspace) => {
+        const ws = workspace ?? await req("GET", "/api/me/workspace");
+        const ref = parseThreadRef(input, ws.links);
+        if (ref.kind === "id" || ref.kind === "url")
+          return { ok: true, threadId: ref.threadId, via: ref.kind };
+        if (ref.kind === "foreign_url")
+          return { ok: false, reason: "other_workspace" };
+        if (ref.kind === "invalid")
+          return { ok: false, reason: "invalid" };
+        if (!ws.workspaceId)
+          return { ok: false, reason: "not_found" };
+        const found = (await req("GET", `/api/threads/keys${qs({ workspace: ws.workspaceId, keys: ref.key })}`)).items[ref.key];
+        return found ? { ok: true, threadId: found.threadId, via: "key", key: found.key } : { ok: false, reason: "not_found" };
+      },
       takeable: (p = {}) => req("GET", `/api/threads${qs({ takeable: 1, channel: p.channel, limit: p.limit, cursor: p.cursor, include: p.include })}`),
       held: (p = {}) => req("GET", `/api/threads${qs({ held: 1, channel: p.channel, limit: p.limit, cursor: p.cursor })}`),
       hold: (threadId, body) => req("POST", `/api/threads/${encodeURIComponent(threadId)}/hold`, { body }),

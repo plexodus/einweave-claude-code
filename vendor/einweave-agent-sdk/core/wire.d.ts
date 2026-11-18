@@ -66,7 +66,7 @@ export declare const WS_CLOSE_CODES: {
     readonly tooManySessions: 4007;
     readonly policy: 4008;
     readonly tokenExpired: 4009;
-    readonly grantCheckFailed: 1011;
+    readonly unavailable: 1013;
     readonly membershipRevoked: 4004;
     readonly tenantSwitched: 4005;
     readonly goingAway: 1001;
@@ -78,7 +78,7 @@ export declare const WS_CLOSE_REASONS: {
     readonly invalidToken: "Invalid token";
     readonly authTimeout: "Authentication timeout";
     readonly tokenExpired: "token expired";
-    readonly grantCheckFailed: "grant check failed";
+    readonly unavailable: "try again later";
     readonly sessionEvicted: "session evicted";
     readonly deregistered: "deregistered";
     readonly workspaceArchived: "workspace archived";
@@ -133,6 +133,7 @@ declare const WIRE: {
         sessionKey: string;
     };
     released: {
+        key: string | null;
         title: string | null;
         threadId: string;
         channelId: string;
@@ -195,6 +196,7 @@ declare const WIRE: {
         label?: string | null | undefined;
         carried?: string[] | undefined;
         released?: {
+            key: string | null;
             title: string | null;
             threadId: string;
             channelId: string;
@@ -235,6 +237,7 @@ declare const WIRE: {
         };
     };
     for_you: {
+        key: string | null;
         id: string;
         title: string | null;
         threadId: string | null;
@@ -337,6 +340,7 @@ declare const WIRE: {
         work: {
             text: string;
         } | null;
+        key: string | null;
         id: string;
         status: string | null;
         threadId: string;
@@ -349,6 +353,9 @@ declare const WIRE: {
         actorId: string | null;
         occurredAt: string;
         names: {
+            [x: string]: string;
+        };
+        threads: {
             [x: string]: string;
         };
     };

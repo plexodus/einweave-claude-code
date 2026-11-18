@@ -103,6 +103,15 @@ function startStub(): Stub {
       if (url.pathname === "/api/channels") {
         return Response.json({ channels: [{ id: CHANNEL_ID, name: CHANNEL_NAME }] });
       }
+      // PR K: the workspace (its link templates) and the key lookup that `threads.resolveRef` reads.
+      if (url.pathname === "/api/me/workspace") {
+        return Response.json({ workspaceId: "ws-1", webUrl: "https://app.example", links: { thread: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}", message: "https://app.example/w/ws-1/c/{channelId}/t/{threadId}/m/{messageId}" }, itemPrefix: "EW", itemPrefixAliases: [] });
+      }
+      if (url.pathname === "/api/threads/keys") {
+        const asked = (url.searchParams.get("keys") ?? "").toUpperCase();
+        const items = asked === "EW-7" ? { "EW-7": { threadId: THREAD, key: "EW-7", title: "Bug", kind: "bug", status: "todo", channelId: CHANNEL_ID, archived: false } } : {};
+        return Response.json({ workspaceId: url.searchParams.get("workspace"), items });
+      }
       if (url.pathname === "/api/me/channels") {
         return st.myChannels === null ? new Response("no", { status: 404 }) : Response.json({ channels: st.myChannels });
       }
@@ -174,6 +183,7 @@ function startStub(): Stub {
           replies: page,
           thread: {
             id: THREAD, channelId: CHANNEL_ID, title: "Bug: threaded replies", kind: "question",
+            ...(st.work ? { key: "EW-7" } : { key: null }),
             status: answer ? "resolved" : "open", answerMessageId: answer, replyCount: st.replies.length,
             readSeq: cursor,
             ...(st.work ? { work: st.work } : {}),
@@ -767,5 +777,28 @@ describe("read_thread / list_threads", () => {
     stub.set({ threads: [{ id: THREAD, title: "Bug", status: "open", replyCount: 3, lastActivityAt: "x" }] });
     const body = await ok("list_threads", { channel_id: CHANNEL_ID });
     expect("unread" in body.threads[0]).toBe(false);
+  });
+  test("PR K: read_thread, mark_answer and list_threads take and show item keys; a bare id asks for no key lookup", async () => {
+    stub.set({ work: { text: "bug · todo" }, threads: [{ id: THREAD, key: "EW-7", title: "Bug", status: "open", replyCount: 1, lastActivityAt: "x" }, { id: "t2", key: null, title: "Chat", status: "open", replyCount: 0, lastActivityAt: "y" }] });
+    const byKey = await ok("read_thread", { thread_id: "ew-7", mark_read: false });
+    expect(byKey.thread).toMatchObject({ id: THREAD, key: "EW-7" });
+    expect(stub.calls).toContain(`GET /api/threads/keys?workspace=ws-1&keys=EW-7`);
+    expect(stub.calls.some((c) => c.startsWith(`GET /api/threads/${THREAD}/messages`))).toBe(true);
+
+    const before = stub.calls.length;
+    await ok("read_thread", { thread_id: THREAD, mark_read: false });
+    expect(stub.calls.slice(before).filter((c) => c.includes("/keys") || c.includes("/me/workspace"))).toEqual([]);
+
+    const missing = await callTool("read_thread", { thread_id: "EW-8" });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("thread_id: no work item EW-8");
+
+    await ok("mark_answer", { thread_id: "EW-7", message_id: "0190a000-0000-7000-8000-000000000013" });
+    expect(stub.calls).toContain(`PUT /api/threads/${THREAD}/answer`);
+
+    const listed = await ok("list_threads", { channel_id: CHANNEL_NAME });
+    expect(listed.threads.map((t: any) => [t.thread_id, t.key])).toEqual([[THREAD, "EW-7"], ["t2", undefined]]);
+    // The workspace a key is parsed against is asked once per agent, shared with the link templates.
+    expect(stub.calls.filter((c) => c === "GET /api/me/workspace")).toHaveLength(1);
   });
 });

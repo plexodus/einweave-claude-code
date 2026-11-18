@@ -13,6 +13,8 @@ export interface ForYouItem {
   channelId: string | null;
   why: string;
   title: string | null;
+  /** PR K: the work item's key (`EW-112`); null/absent when the thread never was a work item. */
+  key?: string | null;
 }
 
 /** Ids already told (a resume replays frames): bounded, oldest forgotten first. */
@@ -21,6 +23,8 @@ const TITLE_MAX = 80;
 
 function quoted(item: ForYouItem): string {
   const t = item.title ? stripControlChars(item.title).replace(/\s+/g, " ").trim().slice(0, TITLE_MAX) : "";
+  const key = item.key ? stripControlChars(item.key) : "";
+  if (key) return t ? `${key} "${t}"` : key;
   return t ? `"${t}"` : item.threadId ? `thread ${item.threadId}` : "";
 }
 

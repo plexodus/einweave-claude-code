@@ -27,7 +27,7 @@ var CLOSE_CODES = {
   tooManySessions: 4007,
   policy: 4008,
   tokenExpired: 4009,
-  grantCheckFailed: 1011,
+  unavailable: 1013,
   membershipRevoked: 4004,
   tenantSwitched: 4005,
   goingAway: 1001,
@@ -38,7 +38,7 @@ var CLOSE_REASONS = {
   invalidToken: "Invalid token",
   authTimeout: "Authentication timeout",
   tokenExpired: "token expired",
-  grantCheckFailed: "grant check failed",
+  unavailable: "try again later",
   sessionEvicted: "session evicted",
   deregistered: "deregistered",
   workspaceArchived: "workspace archived",
@@ -69,7 +69,7 @@ var CLOSE_CODE_OF = {
   invalidToken: CLOSE_CODES.invalidToken,
   authTimeout: CLOSE_CODES.authTimeout,
   tokenExpired: CLOSE_CODES.tokenExpired,
-  grantCheckFailed: CLOSE_CODES.grantCheckFailed,
+  unavailable: CLOSE_CODES.unavailable,
   sessionEvicted: CLOSE_CODES.policy,
   deregistered: CLOSE_CODES.deregisteredOrArchived,
   workspaceArchived: CLOSE_CODES.deregisteredOrArchived,
@@ -881,6 +881,104 @@ function threadUrl(links, t) {
 function messageUrl(links, m) {
   return expandLink(links.message, { channelId: m.channelId, threadId: m.threadId, id: m.id });
 }
+// ../protocol/src/v2/item-key.ts
+var ITEM_PREFIX_MIN = 2;
+var ITEM_PREFIX_MAX = 5;
+var ITEM_PREFIX_RE = /^[A-Z][A-Z0-9]{1,4}$/;
+var ITEM_PREFIX_FALLBACK = "WI";
+var ITEM_NUMBER_MAX_DIGITS = 9;
+var TYPED_PREFIX_RE = /^[A-Za-z][A-Za-z0-9]{1,4}$/;
+function validateItemPrefix(raw) {
+  const typed = raw.trim();
+  if (typed.length < ITEM_PREFIX_MIN)
+    return { ok: false, error: "too_short" };
+  if (typed.length > ITEM_PREFIX_MAX)
+    return { ok: false, error: "too_long" };
+  if (!TYPED_PREFIX_RE.test(typed))
+    return { ok: false, error: "invalid" };
+  return { ok: true, prefix: typed.toUpperCase() };
+}
+function deriveItemPrefix(name) {
+  const words = name.normalize("NFKD").replace(/\p{M}+/gu, "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  const shape2 = (s) => s.replace(/^[0-9]+/, "").slice(0, ITEM_PREFIX_MAX);
+  const joined = words.join("");
+  const first = shape2(words.length >= 2 ? words.map((w) => w[0]).join("") : joined.slice(0, 3));
+  if (first.length >= ITEM_PREFIX_MIN)
+    return first;
+  const second = shape2(joined).slice(0, 3);
+  return second.length >= ITEM_PREFIX_MIN ? second : ITEM_PREFIX_FALLBACK;
+}
+function formatItemKey(prefix, number) {
+  return `${prefix}-${number}`;
+}
+var WHOLE_KEY_RE = new RegExp(`^([A-Za-z][A-Za-z0-9]{${ITEM_PREFIX_MIN - 1},${ITEM_PREFIX_MAX - 1}})-([1-9][0-9]{0,${ITEM_NUMBER_MAX_DIGITS - 1}})$`);
+function parseItemKey(raw) {
+  const m = WHOLE_KEY_RE.exec(raw.trim());
+  return m ? { prefix: m[1].toUpperCase(), number: Number(m[2]) } : null;
+}
+var TOUCHES = /[\p{L}\p{M}\p{N}_\-/]/u;
+var charBefore = (text, i) => i <= 0 ? "" : /[\uDC00-\uDFFF]/.test(text[i - 1]) && i >= 2 ? text.slice(i - 2, i) : text[i - 1];
+var charAt = (text, i) => i >= text.length ? "" : String.fromCodePoint(text.codePointAt(i));
+function matchItemKeys(text, prefixes) {
+  const own = [...new Set(prefixes.map((p) => p.toUpperCase()).filter((p) => ITEM_PREFIX_RE.test(p)))];
+  if (own.length === 0)
+    return [];
+  const re = new RegExp(`(${own.join("|")})-([1-9][0-9]{0,${ITEM_NUMBER_MAX_DIGITS - 1}})`, "gi");
+  const out = [];
+  for (let m = re.exec(text);m; m = re.exec(text)) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (TOUCHES.test(charBefore(text, start)) || TOUCHES.test(charAt(text, end)))
+      continue;
+    const prefix = m[1].toUpperCase();
+    const number = Number(m[2]);
+    out.push({ start, end, text: m[0], prefix, number, key: formatItemKey(prefix, number) });
+  }
+  return out;
+}
+
+// src/core/item-key.ts
+var ITEM_PREFIX_MIN2 = ITEM_PREFIX_MIN;
+var ITEM_PREFIX_MAX2 = ITEM_PREFIX_MAX;
+var ITEM_PREFIX_FALLBACK2 = ITEM_PREFIX_FALLBACK;
+var validateItemPrefix2 = validateItemPrefix;
+var deriveItemPrefix2 = deriveItemPrefix;
+var formatItemKey2 = formatItemKey;
+var parseItemKey2 = parseItemKey;
+var matchItemKeys2 = matchItemKeys;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function templateMatcher(template) {
+  const slots = [];
+  const body = template.split(/(\{[A-Za-z0-9_]+\})/).map((part) => {
+    const slot = /^\{([A-Za-z0-9_]+)\}$/.exec(part);
+    if (!slot)
+      return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    slots.push(slot[1]);
+    return "([^/?#]+)";
+  }).join("");
+  return { re: new RegExp(`^${body}/?(?:[?#].*)?$`), slots };
+}
+function parseThreadRef(input, links) {
+  const text = input.trim();
+  if (!text)
+    return { kind: "invalid" };
+  if (UUID.test(text.toLowerCase()))
+    return { kind: "id", threadId: text.toLowerCase() };
+  if (/^https?:\/\//i.test(text)) {
+    for (const template of links ? [links.message, links.thread] : []) {
+      const { re, slots } = templateMatcher(template);
+      const m = re.exec(text);
+      if (!m)
+        continue;
+      const at = slots.indexOf("threadId");
+      const threadId = at < 0 ? "" : m[at + 1].toLowerCase();
+      return UUID.test(threadId) ? { kind: "url", threadId } : { kind: "invalid" };
+    }
+    return { kind: "foreign_url" };
+  }
+  const key = parseItemKey(text);
+  return key ? { kind: "key", key: formatItemKey(key.prefix, key.number) } : { kind: "invalid" };
+}
 // src/core/search.ts
 var SEARCH_MARK_START = "";
 var SEARCH_MARK_END = "";
@@ -1507,4 +1605,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, TURN_STATES2 as TURN_STATES, SESSION_DETAIL_KEYS2 as SESSION_DETAIL_KEYS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, principalLabel, expandLink, threadUrl, messageUrl, SEARCH_MARK_START, SEARCH_MARK_END, snippetParts, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, SUPERSEDE_ASSERTION_TYP, supersedeAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, TURN_STATES2 as TURN_STATES, SESSION_DETAIL_KEYS2 as SESSION_DETAIL_KEYS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, principalLabel, expandLink, threadUrl, messageUrl, ITEM_PREFIX_MIN2 as ITEM_PREFIX_MIN, ITEM_PREFIX_MAX2 as ITEM_PREFIX_MAX, ITEM_PREFIX_FALLBACK2 as ITEM_PREFIX_FALLBACK, validateItemPrefix2 as validateItemPrefix, deriveItemPrefix2 as deriveItemPrefix, formatItemKey2 as formatItemKey, parseItemKey2 as parseItemKey, matchItemKeys2 as matchItemKeys, parseThreadRef, SEARCH_MARK_START, SEARCH_MARK_END, snippetParts, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, SUPERSEDE_ASSERTION_TYP, supersedeAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };

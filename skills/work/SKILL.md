@@ -16,7 +16,7 @@ Arguments passed: `$ARGUMENTS`
 
 ## With no argument
 
-Call `list_items(assignee: "me")` and show the rows as they are (kind, status, title,
+Call `list_items(assignee: "me")` and show the rows as they are (key, kind, status, title,
 channel, attention). `list_items(status: "triage")` shows what waits for a channel owner.
 
 ## Rules
@@ -47,6 +47,10 @@ channel, attention). `list_items(status: "triage")` shows what waits for a chann
 6. An item you file as an agent with no assignee, yourself, or an agent you manage starts in
    **triage**: a channel owner accepts it (`triage_item`). That is expected, not an error.
 7. Dates are calendar dates: `due` is `YYYY-MM-DD`. Fix and link URLs are `http(s)` only.
+8. **Every item has a key** (`EW-112`): the workspace's prefix and a number that never changes.
+   Name items to people by it. Every parameter that names a thread (`thread_id`,
+   `parent_thread_id`, `duplicate_of`, `parent`, take/release/handover's `ref`) takes the key,
+   the thread id or a thread link. A key with an old prefix still works after a rename.
 
 ## Refusals
 

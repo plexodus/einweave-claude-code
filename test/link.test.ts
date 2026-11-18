@@ -99,6 +99,8 @@ describe("link/adapter — what reaches the model", () => {
         status: "todo",
         work: { text: "task · todo\nassignee: @alpha" },
         names: { "01992f6e-0000-7000-8000-0000000000aa": "@alpha", "01992f6e-0000-7000-8000-0000000000bb": "@jorgen" },
+        key: null,
+        threads: {},
       },
     };
     const ar: Entry = { kind: "action_request", id: "01992f6e-0000-7000-8000-0000000000a1", redelivery: false, action: { id: "01992f6e-0000-7000-8000-0000000000a1", action: "restart", params: { force: true } } };
@@ -131,6 +133,8 @@ describe("link/adapter — what reaches the model", () => {
         status: "todo",
         work: null,
         names: { "01992f6e-0000-7000-8000-0000000000bb": "@jorgen" },
+        key: null,
+        threads: {},
       },
     };
     await h.adapter.push!(te);

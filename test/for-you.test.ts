@@ -34,6 +34,12 @@ describe("for_you note", () => {
     expect(forYouNote([item({ why: "status" })])).toContain('status on "Renew the TLS wildcard"');
   });
 
+  test("PR K: a work item is named by its key, before its title; no key reads as before", () => {
+    expect(forYouNote([item({ key: "EW-12" })])).toContain('assigned EW-12 "Renew the TLS wildcard"');
+    expect(forYouNote([item({ key: "EW-12", title: null })])).toContain("assigned EW-12.");
+    expect(forYouNote([item({ key: null, title: null })])).toContain("assigned thread t1.");
+  });
+
   test("the box: told once, a replayed id is not told again, taking empties it", () => {
     const box = forYouBox();
     expect(box.take()).toBeNull();

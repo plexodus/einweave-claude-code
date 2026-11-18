@@ -10,7 +10,8 @@
  * another kind of list, N is past its end), nothing is acted on and the fresh list is shown
  * instead: a stale number is never guessed into a thread.
  */
-import type { TurnState } from "./vendor/einweave-agent-sdk/core/index.js";
+import { parseItemKey, type TurnState } from "./vendor/einweave-agent-sdk/core/index.js";
+import { resolveThreadArg, type ResolveRef } from "./thread-ref";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const SEARCH_PAGES = 4;
@@ -35,12 +36,12 @@ export type Ref =
   | { kind: "all" }
   | { kind: "index"; n: number }
   | { kind: "id"; id: string }
+  | { kind: "link"; text: string }
   | { kind: "search"; text: string };
 
 /**
- * `N` | a thread LINK (the web URL is `/w/<workspace>/c/<channel>/t/<thread>`: the id is the segment after
- * `/t/`, never "some uuid in the string" -- the workspace and channel ids are uuids too) | a bare thread id |
- * `all` | anything else = search words.
+ * `N` | a bare id | a LINK (read by the SDK's `threads.resolveRef` against this workspace's link templates,
+ * so another workspace's link is refused, never mined for a uuid) | `all` | anything else = search words.
  */
 export function parseRef(raw: unknown): Ref {
   if (raw === undefined || raw === null) return { kind: "none" };
@@ -50,8 +51,7 @@ export function parseRef(raw: unknown): Ref {
   const n = /^#?(\d{1,3})$/.exec(s);
   if (n) return { kind: "index", n: Number(n[1]) };
   if (new RegExp(`^${UUID}$`, "i").test(s)) return { kind: "id", id: s.toLowerCase() };
-  const link = new RegExp(`/t/(${UUID})(?:[/?#]|$)`, "i").exec(s);
-  if (link) return { kind: "id", id: link[1]!.toLowerCase() };
+  if (/^https?:\/\//i.test(s)) return { kind: "link", text: s };
   return { kind: "search", text: s };
 }
 
@@ -84,10 +84,12 @@ export interface HoldsDeps {
   onScope(scope: { mode: string; channelIds: string[] }): void;
   /** The scope the server last reported for this session, if any. */
   currentScope(): { mode: string; channelIds: string[] } | null;
+  /** PR K: `api.threads.resolveRef` -- a typed link or item key (`EW-112`) to its thread. */
+  resolveThread: ResolveRef;
 }
 
 export interface TakeableRow {
-  thread: { id: string; title: string; lastActivityAt?: string };
+  thread: { id: string; title: string; lastActivityAt?: string; /** PR K: null/absent = never a work item. */ key?: string | null };
   channel: { id: string; name: string };
   hold: { state: "unheld" | "parked" | "held"; holder: { id: string; label: string | null; online: boolean; parked: boolean } | null };
   why: "addressed" | "participant" | "channel";
@@ -104,6 +106,8 @@ export interface HeldRow {
     id: string;
     title: string;
     lastActivityAt?: string;
+    /** PR K: the work item key; null/absent = never a work item. */
+    key?: string | null;
     /** This session's message deliveries in the thread its model has not confirmed. */
     unseenByModel?: number;
     last?: { sender: { name: string | null; handle: string | null } } | null;
@@ -147,6 +151,9 @@ interface SessionRow {
 
 const nameOf = (label: string | null | undefined, id: string): string => label || `session ${id.slice(-4)}`;
 
+/** A thread as a list names it: its item key first when it has one (`EW-112 Fix login`), then the title. */
+const threadName = (t: { title: string; key?: string | null }, fallback = ""): string => [t.key, t.title || fallback].filter(Boolean).join(" ");
+
 function describeTakeable(r: TakeableRow): string {
   const h = r.hold;
   const state =
@@ -155,7 +162,7 @@ function describeTakeable(r: TakeableRow): string {
       : h.state === "parked"
         ? `parked (${nameOf(h.holder?.label, h.holder?.id ?? "")} is offline)`
         : `held by ${nameOf(h.holder?.label, h.holder?.id ?? "")} (online)`;
-  return `#${r.channel.name} · ${r.thread.title} — ${state}, ${r.why === "addressed" ? "addressed to you" : r.why === "participant" ? "you took part" : "new posts in a channel you follow"}${r.joinRequired ? ` -- join #${r.channel.name} to take it` : ""}`;
+  return `#${r.channel.name} · ${threadName(r.thread)} — ${state}, ${r.why === "addressed" ? "addressed to you" : r.why === "participant" ? "you took part" : "new posts in a channel you follow"}${r.joinRequired ? ` -- join #${r.channel.name} to take it` : ""}`;
 }
 
 function errorText(res: ApiResult): string {
@@ -191,7 +198,7 @@ export function createHolds(deps: HoldsDeps) {
   /** Show the takeable list (and remember it: the numbers refer to THIS list from now on). */
   async function showTakeable(p: { channel?: string; limit?: number; cursor?: string; lead?: string } = {}): Promise<string> {
     const { rows, next } = await fetchTakeable(p);
-    memory = { kind: "takeable", items: rows.map((r) => ({ id: r.thread.id, label: r.thread.title })) };
+    memory = { kind: "takeable", items: rows.map((r) => ({ id: r.thread.id, label: threadName(r.thread) })) };
     const lead = p.lead ? `${p.lead}\n\n` : "";
     if (rows.length === 0) return `${lead}No threads to take: nothing open is addressed to this agent, has it taking part or has new posts in a channel it follows, outside what this session already holds.`;
     return (
@@ -225,7 +232,7 @@ export function createHolds(deps: HoldsDeps) {
   }
 
   async function heldNow(): Promise<ListItem[]> {
-    return (await fetchHeld()).map((r) => ({ id: r.thread.id, label: `#${r.channel.name} · ${r.thread.title || r.thread.id}` }));
+    return (await fetchHeld()).map((r) => ({ id: r.thread.id, label: `#${r.channel.name} · ${threadName(r.thread, r.thread.id)}` }));
   }
 
   /** Each thread's title (null when it has none or cannot be read). */
@@ -288,6 +295,35 @@ export function createHolds(deps: HoldsDeps) {
     return `${found.length} threads match "${text}" -- pick one (${verb} N, or its id):\n${numbered(found.map((i) => i.label))}`;
   }
 
+  /**
+   * PR K: words that ARE an item key (`EW-112`, any case) name that one item -- resolved by the server, so a
+   * thread outside the shown list is found too. Null when the text is no key, or names no item this agent can
+   * read: the caller then treats it as words from a title (`UTF-8` still searches).
+   */
+  async function byKey(text: string): Promise<ListItem | null> {
+    if (!parseItemKey(text.trim())) return null;
+    try {
+      const r = await deps.resolveThread(text.trim());
+      return r.ok ? { id: r.threadId, label: r.key ?? text.trim().toUpperCase() } : null;
+    } catch {
+      return null; // a failed lookup (429, offline) must not cost the title search
+    }
+  }
+
+  /**
+   * The one thread a ref NAMES -- an id, a link, an item key -- or null for a number or title words. A link
+   * that is no thread link of this workspace is refused here (`ref: ... is not a thread link ...`).
+   */
+  async function named(ref: Ref): Promise<ListItem | null> {
+    if (ref.kind === "id" || ref.kind === "link") return await pinned(ref);
+    if (ref.kind === "search") return await byKey(ref.text);
+    return null;
+  }
+  async function pinned(ref: { kind: "id"; id: string } | { kind: "link"; text: string }): Promise<ListItem> {
+    const id = ref.kind === "id" ? ref.id : await resolveThreadArg(ref.text, "ref", deps.resolveThread);
+    return { id, label: id };
+  }
+
   async function searchTakeable(text: string): Promise<ListItem[]> {
     const found: ListItem[] = [];
     let cursor: string | undefined;
@@ -295,7 +331,7 @@ export function createHolds(deps: HoldsDeps) {
       const { rows, next } = await fetchTakeable({ limit: SEARCH_PAGE_SIZE, ...(cursor ? { cursor } : {}) });
       const words = text.toLowerCase().split(/\s+/).filter(Boolean);
       for (const r of rows) {
-        const hay = `${r.thread.title} ${r.channel.name}`.toLowerCase();
+        const hay = `${threadName(r.thread)} ${r.channel.name}`.toLowerCase();
         if (words.every((w) => hay.includes(w))) found.push({ id: r.thread.id, label: describeTakeable(r) });
       }
       if (!next) break;
@@ -358,11 +394,12 @@ export function createHolds(deps: HoldsDeps) {
       if (ref.kind === "none" || ref.kind === "all") {
         return await showTakeable({ ...(p.channel ? { channel: p.channel } : {}), ...(p.cursor ? { cursor: p.cursor } : {}) });
       }
-      if (p.confirm === true && !(ref.kind === "id" && ref.id === pendingConfirm)) {
+      const one = await named(ref);
+      if (p.confirm === true && !(one && one.id === pendingConfirm)) {
         return (
           `confirm: true only answers the question the tool asked about a specific thread` +
           (pendingConfirm ? ` (${pendingConfirm})` : ` (none is pending)`) +
-          `. Call take with that thread id as ref and confirm: true; a number or words cannot carry a confirmation. Nothing was taken.`
+          `. Call take with that thread (its id, link or item key) as ref and confirm: true; a number or words cannot carry a confirmation. Nothing was taken.`
         );
       }
       let target: ListItem;
@@ -370,13 +407,15 @@ export function createHolds(deps: HoldsDeps) {
         const item = fromMemory("takeable", ref.n);
         if (!item) return await showTakeable({ lead: `There is no ${ref.n} in the list this session last showed (none shown, another kind of list, or it is shorter). Nothing was taken.` });
         target = item;
-      } else if (ref.kind === "id") {
-        target = { id: ref.id, label: ref.id };
-      } else {
+      } else if (one) {
+        target = one;
+      } else if (ref.kind === "search") {
         const found = await searchTakeable(ref.text);
         if (found.length === 0) return await showTakeable({ lead: `No takeable thread matches "${ref.text}". Nothing was taken.` });
         if (found.length > 1) return showMatches("takeable", found, ref.text, "take");
         target = found[0]!;
+      } else {
+        return await showTakeable({}); // unreachable: `named` answers every id and link
       }
       const res = await deps.api("POST", `/api/threads/${encodeURIComponent(target.id)}/hold`, { action: "take", ...(p.confirm === true ? { confirm: true } : {}) });
       if (res.status === 409 && res.body?.error === "holder_online") {
@@ -420,7 +459,9 @@ export function createHolds(deps: HoldsDeps) {
         if (!item) return await showHeld(`There is no ${ref.n} in the list this session last showed (none shown, another kind of list, or it is shorter). Nothing was released.`);
         return await releaseOne(item);
       }
-      if (ref.kind === "id") return await releaseOne({ id: ref.id, label: ref.id });
+      const one = await named(ref);
+      if (one) return await releaseOne(one);
+      if (ref.kind !== "search") return await showHeld();
       const held = await heldNow();
       const found = matches(held, ref.text);
       if (found.length === 0) return await showHeld(`This session holds no thread matching "${ref.text}". Nothing was released.`);
@@ -446,10 +487,11 @@ export function createHolds(deps: HoldsDeps) {
       } else if (ref.kind === "index") {
         thread = fromMemory("held", ref.n);
         if (!thread) return await showHeld(`There is no ${ref.n} in the list this session last showed (none shown, another kind of list, or it is shorter). Nothing was handed over.`, "handover");
-      } else if (ref.kind === "id") {
-        thread = { id: ref.id, label: ref.id };
+      } else if (ref.kind === "id" || ref.kind === "link") {
+        thread = await pinned(ref);
       } else if (ref.kind === "search") {
-        const found = matches(await heldNow(), ref.text);
+        const keyed = await byKey(ref.text);
+        const found = keyed ? [keyed] : matches(await heldNow(), ref.text);
         if (found.length === 0) return await showHeld(`This session holds no thread matching "${ref.text}". Nothing was handed over.`, "handover");
         if (found.length > 1) return showMatches("held", found, ref.text, "handover");
         thread = found[0]!;
