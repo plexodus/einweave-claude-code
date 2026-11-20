@@ -5,6 +5,7 @@ import {
   PROTOCOL_VERSION,
   SESSION_DETAIL_KEYS,
   TURN_STATES,
+  TURN_THREADS_KEPT,
   TokenClient,
   WS_CLOSE_REASONS,
   apiOrigin,
@@ -28,7 +29,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-kwqgqdrq.js";
+} from "./index-gbawynqc.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -264,6 +265,11 @@ class Session {
   ownMessageIds = new Set;
   acks = { model: new Set, dismissed: new Set };
   turnState = null;
+  turnSince = 0;
+  turnThreadList = [];
+  turnClaims = false;
+  turnSent = null;
+  turnScheduled = false;
   pushQueue = [];
   pushing = false;
   statusChannel;
@@ -353,12 +359,61 @@ class Session {
     if (state === this.turnState)
       return;
     this.turnState = state;
-    this.flushTurn();
+    this.turnSince = this.rt.clock.now();
+    if (state === "idle")
+      this.turnThreadList = [];
+    this.scheduleTurn();
+  }
+  turnThreads(ids) {
+    const next = [];
+    for (const id of ids) {
+      if (typeof id !== "string" || id.length === 0 || next.includes(id))
+        continue;
+      next.push(id);
+      if (next.length === TURN_THREADS_KEPT)
+        break;
+    }
+    this.turnClaims = true;
+    this.turnThreadList = next;
+    this.scheduleTurn();
+  }
+  addTurnThread(id) {
+    this.turnClaims = true;
+    if (typeof id !== "string" || id.length === 0 || this.turnThreadList.includes(id))
+      return;
+    this.turnThreadList = [id, ...this.turnThreadList].slice(0, TURN_THREADS_KEPT);
+    this.scheduleTurn();
+  }
+  removeTurnThread(id) {
+    this.turnClaims = true;
+    this.dropTurnThread(id);
+  }
+  dropTurnThread(id) {
+    if (!this.turnThreadList.includes(id))
+      return;
+    this.turnThreadList = this.turnThreadList.filter((t) => t !== id);
+    this.scheduleTurn();
+  }
+  scheduleTurn() {
+    if (this.turnScheduled)
+      return;
+    this.turnScheduled = true;
+    Promise.resolve().then(() => {
+      this.turnScheduled = false;
+      this.flushTurn();
+    });
   }
   flushTurn() {
     if (this.authenticatedAt === null || this.turnState === null)
       return;
-    this.sendJson({ type: "turn", state: this.turnState });
+    const state = this.turnState;
+    const threads = this.turnClaims ? state === "idle" ? [] : [...this.turnThreadList] : undefined;
+    const key = JSON.stringify([state, this.turnSince, threads ?? null]);
+    if (key === this.turnSent)
+      return;
+    const stateAgeMs = Math.max(0, this.rt.clock.now() - this.turnSince);
+    if (this.sendJson({ type: "turn", state, ...threads ? { threads } : {}, stateAgeMs }))
+      this.turnSent = key;
   }
   setDetails(details) {
     const next = pickDetails(details);
@@ -373,6 +428,7 @@ class Session {
       return;
     this.draining = true;
     this.flushAcks();
+    this.flushTurn();
     this.clearReconnectTimer();
     this.clearWatchdog();
     this.clearStandbyRetry();
@@ -794,6 +850,7 @@ class Session {
     const env = parsed;
     if (env.v !== undefined && env.v !== PROTOCOL_VERSION || typeof env.type !== "string")
       return;
+    const fresh = typeof env.seq !== "number" || env.seq > this.seq.last;
     if (typeof env.seq === "number" && Number.isSafeInteger(env.seq))
       this.noteSeq(env.seq);
     if (typeof env.payload !== "object" || env.payload === null)
@@ -836,8 +893,13 @@ class Session {
         return;
       }
       case "hold_update":
-        if (typeof env.payload.threadId === "string")
-          this.emitStatus({ kind: "hold_update", update: env.payload });
+        if (typeof env.payload.threadId !== "string")
+          return;
+        if (fresh && this.myContextId !== null && env.payload.holder !== null && env.payload.holder.id !== this.myContextId) {
+          this.dropTurnThread(env.payload.threadId);
+          this.emitStatus({ kind: "turn_thread_dropped", threadId: env.payload.threadId });
+        }
+        this.emitStatus({ kind: "hold_update", update: env.payload });
         return;
       case "for_you":
         if (typeof env.payload.id === "string")
@@ -882,6 +944,7 @@ class Session {
       ...Array.isArray(p.notCarried) ? { notCarried: p.notCarried } : {}
     });
     this.flushAcks();
+    this.turnSent = null;
     this.flushTurn();
     this.armReconcile();
   }
@@ -1000,7 +1063,7 @@ function withDetails(base, details) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.35.0";
+var SDK_VERSION = "0.38.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1148,8 +1211,10 @@ function createApi(rt, client) {
       resolveRef: async (input, workspace) => {
         const ws = workspace ?? await req("GET", "/api/me/workspace");
         const ref = parseThreadRef(input, ws.links);
-        if (ref.kind === "id" || ref.kind === "url")
-          return { ok: true, threadId: ref.threadId, via: ref.kind };
+        if (ref.kind === "id")
+          return { ok: true, threadId: ref.threadId, via: "id" };
+        if (ref.kind === "url")
+          return { ok: true, threadId: ref.threadId, via: "url", ...ref.channelId ? { channelId: ref.channelId } : {} };
         if (ref.kind === "foreign_url")
           return { ok: false, reason: "other_workspace" };
         if (ref.kind === "invalid")
@@ -1157,7 +1222,7 @@ function createApi(rt, client) {
         if (!ws.workspaceId)
           return { ok: false, reason: "not_found" };
         const found = (await req("GET", `/api/threads/keys${qs({ workspace: ws.workspaceId, keys: ref.key })}`)).items[ref.key];
-        return found ? { ok: true, threadId: found.threadId, via: "key", key: found.key } : { ok: false, reason: "not_found" };
+        return found ? { ok: true, threadId: found.threadId, via: "key", key: found.key, channelId: found.channelId } : { ok: false, reason: "not_found" };
       },
       takeable: (p = {}) => req("GET", `/api/threads${qs({ takeable: 1, channel: p.channel, limit: p.limit, cursor: p.cursor, include: p.include })}`),
       held: (p = {}) => req("GET", `/api/threads${qs({ held: 1, channel: p.channel, limit: p.limit, cursor: p.cursor })}`),

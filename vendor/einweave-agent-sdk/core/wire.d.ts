@@ -46,6 +46,7 @@ export type AckHow = AckFrame["how"];
  */
 export declare const TURN_STATES: readonly ["working", "needs_you", "idle"];
 export type TurnState = (typeof TURN_STATES)[number];
+export declare const TURN_THREADS_KEPT = 32;
 /** The `sessionInfo` fields `session.setDetails` replaces (the protocol's `SessionDetails`). */
 export declare const SESSION_DETAIL_KEYS: readonly ["repoName", "worktreeName", "branchName", "headShortSha"];
 /** The server's cap on ids in one ack frame; more are sent in chunks. */

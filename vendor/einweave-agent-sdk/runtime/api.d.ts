@@ -83,12 +83,15 @@ export interface ItemKeysResult {
  * What `threads.resolveRef` answers: the thread a typed reference names, or why none.
  * `other_workspace`: a link that is not this workspace's. `not_found`: a key that names nothing the
  * caller may read (which of "unknown" and "not yours to read" the server never says).
+ * `channelId`: the thread's channel when the reference names one: a key (the server's lookup) or a link
+ * whose template has a `{channelId}` slot. Absent for a bare id, which carries no channel.
  */
 export type ResolvedThreadRef = {
     ok: true;
     threadId: string;
     via: "id" | "url" | "key";
     key?: string;
+    channelId?: string;
 } | {
     ok: false;
     reason: "invalid" | "other_workspace" | "not_found";

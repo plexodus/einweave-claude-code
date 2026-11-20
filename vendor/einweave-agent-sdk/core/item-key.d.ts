@@ -48,10 +48,11 @@ export type ThreadRef =
     kind: "id";
     threadId: string;
 }
-/** A thread or message link of THIS workspace (the server's own templates). */
+/** A thread or message link of THIS workspace (the server's own templates), with the channel its `{channelId}` slot holds. */
  | {
     kind: "url";
     threadId: string;
+    channelId?: string;
 }
 /** A work item key, upper-cased — resolve it with `threads.keys`. */
  | {
