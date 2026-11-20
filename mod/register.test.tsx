@@ -2572,41 +2572,73 @@ test('the keyboard reaches the Hand over picker: its windows are stops after the
 })
 
 /**
- * The window's turn, told to the plugin's server (`POST /turn/<state>` on the UI socket) from Claude Code's own
- * lifecycle. MUTATIONS (seen red): report a subagent's turn → an extra post; drop the dedupe → `working` twice;
- * report only before the call (not after it resolves) → `needs_you` held to the turn's end.
+ * RFC-038 D3: the loops' turns, told to the plugin's server IN ORDER (`POST /turn`, one JSON post each, the UI
+ * socket) from Claude Code's own lifecycle. The rule itself is tested in test/mod-turn-loops.test.ts; this pins
+ * the wiring: the seed before the first snapshot, an entry joining only once it ENTERED, the step moving it into
+ * the turn, this plugin's tool calls posted with their loop and turn, a dialog's wait, one epoch, rising seq.
  */
-test('turn state: a main-loop turn posts working, a permission dialog needs_you, its tool working, the end idle; a subagent turn and a repeat post nothing', async ($, on) => {
-  const posted: string[] = []
+test('turn: seeded loops first, an entered entry pending then read at the step, our tool calls posted, a dialog needs_you, a blocked prompt joins nothing', async ($, on) => {
+  const posts: any[] = []
   on('http.fetch', (_$, e) => {
-    if (e.url.startsWith('http://einweave/turn/')) {
-      posted.push(`${e.init?.method} ${e.url.slice('http://einweave'.length)} ${e.init?.socketPath}`)
+    if (e.url === 'http://einweave/turn') {
+      posts.push({ ...JSON.parse(String(e.init?.body)), socket: e.init?.socketPath })
       return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
     }
     return { value: { status: 404, ok: false, headers: {}, text: '{}' } }
   })
+  // The list answers only once the socket is known: a snapshot sent before the seed would show.
+  let listed!: () => void
+  const listGate = new Promise<void>(r => (listed = r))
+  on('agent.list', async () => {
+    await listGate
+    return { value: [{ id: 'sub-1', status: 'running', model: 'haiku' }, { id: 'mate', status: 'running' }] as never }
+  })
   // The engine beneath the plugin: each event's own result.
+  on('prompt.submit', (_$, e) => (e.text.includes('BLOCK') ? { drop: 'blocked by a hook' } : { text: e.text }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [] } as never
+  })
   on('turn.complete', () => ({ text: '' }))
   on('classic.Notification', () => ({}) as never)
-  // As in a session: the permission dialog opens INSIDE the call (core beneath every tool.call hook), and the
-  // approved tool runs before the call resolves; nothing tells a hook when the person answered.
   on('tool.call', async (_$, e) => {
     if (e.tool === 'Bash') await $.classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' })
     return { result: 'ran' } as never
   })
   const { clock } = engine(on, { polled: { ...SNAP, uiSocket: '/tmp/ew/u1.sock' } })
   await start($, clock)
+  await clock.settle()
+  await clock.advance(60_000) // a poll tick: it would retry a snapshot that found no socket
+  listed()
+  await clock.settle()
+  const tag = (id: string) => `<channel source="plugin:einweave:einweave" channel_id="c1" message_id="${id}" user="x">\nhi\n</channel>`
+  await $.prompt.submit({ text: tag('BLOCK1') + ' BLOCK', wait: false, origin: { kind: 'channel', server: 'plugin:einweave:einweave' } } as never)
+  await $.prompt.submit({ text: tag('e1'), wait: false, origin: { kind: 'channel', server: 'plugin:einweave:einweave' } } as never)
+  await clock.settle()
   await $.turn.start({ text: 'go', turnId: 'm1' })
-  await $.turn.start({ text: '', turnId: 'a1', agentId: 'sub-1' })
-  await $.turn.start({ text: 'again', turnId: 'm2' })
-  // A subagent's run ends mid-turn: the window is still working.
-  await $.turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 'a1', agentId: 'sub-1', reason: 'answer' })
-  // The turn's LAST tool asks: no later call ends the wait, so the asked call resolving must (live 2026-11-05).
-  await $.tool.call({ tool: 'Bash', command: 'ls' } as never).catch(() => {})
+  for await (const _ of $.turn.step({ turnId: 'm1', index: 0, model: 'm', messageCount: 1 } as never)) void _
+  await $.tool.call({ tool: 'mcp__plugin_einweave_einweave__reply', tool_use_id: 'tu1', text: 'x' } as never).catch(() => {})
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu2', command: 'ls' } as never).catch(() => {})
   await clock.settle()
-  // Esc: the turn ends aborted (a Stop hook never hears this).
-  await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 'm2', reason: 'aborted' })
+  await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 'm1', reason: 'aborted' })
   await clock.settle()
-  expect(posted).toEqual(['POST /turn/working /tmp/ew/u1.sock', 'POST /turn/needs_you /tmp/ew/u1.sock', 'POST /turn/working /tmp/ew/u1.sock', 'POST /turn/idle /tmp/ew/u1.sock'])
+
+  expect(new Set(posts.map(p => p.epoch)).size, 'one epoch').toBe(1)
+  // Each attempt takes the next seq (one that found no socket yet was never received): strictly rising.
+  expect(posts.every((p, i) => i === 0 || p.seq > posts[i - 1].seq), 'seq rises').toBe(true)
+  expect(posts.every(p => p.socket === '/tmp/ew/u1.sock')).toBe(true)
+  const snaps = posts.filter(p => p.kind === 'snapshot')
+  expect(snaps[0].loops, 'the seed: a running agent with a model; a pane teammate (no model) runs no loop').toEqual([{ agent: 'sub-1', turn: null, inTurn: [], pending: [] }])
+  expect(snaps[0].agents).toEqual(['sub-1', 'mate'])
+  const all = JSON.stringify(posts)
+  expect(all.includes('BLOCK1'), 'a blocked prompt joins nothing').toBe(false)
+  expect(snaps.some(p => JSON.stringify(p.waiting) === JSON.stringify([{ agent: 'main', pending: [{ id: 'e1' }] }])), 'entered while idle: waiting').toBe(true)
+  const main = (p: any) => p.loops.find((l: any) => l.agent === 'main')
+  expect(snaps.some(p => main(p)?.turn === 'm1' && main(p).pending.length === 1 && main(p).inTurn.length === 0), 'turn started: still pending').toBe(true)
+  expect(snaps.some(p => JSON.stringify(main(p)?.inTurn) === JSON.stringify([{ id: 'e1' }])), 'the step: read').toBe(true)
+  expect(posts.filter(p => p.kind === 'tool'), 'only our tools').toEqual([{ kind: 'tool', toolUseId: 'tu1', agent: 'main', turn: 'm1', epoch: posts[0].epoch, seq: expect.any(Number), socket: '/tmp/ew/u1.sock' }])
+  expect(snaps.some(p => p.state === 'needs_you'), 'the dialog').toBe(true)
+  const last = snaps.at(-1)
+  expect(last.state, 'main aborted; the seeded subagent works on').toBe('working')
+  expect(last.loops.map((l: any) => l.agent)).toEqual(['sub-1'])
 })

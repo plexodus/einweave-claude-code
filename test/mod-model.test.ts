@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   ago, applySnapshot, arrowTarget, bindKeys, chordProblem, paneChord, unbindKeys, BAND_GRACE_MS, CHANNEL_CAP, claudeCodeTooOld, MIN_CLAUDE_CODE, channelMeta, channelRows, channelsView, channelView, closeTab, EMPTY_TABS, EMPTY_VIEW, searchText, applySuggestion, fitSnippet, oneLine, focusTarget, refocusTarget, fold, fromTool, holdBadge,
   inbox, OLD_MS, PALETTE, quietFor, recordOf, indicator, needsBand, openTab, parseCommand, parseLine, scopeText, shownTab, STALE_MS, stateLine, statusSummary, takeOutcome, threadView, waitingIn,
-  nextTurn, pickerRows,
+  pickerRows,
   landOff, olderCursor, POST_CAP, postKey, refreshed, scrollBy, windowOff, stack, revealOff, leadOf, hidden, cueText, SENDER_HUES, senderColor, tabRows, tabWidth, threadLayout, withOlder,
 } from "../mod/model";
 import type { ThreadMessage, ThreadView } from "../types";
@@ -757,23 +757,3 @@ describe("pickerRows", () => {
 });
 
 /** MUTATIONS (seen red): `tool` ends idle → a background subagent's call flips an idle window to working; drop idle_prompt → a missed end never settles. */
-describe("nextTurn", () => {
-  test("a turn: working; a dialog or a tool that waits: needs you; the next tool call: working; the end (Esc too): idle", () => {
-    expect(nextTurn(null, { kind: "start" })).toBe("working");
-    expect(nextTurn("working", { kind: "notification", type: "permission_prompt" })).toBe("needs_you");
-    expect(nextTurn("working", { kind: "notification", type: "elicitation_dialog" })).toBe("needs_you");
-    expect(nextTurn("needs_you", { kind: "tool" })).toBe("working");
-    expect(nextTurn("working", { kind: "ask" })).toBe("needs_you");
-    expect(nextTurn("working", { kind: "end" })).toBe("idle");
-  });
-
-  test("no change where nothing changed: a tool mid-turn, an idle window's background tool, other notifications", () => {
-    expect(nextTurn("working", { kind: "tool" })).toBeNull();
-    expect(nextTurn("idle", { kind: "tool" })).toBeNull();
-    expect(nextTurn("working", { kind: "notification", type: "auth_success" })).toBeNull();
-  });
-
-  test("idle_prompt settles idle when a turn's end was missed", () => {
-    expect(nextTurn("working", { kind: "notification", type: "idle_prompt" })).toBe("idle");
-  });
-});

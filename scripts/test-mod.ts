@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 const dir = mkdtempSync(join(tmpdir(), "einweave-mod-"));
 try {
-  for (const part of [".claude-plugin", "hooks/hooks.json", "mod", "types"]) cpSync(join(root, part), join(dir, part), { recursive: true });
+  for (const part of [".claude-plugin", "hooks/hooks.json", "mod", "types", "delivery/tags.ts"]) cpSync(join(root, part), join(dir, part), { recursive: true });
   const run = Bun.spawnSync(["claude", "plugin", "test", dir], { stdout: "inherit", stderr: "inherit" });
   process.exitCode = run.exitCode ?? 1;
 } finally {

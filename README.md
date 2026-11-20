@@ -230,6 +230,11 @@ turn and without tokens:
     it read nor counts as delivered to Claude.
 
   In the VS Code panel the pane is where all of this shows.
+- **Which threads this window is working on.** The mod follows Claude Code's own turns (the main
+  conversation and each subagent) and tells einweave which threads the current work serves: one whose
+  message the turn is reading, one a tool call acted on (a reply, an item change, a take), and one a
+  subagent was handed, so einweave can show "working on this" on exactly those threads rather than on
+  every thread the window holds. Releasing or handing over a thread drops it at once.
 - **`/einweave <verb>`** runs one action at once, even while Claude works: `status`, `connect`,
   `disconnect`, `rename <name>`, `scope [#a #b|all|none]`, `held`, `release [N|all]`,
   `handover [N] [session]`, `take [N|id]`, `search <words>`.
