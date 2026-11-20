@@ -43,9 +43,8 @@ const ROUTES: UiRoutes = {
     if (name !== "take") throw new UiHttpError(403, `${name} is not run from the pane`);
     return { content: [{ type: "text", text: `took ${String(args.ref)}` }] };
   },
-  turn: async (state) => {
-    if (state === "busy") throw new UiHttpError(400, "not a turn state: busy");
-    seen.push(`turn ${state}`);
+  turn: async (post) => {
+    seen.push(`turn ${JSON.stringify(post)}`);
     return { ok: true };
   },
 };
@@ -113,16 +112,18 @@ describe("ui server", () => {
     expect((await get(path, "/search/x?q=w")).status).toBe(404);
   });
 
-  test("POST /turn/<state> reports the window's turn; GET there is 405, a bad state 400", async () => {
+  test("POST /turn takes one JSON post of the mod's turn sender; GET is 405, not JSON 400, too large 413, a path after it 404", async () => {
     const path = join(privateDir(), "u1.sock");
     open(path);
-    const res = await get(path, "/turn/needs_you", { method: "POST" });
+    const post = { kind: "snapshot", epoch: "e", seq: 1, state: "working", loops: [], waiting: [], agents: [] };
+    const res = await get(path, "/turn", { method: "POST", body: JSON.stringify(post) });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    expect(seen.at(-1)).toBe("turn needs_you");
-    expect((await get(path, "/turn/working")).status).toBe(405);
-    expect((await get(path, "/turn/busy", { method: "POST" })).status).toBe(400);
-    expect((await get(path, "/turn", { method: "POST" })).status).toBe(404);
+    expect(seen.at(-1)).toBe(`turn ${JSON.stringify(post)}`);
+    expect((await get(path, "/turn")).status).toBe(405);
+    expect((await get(path, "/turn", { method: "POST", body: "{" })).status).toBe(400);
+    expect((await get(path, "/turn", { method: "POST", body: JSON.stringify({ pad: "x".repeat(70_000) }) })).status).toBe(413);
+    expect((await get(path, "/turn/working", { method: "POST" })).status).toBe(404);
   });
 
   test("a failing route answers { error } with its status (a plain throw is 500); the server stays up", async () => {

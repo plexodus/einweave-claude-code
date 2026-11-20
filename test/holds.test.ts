@@ -325,6 +325,18 @@ describe("release and handover", () => {
     expect(f.calls.at(-1)).toEqual({ method: "POST", path: `/api/threads/${T2}/hold`, body: { action: "handover", to: S2 } });
   });
 
+  test("RFC-038: a release or handover the server took tells workLeft the thread; a refused one does not", async () => {
+    const left: string[] = [];
+    const f = fake(routes, { workLeft: (t) => left.push(t) });
+    await f.holds.release({ ref: T2 });
+    await f.holds.handover({ ref: T1, to: "cd34" });
+    expect(left).toEqual([T2, T1]);
+    const refused = fake((c) => (c.method === "POST" ? { status: 409, body: { error: "nope" } } : routes(c)), { workLeft: (t) => left.push(t) });
+    await refused.holds.release({ ref: T1 }).catch(() => {});
+    await refused.holds.handover({ ref: T1, to: "cd34" }).catch(() => {});
+    expect(left).toEqual([T2, T1]);
+  });
+
   test("PR K: handover names the thread by its item key", async () => {
     const f = fake(routes, { resolveThread: async (input) => (/^ew-2$/i.test(input) ? { ok: true, threadId: T2, via: "key", key: "EW-2" } : { ok: false, reason: "not_found" }) });
     const done = await f.holds.handover({ ref: "ew-2", to: "cd34" });

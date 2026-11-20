@@ -371,7 +371,11 @@ export const WORK_TOOLS = [
 export const WORK_TOOL_NAMES: ReadonlySet<string> = new Set(WORK_TOOLS.map((t) => t.name));
 
 /** The text a work tool answers. Throws a refusal the model can act on. */
-export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Promise<string> {
+/**
+ * One work tool. `touched` collects the thread each WRITE acted on once the server took it (RFC-038 D3: the
+ * calling turn works on it); reads add nothing.
+ */
+export async function callWorkTool(name: string, args: Args, deps: WorkDeps, touched: string[] = []): Promise<string> {
   switch (name) {
     case "create_item": {
       const channelId = need(args, "channel_id", "the channel's id or name");
@@ -394,6 +398,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["confirmNew", args.confirm_new === true ? true : undefined],
       ]);
       const r = answer("/api/messages", await deps.send(body));
+      if (typeof r?.threadId === "string" && r.threadId) touched.push(r.threadId);
       if (r?.id) deps.onRootSent?.({ id: String(r.id), channelId: String(r.channelId ?? channelId), threadId: String(r.threadId ?? ""), title, text });
       const item = r?.item;
       const similar = Array.isArray(r?.similar) ? r.similar.map(similarRow) : [];
@@ -436,7 +441,9 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["expectedStatus", args.expected_status],
       ]);
       if (Object.keys(body).length === 0) throw new Error("name at least one thing to change (kind, status, assignee, fields, labels, due, title, review).");
-      return json(itemView(await call(deps, "PUT", `/api/threads/${enc(threadId)}/work`, body), deps.self?.()));
+      const out = itemView(await call(deps, "PUT", `/api/threads/${enc(threadId)}/work`, body), deps.self?.());
+      touched.push(threadId);
+      return json(out);
     }
 
     case "resolve_item": {
@@ -455,7 +462,9 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["resultEventId", args.result_event_id],
         ["expectedStatus", args.expected_status],
       ]);
-      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/resolve`, body), deps.self?.()));
+      const out = itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/resolve`, body), deps.self?.());
+      touched.push(threadId);
+      return json(out);
     }
 
     case "reopen_item": {
@@ -466,7 +475,9 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["text", args.text],
         ["expectedStatus", args.expected_status],
       ]);
-      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/reopen`, body), deps.self?.()));
+      const out = itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/reopen`, body), deps.self?.());
+      touched.push(threadId);
+      return json(out);
     }
 
     case "triage_item": {
@@ -478,7 +489,9 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       else if (action === "duplicate") body = { action, duplicateOf: await resolveThreadArg(args.duplicate_of, "duplicate_of", deps.resolveThread) };
       else throw new Error(`action must be accept, decline or duplicate, got ${JSON.stringify(action)}`);
       if (args.expected_status !== undefined) body.expectedStatus = args.expected_status;
-      return json(itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/triage`, body), deps.self?.()));
+      const out = itemView(await call(deps, "POST", `/api/threads/${enc(threadId)}/triage`, body), deps.self?.());
+      touched.push(threadId);
+      return json(out);
     }
 
     case "add_activity": {
@@ -496,6 +509,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["expectedStatus", args.expected_status],
       ]);
       const r = await call(deps, "POST", `/api/threads/${enc(threadId)}/activity`, body);
+      touched.push(threadId);
       return json({ event_id: r?.eventId, status: r?.status, item: itemView(r, deps.self?.()) });
     }
 
@@ -508,6 +522,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
         ["relation", args.relation],
       ]);
       const r = await call(deps, "POST", `/api/threads/${enc(threadId)}/links`, body);
+      touched.push(threadId);
       return json(
         given([
           ["link_id", r?.link?.id],
@@ -522,6 +537,7 @@ export async function callWorkTool(name: string, args: Args, deps: WorkDeps): Pr
       const threadId = await resolveThreadArg(args.thread_id, "thread_id", deps.resolveThread);
       const linkId = need(args, "link_id");
       const r = await call(deps, "DELETE", `/api/threads/${enc(threadId)}/links/${enc(linkId)}`);
+      touched.push(threadId);
       return json({ removed: r?.removed === true, link_id: linkId });
     }
 
