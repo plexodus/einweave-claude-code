@@ -342,12 +342,12 @@ declare const WIRE: {
             text: string;
         } | null;
         key: string | null;
-        id: string;
         status: string | null;
+        action: string;
+        id: string;
         threadId: string;
         channelId: string;
         redelivery?: boolean | undefined;
-        action: string;
         detail: {
             [x: string]: unknown;
         } | null;
@@ -366,8 +366,8 @@ declare const WIRE: {
     action_request: {
         redelivery?: boolean | undefined;
         params: unknown;
-        id: string;
         action: string;
+        id: string;
     };
     catchup: {
         channels: {
@@ -378,8 +378,8 @@ declare const WIRE: {
     invalid_session: {
         resumable: false;
         lost: {
-            frames: number;
             from: number | null;
+            frames: number;
         };
     };
     drain: {
