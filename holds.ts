@@ -75,6 +75,11 @@ export interface ApiResult {
 
 export interface HoldsDeps {
   api(method: string, path: string, body?: unknown): Promise<ApiResult>;
+  /**
+   * RFC-038 D3: this session let go of a thread (release, handover; tool, pane and `/einweave` share these):
+   * its work left here, so the turn list drops the thread's evidence. Called once the server took it.
+   */
+  workLeft?(threadId: string): void;
   /** This session's grant id and agent id (known once authenticated). */
   mySessionId(): string;
   myAgentId(): string;
@@ -389,7 +394,7 @@ export function createHolds(deps: HoldsDeps) {
       };
     },
 
-    async take(p: { ref?: unknown; confirm?: unknown; channel?: string; cursor?: string }): Promise<string> {
+    async take(p: { ref?: unknown; confirm?: unknown; channel?: string; cursor?: string; took?: (threadId: string) => void }): Promise<string> {
       const ref = parseRef(p.ref);
       if (ref.kind === "none" || ref.kind === "all") {
         return await showTakeable({ ...(p.channel ? { channel: p.channel } : {}), ...(p.cursor ? { cursor: p.cursor } : {}) });
@@ -431,6 +436,7 @@ export function createHolds(deps: HoldsDeps) {
         return await showTakeable({ lead: `That thread cannot be taken (${errorText(res)}) -- the list may have changed. Nothing was taken.` });
       }
       if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
+      p.took?.(target.id);
       pendingConfirm = null;
       const moved = res.body?.moved ? ` ${res.body.moved} open entr${res.body.moved === 1 ? "y" : "ies"} moved to this session.` : "";
       return res.body?.changed === false
@@ -444,6 +450,7 @@ export function createHolds(deps: HoldsDeps) {
       const releaseOne = async (item: ListItem): Promise<string> => {
         const res = await deps.api("POST", `/api/threads/${encodeURIComponent(item.id)}/hold`, { action: "release" });
         if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
+        deps.workLeft?.(item.id);
         return res.body?.changed === false ? `${item.label} was not held by this session.` : `Released ${item.label}.`;
       };
       if (ref.kind === "all") {
@@ -524,6 +531,7 @@ export function createHolds(deps: HoldsDeps) {
       }
       const res = await deps.api("POST", `/api/threads/${encodeURIComponent(thread.id)}/hold`, { action: "handover", to: target.id });
       if (res.status >= 400) throw new Error(`einweave API error ${res.status}: ${errorText(res)}`);
+      deps.workLeft?.(thread.id);
       memory = null;
       return res.body?.changed === false ? `${target.label.split(" — ")[0]} already held ${thread.label}.` : `Handed ${thread.label} to ${target.label.split(" — ")[0]}.`;
     },

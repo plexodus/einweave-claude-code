@@ -50,8 +50,8 @@ export interface UiRoutes {
   tool(name: string, args: Record<string, unknown>): Promise<unknown>;
   /** This agent's other sessions, read now (the Hand over picker opens on it): `{ sessions: UiSession[] }`. */
   sessions(): Promise<unknown>;
-  /** The mod's report of what this window's model is doing (`working` | `needs_you` | `idle`); a bad state is a UiHttpError 400. */
-  turn(state: string): Promise<unknown>;
+  /** RFC-038 D3: one post of the mod's ordered turn sender (JSON, unchecked here); a malformed one is a UiHttpError 400. */
+  turn(post: unknown): Promise<unknown>;
 }
 
 export interface UiServerOptions {
@@ -74,6 +74,8 @@ const MAX_URL = 2048;
 const MAX_ID = 256;
 /** An action's arguments: a label, a ref, a channel list. Far under this. */
 const MAX_BODY = 4096;
+/** A turn snapshot names every open loop's entries: larger than a tool's arguments. */
+const MAX_TURN_BODY = 64 * 1024;
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -123,7 +125,17 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
           if (!args || typeof args !== "object" || Array.isArray(args)) return json(400, { error: "arguments must be an object" });
           return json(200, await routes.tool(id, args as Record<string, unknown>));
         }
-        if (head === "turn" && rest !== undefined) return json(200, await routes.turn(id));
+        if (head === "turn" && rest === undefined) {
+          const text = await req.text();
+          if (text.length > MAX_TURN_BODY) return json(413, { error: "turn post too large" });
+          let body: unknown;
+          try {
+            body = JSON.parse(text);
+          } catch {
+            return json(400, { error: "turn post is not JSON" });
+          }
+          return json(200, await routes.turn(body));
+        }
         if (head === "search" && rest === undefined) {
           const q = url.searchParams;
           const query = q.get("q") ?? "";

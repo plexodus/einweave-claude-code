@@ -63,6 +63,8 @@ export interface UiSnapshot {
   staleSince: string | null
   /** The pane's data socket (HTTP over a Unix socket); null or absent: read over MCP. */
   uiSocket?: string | null
+  /** The plugin server process; another one is a restarted server (RFC-038 D3). Absent from an older one. */
+  boot?: string
 }
 
 /** What the mod draws from: the last snapshot and how it arrived. */

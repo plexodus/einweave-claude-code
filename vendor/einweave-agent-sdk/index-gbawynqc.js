@@ -16,6 +16,7 @@ function isAddressed(reasons) {
 }
 var CONNECTION_KINDS = ["gateway", "session", "observer"];
 var TURN_STATES = ["working", "needs_you", "idle"];
+var TURN_THREADS_KEPT = 32;
 var ENTRY_KINDS = ["message", "action_request", "thread_event"];
 var SESSION_DETAIL_KEYS = ["repoName", "worktreeName", "branchName", "headShortSha"];
 
@@ -104,6 +105,7 @@ var PROTOCOL_VERSION2 = PROTOCOL_VERSION;
 var CONTROL_FRAME_TYPES2 = CONTROL_FRAME_TYPES;
 var CONNECTION_KINDS2 = CONNECTION_KINDS;
 var TURN_STATES2 = TURN_STATES;
+var TURN_THREADS_KEPT2 = TURN_THREADS_KEPT;
 var SESSION_DETAIL_KEYS2 = SESSION_DETAIL_KEYS;
 var MAX_ACK_IDS2 = MAX_ACK_IDS;
 var ENTRY_KINDS2 = ENTRY_KINDS;
@@ -970,9 +972,15 @@ function parseThreadRef(input, links) {
       const m = re.exec(text);
       if (!m)
         continue;
-      const at = slots.indexOf("threadId");
-      const threadId = at < 0 ? "" : m[at + 1].toLowerCase();
-      return UUID.test(threadId) ? { kind: "url", threadId } : { kind: "invalid" };
+      const slot = (name) => {
+        const at = slots.indexOf(name);
+        return at < 0 ? "" : m[at + 1].toLowerCase();
+      };
+      const threadId = slot("threadId");
+      if (!UUID.test(threadId))
+        return { kind: "invalid" };
+      const channelId = slot("channelId");
+      return { kind: "url", threadId, ...UUID.test(channelId) ? { channelId } : {} };
     }
     return { kind: "foreign_url" };
   }
@@ -1605,4 +1613,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, TURN_STATES2 as TURN_STATES, SESSION_DETAIL_KEYS2 as SESSION_DETAIL_KEYS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, principalLabel, expandLink, threadUrl, messageUrl, ITEM_PREFIX_MIN2 as ITEM_PREFIX_MIN, ITEM_PREFIX_MAX2 as ITEM_PREFIX_MAX, ITEM_PREFIX_FALLBACK2 as ITEM_PREFIX_FALLBACK, validateItemPrefix2 as validateItemPrefix, deriveItemPrefix2 as deriveItemPrefix, formatItemKey2 as formatItemKey, parseItemKey2 as parseItemKey, matchItemKeys2 as matchItemKeys, parseThreadRef, SEARCH_MARK_START, SEARCH_MARK_END, snippetParts, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, SUPERSEDE_ASSERTION_TYP, supersedeAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, TURN_STATES2 as TURN_STATES, TURN_THREADS_KEPT2 as TURN_THREADS_KEPT, SESSION_DETAIL_KEYS2 as SESSION_DETAIL_KEYS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, principalLabel, expandLink, threadUrl, messageUrl, ITEM_PREFIX_MIN2 as ITEM_PREFIX_MIN, ITEM_PREFIX_MAX2 as ITEM_PREFIX_MAX, ITEM_PREFIX_FALLBACK2 as ITEM_PREFIX_FALLBACK, validateItemPrefix2 as validateItemPrefix, deriveItemPrefix2 as deriveItemPrefix, formatItemKey2 as formatItemKey, parseItemKey2 as parseItemKey, matchItemKeys2 as matchItemKeys, parseThreadRef, SEARCH_MARK_START, SEARCH_MARK_END, snippetParts, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, SUPERSEDE_ASSERTION_TYP, supersedeAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };

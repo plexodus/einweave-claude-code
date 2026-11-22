@@ -89,6 +89,8 @@ export interface UiState {
   staleSince: string | null;
   /** The pane's data socket (ui/ui-server.ts); null when it is not open: the mod reads over MCP. */
   uiSocket: string | null;
+  /** This server process: another one is a restarted server, which has none of the window's turn (RFC-038 D3). */
+  boot?: string;
 }
 
 export interface UiInputs {
@@ -116,6 +118,7 @@ export interface UiInputs {
   version: string;
   staleSince: string | null;
   uiSocket?: string | null;
+  boot?: string;
 }
 
 /** Which window has the session, for a person to find it; the close code and the tool advice stay in `status`. */
@@ -145,6 +148,7 @@ export function buildUiState(i: UiInputs): UiState {
     version: i.version,
     staleSince: i.staleSince,
     uiSocket: i.uiSocket ?? null,
+    ...(i.boot ? { boot: i.boot } : {}),
   };
 }
 

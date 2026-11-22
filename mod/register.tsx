@@ -21,10 +21,11 @@ import {
   heldRow,
   pickerRows,
   refocusTarget,
-  nextTurn,
-  WAITS_ON_PERSON,
-  type TurnState,
 } from './model'
+import { deliveredEntryId } from '../delivery/tags'
+import { handBackChild, TurnLoops } from './turn-loops'
+import { TurnSender } from './turn-sender'
+import type { TurnPost } from '../types/turn'
 import { cellWidth, plainLines, type Line } from './text'
 import { hyperlinks } from './links'
 
@@ -159,6 +160,7 @@ async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, 
   // While the relay is live it is the truth (the plugin pushes every change on it): a poll's answer, however
   // late it lands, never overwrites it. A restarted plugin's relay counts from rev 1 under a higher polled rev.
   await update($, view, v => (live === undefined && v.live ? v : { ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
+  turnResync($, got.snap)
   if (!wasDown && got.snap.connection.state === 'disconnected') $.clock.after(BAND_GRACE_MS + 50, () => detach(update($, view, v => ({ ...v }))))
 }
 
@@ -617,28 +619,60 @@ function placed(off: number, atTop: boolean, w: PaneWindow, sc: PaneScroll | und
 }
 
 /**
- * This window's turn state as last seen, and as last told to the plugin's server: only a change is posted,
- * and a post that failed (no socket yet) goes with the next event or the first snapshot. Module variables:
- * a reload starts them over, and the next event reports again.
+ * RFC-038 D3: which of this window's loops (main, each subagent) are working, and which einweave entries each
+ * open turn has read, told IN ORDER to the plugin's server (`POST /turn`, the UI socket) by ONE sender. From
+ * Claude Code's own lifecycle, in process, never a timer. Module variables: a reload is a new epoch, whose
+ * first snapshot waits for the seed from `$.agent.list()` (a subagent still working must not go dark).
  */
-let turnNow: TurnState | null = null
-let turnSent: TurnState | null = null
+const EINWEAVE_TOOL = /^mcp__(?:plugin_einweave_)?einweave__/
+/** Posts through the engine of the latest event (a hooks module never keeps `$` itself). */
+let turnPoster: ((body: TurnPost) => Promise<boolean>) | null = null
+/** The server process the last post reached (its UI snapshot's `boot`): another one restarted and gets the snapshot again. */
+let turnBoot: string | null = null
+const turnSender = new TurnSender(
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+  () => turnLoops.snapshot(),
+  body => (turnPoster ? turnPoster(body) : Promise.resolve(false)),
+)
+const turnLoops = new TurnLoops(p => turnSender.ordered(p))
 
-/** Post the turn state to the plugin's server over the UI socket (`POST /turn/<state>`), if it changed. */
-async function sendTurn($: EngineInterface): Promise<void> {
-  const want = turnNow
-  if (!want || want === turnSent) return
-  const socketPath = (await read($, view)).snap?.uiSocket
-  if (!socketPath) return
-  const r = await $.http.fetch(`http://einweave/turn/${want}`, { method: 'POST', socketPath })
-  if (r.ok) turnSent = want
+/** One post. A refused one (400 malformed, 413 too large) is spent: it would never go. 404 (an older server) and no socket wait. */
+async function postTurn($: EngineInterface, body: TurnPost): Promise<boolean> {
+  const snap = (await read($, view)).snap
+  const socketPath = snap?.uiSocket
+  if (!socketPath) return false
+  const r = await $.http.fetch('http://einweave/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), socketPath })
+  turnBoot = snap.boot ?? null
+  if (r.status === 400 || r.status === 413) $.ui.log(`einweave turn post refused (${r.status})`, { to: 'debug' })
+  return r.ok || r.status === 400 || r.status === 413
 }
 
-/** A lifecycle event moved the turn state (null: no change): post it without waiting. */
-function reportTurn($: EngineInterface, state: TurnState | null): void {
-  if (!state) return
-  turnNow = state
-  detach(sendTurn($))
+/** The sender posts through this event's engine. */
+function postVia($: EngineInterface): void {
+  turnPoster = body => postTurn($, body)
+}
+
+/** The loops changed: a snapshot goes (built when sent). */
+function turnChanged($: EngineInterface): void {
+  postVia($)
+  turnSender.changed()
+}
+
+/**
+ * A snapshot landed: a restarted plugin server (another `boot`, the same socket path) has none of this window's
+ * turn, and a post that failed waits for no next event: the snapshot goes again now.
+ */
+function turnResync($: EngineInterface, snap: UiSnapshot | null | undefined): void {
+  if (!snap?.uiSocket || ((snap.boot ?? null) === turnBoot && !turnSender.stalled)) return
+  postVia($)
+  turnSender.resend()
+}
+
+/** Close the subagent loops `$.agent.list()` says are done (a missed `turn.complete`), never by time. */
+async function reconcileLoops($: EngineInterface): Promise<void> {
+  const marks = turnLoops.reconcileMark()
+  turnLoops.reconcile(await $.agent.list(), marks)
+  turnChanged($)
 }
 
 export const register: Register = on => {
@@ -662,12 +696,29 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`/einweave not registered: ${String(err)}`, { to: 'debug' })
     }
-    // The first snapshot names the UI socket: a turn state reported before it lands goes then.
-    detach(poll($).then(() => sendTurn($)))
+    // RFC-038 D3: seed the loops still running (a reload never saw their turn.start), THEN start sending: the
+    // first snapshot names them. The first UI snapshot names the socket; a post before it waits.
+    postVia($)
+    detach(
+      (async () => {
+        try {
+          turnLoops.seed(await $.agent.list())
+        } finally {
+          turnSender.release()
+          turnChanged($)
+        }
+      })(),
+    )
+    detach(poll($))
     // The relay ends when the module unloads (its sleep or spawn is aborted): nothing to report then.
     detach(runRelay($))
     $.clock.every(POLL_MS, () => {
-      detach(read($, view).then(v => (v.live ? undefined : poll($))))
+      detach(
+        read($, view).then(v => {
+          turnResync($, v.snap)
+          return v.live ? undefined : poll($)
+        }),
+      )
     })
     // Board ThreadTab: a held thread's tab is live. Read it again while it is the one shown.
     $.clock.every(HELD_TAB_MS, () => {
@@ -683,42 +734,90 @@ export const register: Register = on => {
   })
 
   /**
-   * What this window's model is doing (`working` | `needs_you` | `idle`), told to the plugin's server
-   * (`POST /turn/<state>`, the UI socket) for einweave's Hand over picker (Jörgen 2026-11-05). From Claude
-   * Code's own lifecycle, in process, never a timer: the main loop's turn start and end (an Esc ends one too,
-   * which a Stop hook never hears); a dialog shown to the person (a permission, an MCP question; AskUserQuestion
-   * and plan approval are tools that wait on the person); the asked call returning, or the next one, ends that wait. Only a change is
-   * posted; a post that fails is tried again on the next event. No hook here waits on it or changes anything.
+   * RFC-038 D3: the turn events, every loop (main and each subagent), in Claude Code's own order. A prompt joins
+   * its loop's `pending` only once it ENTERED (its `next` resolved without `drop`); a loop's next model request
+   * (`turn.step`) moves `pending` into the turn. No hook here changes or delays anything it hears.
    */
+  on('prompt.submit', async ($, e, next) => {
+    const id = deliveredEntryId(e.text)
+    const child = id === null && (e.origin.kind === 'peer' || e.origin.kind === 'task-notification') ? handBackChild(e.text) : null
+    const r = await next(e)
+    if (id !== null || child !== null) {
+      if (r.drop !== undefined) {
+        if (child !== null) turnLoops.handBackDropped(child)
+      } else if (id !== null) turnLoops.entered(id)
+      else if (child !== null) turnLoops.handBackEntered(child)
+      turnChanged($)
+    }
+    return r
+  })
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) reportTurn($, nextTurn(turnNow, { kind: 'start' }))
+    turnLoops.turnStart(e.agentId, e.turnId)
+    turnChanged($)
+    if (e.agentId === undefined) detach(reconcileLoops($))
     return next(e)
   })
+  // A stream hook: the request's chunks pass through untouched.
+  on('turn.step', async function* ($, e, next) {
+    turnLoops.turnStep(e.agentId, e.turnId)
+    turnChanged($)
+    return yield* next(e)
+  })
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) reportTurn($, nextTurn(turnNow, { kind: 'end' }))
+    turnLoops.turnComplete(e.agentId, e.turnId)
+    turnChanged($)
+    if (e.agentId === undefined) detach(reconcileLoops($))
     return next(e)
   })
   on('classic.Notification', async ($, e, next) => {
-    reportTurn($, nextTurn(turnNow, { kind: 'notification', type: e.notification_type }))
+    // A dialog shown to the person (a permission, an MCP question) waits on a call in flight; idle_prompt (about
+    // 60 s after main's turn ended, nothing typed) closes the main loop when its end was missed.
+    if (e.notification_type === 'permission_prompt' || e.notification_type === 'elicitation_dialog') turnLoops.dialogShown()
+    else if (e.notification_type === 'idle_prompt') turnLoops.idlePrompt()
+    else return next(e)
+    turnChanged($)
     return next(e)
   }).catch(($, e, next) => next(e))
   on('tool.call', async ($, e, next) => {
-    const waits = WAITS_ON_PERSON.has(e.tool)
-    reportTurn($, nextTurn(turnNow, { kind: waits ? 'ask' : 'tool' }))
-    const result = await next(e)
-    // The person answered whatever this call asked (its dialog opens inside `next`), and the tool ran. No hook
-    // hears the answer itself, so a long approved command still reads `needs_you` until it returns.
-    reportTurn($, nextTurn(turnNow, { kind: 'tool' }))
-    return result
+    // AskUserQuestion and plan approval wait on the person until they return; this plugin's own tools name the
+    // loop and turn that made the call, which the server joins to the thread by the call's id.
+    turnLoops.toolCall(e.agentId, e.tool_use_id, e.tool, EINWEAVE_TOOL.test(e.tool))
+    turnChanged($)
+    try {
+      return await next(e)
+    } finally {
+      turnLoops.toolDone(e.tool_use_id)
+      turnChanged($)
+    }
   }).catch(($, e, next) => next(e))
+  on('agent.spawn', async ($, e, next) => {
+    // Delegated work keeps its thread: the child inherits the spawning loop's open turn (a resume adds to it).
+    const r = await next(e)
+    if (r.agentId) {
+      postVia($)
+      turnLoops.spawned(r.agentId, e.parentAgentId)
+    }
+    return r
+  })
+  on('agent.report', async ($, e, next) => {
+    postVia($)
+    turnLoops.reported(e.agentId, e.parentAgentId)
+    detach(reconcileLoops($))
+    return next(e)
+  })
 
   // /clear, /resume and /branch reset $.state and do not run session.start again: read the snapshot
   // anew. classic.SessionStart does not run where the built-in guard loads, so session.end backs it.
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
+    // RFC-038 D3: a re-key drops the MAIN loop; subagents keep working and hand back into the new conversation.
+    turnLoops.rekey()
+    turnChanged($)
     detach(poll($, true))
     return next(e)
   }).catch(($, e, next) => next(e))
   on('session.end', { reason: ['clear', 'resume'] }, async ($, e, next) => {
+    turnLoops.rekey()
+    turnChanged($)
     $.clock.after(1_000, () => detach(poll($, true)))
     return next(e)
   })

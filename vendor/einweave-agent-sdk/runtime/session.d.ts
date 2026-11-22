@@ -113,6 +113,17 @@ export type SessionStatus = {
     kind: "hold_update";
     update: HoldUpdatePayload;
 }
+/**
+ * RFC-038 D3/D8: this session's hold on a thread moved to ANOTHER session, so the thread's work left here.
+ * The SDK has already dropped it from the turn list; a host that derives the list from its own evidence
+ * (touches, entries) drops that evidence too, or its next `turnThreads` would bring the thread back. Sent
+ * before the `hold_update` it comes from, only for a fresh frame (never a replay), whether or not the
+ * thread was listed.
+ */
+ | {
+    kind: "turn_thread_dropped";
+    threadId: string;
+}
 /** Addressed work that reached no socket of this agent (scope refused it everywhere): a status, not a turn. */
  | {
     kind: "for_you";
@@ -243,6 +254,15 @@ export declare class Session {
     private readonly acks;
     /** The latest turn state the host reported (`turn`). */
     private turnState;
+    /** RFC-038: when `turnState` began (clock ms), so every frame carries `stateAgeMs` and a reconnect keeps it. */
+    private turnSince;
+    /** RFC-038: the threads the current turn serves, newest ADDED first, at most `TURN_THREADS_KEPT`. */
+    private turnThreadList;
+    /** RFC-038 D7: the host has made a thread-level claim, so frames carry `threads` (absent = no claim). */
+    private turnClaims;
+    /** The last turn frame sent on THIS socket (state, start, wire threads); null after every auth. */
+    private turnSent;
+    private turnScheduled;
     private readonly pushQueue;
     private pushing;
     private readonly statusChannel;
@@ -278,11 +298,37 @@ export declare class Session {
     ack(ids: Iterable<string>, how: AckHow): void;
     /**
      * What this session's model is doing, from the host's own lifecycle (a turn starts, waits on its person,
-     * ends). Only a change is sent; the latest is sent again after every authentication, so a reconnect never
-     * loses it. The server stamps the time a state began. An older server ignores the frame (counting it as unknown).
+     * ends). Only a change is sent, coalesced with this tick's thread changes into ONE frame; the latest is sent
+     * again after every authentication, so a reconnect never loses it. Every frame carries how long the state has
+     * lasted (`stateAgeMs`), so the server keeps when it BEGAN across a reconnect. `idle` empties the thread list
+     * (RFC-038 D2). An older server ignores the frame (counting it as unknown).
      */
     turn(state: TurnState): void;
-    /** Send the latest turn state, on an authenticated socket only; otherwise the next authentication sends it. */
+    /**
+     * RFC-038 D2: the WHOLE set of threads the current turn serves, newest first; it replaces the last one.
+     * The first `TURN_THREADS_KEPT` distinct ids are kept. Ids are not validated here: the server drops (and
+     * counts) one it cannot keep, and an invalid id still uses a slot. Once a host calls any thread method its
+     * frames name their threads (`[]` = none); a host that never does makes no thread-level claim.
+     */
+    turnThreads(ids: readonly string[]): void;
+    /**
+     * RFC-038 D2: the current turn serves this thread too. A new id goes FIRST (newest added first; the oldest
+     * falls off past `TURN_THREADS_KEPT`); one already listed stays where it is. Kept while `idle` for the next
+     * turn (an OpenClaw run may add before it reports `working`); a host that must not light the next turn
+     * (the Claude Code plugin, RFC-038 D3) does not add while idle.
+     */
+    addTurnThread(id: string): void;
+    /** RFC-038 D2: the current turn no longer serves this thread (its run ended, its work moved away). */
+    removeTurnThread(id: string): void;
+    /** Remove without making a claim: a never-claiming host stays thread-less (D7). */
+    private dropTurnThread;
+    /** One frame per tick, whatever this tick changed (pure ES: the runtime purity gate forbids host APIs). */
+    private scheduleTurn;
+    /**
+     * Send the turn frame, on an authenticated socket only (otherwise the next authentication sends it), unless
+     * this socket already has the same state, start and threads. An age-only difference never sends: the
+     * server dates the state from the frame that started it.
+     */
     private flushTurn;
     /**
      * This session's details changed while it runs (a checkout, another worktree): the WHOLE set

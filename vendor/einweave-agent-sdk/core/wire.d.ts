@@ -46,6 +46,7 @@ export type AckHow = AckFrame["how"];
  */
 export declare const TURN_STATES: readonly ["working", "needs_you", "idle"];
 export type TurnState = (typeof TURN_STATES)[number];
+export declare const TURN_THREADS_KEPT = 32;
 /** The `sessionInfo` fields `session.setDetails` replaces (the protocol's `SessionDetails`). */
 export declare const SESSION_DETAIL_KEYS: readonly ["repoName", "worktreeName", "branchName", "headShortSha"];
 /** The server's cap on ids in one ack frame; more are sent in chunks. */
@@ -341,12 +342,12 @@ declare const WIRE: {
             text: string;
         } | null;
         key: string | null;
-        id: string;
         status: string | null;
+        action: string;
+        id: string;
         threadId: string;
         channelId: string;
         redelivery?: boolean | undefined;
-        action: string;
         detail: {
             [x: string]: unknown;
         } | null;
@@ -365,8 +366,8 @@ declare const WIRE: {
     action_request: {
         redelivery?: boolean | undefined;
         params: unknown;
-        id: string;
         action: string;
+        id: string;
     };
     catchup: {
         channels: {
@@ -377,8 +378,8 @@ declare const WIRE: {
     invalid_session: {
         resumable: false;
         lost: {
-            frames: number;
             from: number | null;
+            frames: number;
         };
     };
     drain: {

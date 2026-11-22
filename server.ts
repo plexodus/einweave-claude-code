@@ -58,7 +58,7 @@ import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
 import { Session, createRuntime, isApiRequestError, type Api, type MyWorkspace, type SearchRefusal, type SearchResponse, type SearchThreadRow, type SearchMessageRow, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop, type MessageRefPreview } from "./vendor/einweave-agent-sdk/index.js";
-import { deadline, snippetParts, TURN_STATES, type SnippetPart, type TurnState } from "./vendor/einweave-agent-sdk/core/index.js";
+import { deadline, snippetParts, type SnippetPart } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
@@ -86,6 +86,9 @@ import { resolveStateDir, migrateLegacyState, sweepMigrationTemps } from "./stat
 import { WORK_TOOLS, callWorkTool, labelOf, type WorkDeps } from "./work-tools";
 import { resolveOptionalThreadArg, resolveThreadArg, THREAD_REF_DOC, type ResolveRef } from "./thread-ref";
 import { sendMessage, isSendRefusal } from "./send-refusals";
+import { TurnList } from "./turn/list";
+import { parseTurnPost } from "./turn/post";
+import { TOOL_TURN } from "./turn/tools";
 
 /** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
 function cleanOrNull(v: unknown): string | null {
@@ -221,6 +224,8 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR ?? "";
 // Stable for the lifetime of this plugin process — used when no session id is
 // available at all (e.g. older Claude Code versions)
 const FALLBACK_SESSION_KEY = crypto.randomUUID();
+/** This process, in the UI snapshot: a mod that sees another one knows the server restarted (RFC-038 D3: resend its turn). */
+const SERVER_BOOT: string = crypto.randomUUID();
 
 // Session key: the Bridge server reuses it as the context ID, so anything that
 // changes it mints a new context and orphans messages targeted at the old one.
@@ -1219,10 +1224,34 @@ const returnedAcks = new ReturnedAcks();
 let pushedCount = 0;
 let session: Session | null = null;
 /**
- * What this window's model is doing, as the mod last reported it (`POST /turn/<state>` on the UI socket, from
- * Claude Code's own turn lifecycle). Kept here so a Session made later (connect, a re-key) starts with it.
+ * RFC-038 D3: what this window's model is doing and which threads its turn serves. The mod's ordered posts
+ * (`POST /turn` on the UI socket, from Claude Code's own turn lifecycle) joined with what only this process
+ * knows: the entries it pushed, the threads its tools acted on, the threads whose work left, the re-keys.
+ * Kept here so a Session made later (connect, a re-key) starts with the state AND the list.
  */
-let turnState: TurnState | null = null;
+const turnList = new TurnList();
+/** The mod has posted (a Session is seeded only then: before it, this window has said nothing). */
+let turnReported = false;
+
+/** Give a Session the current turn: its threads and its state (the SDK sends them as one frame). */
+function seedTurn(s: Session): void {
+  if (!turnReported) return;
+  const v = turnList.view();
+  s.turnThreads(v.threads);
+  s.turn(v.state);
+}
+
+/** The turn list may have changed: tell the current Session (only a change goes on the wire). */
+function publishTurn(): void {
+  if (session) seedTurn(session);
+}
+
+/** The thread an entry is about, if any (an action request names none). */
+function entryThread(entry: Entry): string | null {
+  if (entry.kind === "message") return entry.message.threadId ?? null;
+  if (entry.kind === "thread_event") return entry.event.threadId ?? null;
+  return null;
+}
 /** This process's registry record (RFC-017 D2), written at startup; re-written on a re-key. */
 let myProc: ProcInfo | null = null;
 let lock: SessionLockHandle | null = null;
@@ -1310,6 +1339,9 @@ function adapterFor(owner: () => Session | null): DeliveryAdapter {
     pushed: (entry: Entry) => {
       pushedCount++;
       tracker.pushed(entry.id, Date.now());
+      // RFC-038 D3: only an entry THIS process pushed can light a thread (a typed or quoted tag cannot).
+      const thread = entryThread(entry);
+      if (thread) turnList.pushed(entry.id, thread);
       if (entry.kind === "message") {
         const m = entry.message;
         warmChannelName(m.channelId);
@@ -1381,11 +1413,13 @@ const uiRoutes: UiRoutes = {
   channel: async (id) => (uiGate(), await uiChannel(id)),
   thread: async (id, page) => (uiGate(), await uiThread(id, { before_seq: page.beforeSeq, limit: page.limit })),
   search: async (p) => (uiGate(), await searchPage(p)),
-  // The mod's report of this window's turn (never a model's call): kept, and sent while a Session exists.
-  turn: async (state) => {
-    if (!(TURN_STATES as readonly string[]).includes(state)) throw new UiHttpError(400, `not a turn state: ${state}`);
-    turnState = state as TurnState;
-    session?.turn(turnState);
+  // RFC-038 D3: one post of the mod's ordered turn sender (never a model's call): kept, and sent while a Session exists.
+  turn: async (body) => {
+    const post = parseTurnPost(body);
+    if (!post) throw new UiHttpError(400, "not a turn post");
+    turnList.post(post);
+    turnReported = true;
+    publishTurn();
     return { ok: true };
   },
 };
@@ -1706,7 +1740,7 @@ async function openSession(opts: { takeover?: boolean; gatewayTakeover?: boolean
   });
   created = s;
   session = s;
-  if (turnState) s.turn(turnState);
+  seedTurn(s);
   replaceSentBy = replace ? s : null;
   standbyHolder = null;
   updateProcState(STATE_DIR, process.pid, "disconnected");
@@ -1877,6 +1911,11 @@ function onStatus(st: SessionStatus): void {
       process.stderr.write(`einweave channel: hold ${u.via}: thread ${u.threadId} ${u.holder ? `-> ${u.holder.label ?? u.holder.id}` : "released"}${mine ? " (this session)" : ""}\n`);
       return;
     }
+    case "turn_thread_dropped":
+      // RFC-038 D3/D8: this session's hold moved to another session (the SDK decided, never on a replay).
+      turnList.drop(st.threadId);
+      publishTurn();
+      return;
     case "slow-consumer":
       process.stderr.write(`einweave channel: host is not taking entries — dropped ${st.droppedId} here (the server still owes it)\n`);
       return;
@@ -2068,6 +2107,10 @@ function rekeyTo(conversationId: string, source = ""): boolean {
   if (source === "clear") recordReplace(from, conversationId);
   SESSION_KEY = conversationId;
   SESSION_KEY_IS_CONVERSATION_ID = true;
+  // RFC-038 D3: the MAIN loop's entries and touches go (whether or not the mod saw the re-key); subagent loops
+  // keep working and hand back into the new conversation.
+  turnList.rekey();
+  publishTurn();
   // Everything keyed by the session key now reads the new conversation's files.
   labelSetting = createLabelSetting(SESSION_LABEL_OVERRIDE);
   sessionInfoPromise = null;
@@ -2384,7 +2427,7 @@ async function requireHolder(): Promise<{ content: { type: "text"; text: string 
  */
 const READ_DELIVERIES_BUDGET_BYTES = 40_000;
 
-async function readDeliveries(args: Record<string, unknown>): Promise<CallToolResult> {
+async function readDeliveries(args: Record<string, unknown>, touched: string[] = []): Promise<CallToolResult> {
   const gate = requireBridge();
   if (gate) return gate;
   const notHolder = await requireHolder();
@@ -2430,6 +2473,8 @@ async function readDeliveries(args: Record<string, unknown>): Promise<CallToolRe
     bytes += size;
     entries.push(item);
     shown.push(e);
+    // RFC-038 D3: these entries reached the model here, with no prompt of their own: their threads are its turn's.
+    if (thread_id) touched.push(thread_id);
   }
   const next = cut ? null : page.next;
   const hint = cut
@@ -3162,6 +3207,11 @@ async function renameOnServer(label: string): Promise<string> {
 // own grant and agent come from the authenticated frame.
 const holds = createHolds({
   resolveThread,
+  // RFC-038 D3: release / handover (tool, pane, /einweave) -- the thread's work left this session.
+  workLeft: (threadId) => {
+    turnList.drop(threadId);
+    publishTurn();
+  },
   api: async (method, path, body) => {
     const res = await apiFetch(path, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     let json: any = null;
@@ -3500,6 +3550,7 @@ function uiSnapshot() {
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
     uiSocket: ctlMgr?.companionPath() ?? null,
+    boot: SERVER_BOOT,
   });
 }
 
@@ -3604,7 +3655,16 @@ function describeSendHold(hold: any, threadId: unknown): string {
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   // The first tool call proves the host has finished its handshake: channel pushes may flow.
   openHostGate();
-  return runTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
+  const touched: string[] = [];
+  const result = await runTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>, touched);
+  // RFC-038 D3: the threads this call acted on belong to the loop whose turn made it. Claude Code names the call
+  // (`_meta`); the mod's tool post names the loop and turn; the turn list joins them, in either order.
+  const toolUseId = req.params._meta?.["claudecode/toolUseId"];
+  if (typeof toolUseId === "string" && toolUseId && touched.length > 0 && (TOOL_TURN[req.params.name] ?? "none") !== "none") {
+    turnList.toolCall(toolUseId, touched);
+    publishTurn();
+  }
+  return result;
 });
 
 /**
@@ -3612,7 +3672,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
  * starts (ui/ui-server.ts `POST /tool/:name`, PERSON_TOOLS). Same code, same answers; only the path in
  * differs, so a person's action is not bound by the model's tool-output limit or its tool hooks.
  */
-async function runTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
+async function runTool(name: string, args: Record<string, unknown>, touched: string[] = []): Promise<CallToolResult> {
   try {
     switch (name) {
       case "reply": {
@@ -3711,6 +3771,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           rememberOwnSend(result.id);
           rememberSentMessage(result.id, type);
         }
+        const sentThread = (typeof result.threadId === "string" && result.threadId) || threadId;
+        if (sentThread) touched.push(sentThread);
         const holdNote = describeSendHold(result.hold, result.threadId ?? threadId);
         // RFC-029 D4: the assignment made with this reply (same transaction as the post).
         const assignNote = result.assign?.assignee
@@ -3968,7 +4030,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
       case "take": {
         { const gate = requireBridge(); if (gate) return gate; }
         const channel = typeof args.channel_id === "string" && args.channel_id ? args.channel_id : undefined;
-        const text = await holds.take({ ref: args.ref, confirm: args.confirm, ...(channel ? { channel } : {}), ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}) });
+        const text = await holds.take({ ref: args.ref, confirm: args.confirm, ...(channel ? { channel } : {}), ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}), took: (t) => touched.push(t) });
         if (uiWatch.subscribers() > 0) void refreshWaiting();
         return { content: [{ type: "text", text }] };
       }
@@ -4328,6 +4390,9 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
         const threadRefs = await loadRefs([
           ...new Set([...refIdsOf(data.parent?.doc), ...(data.replies ?? []).flatMap((r: any) => refIdsOf(r.doc))]),
         ] as string[]);
+        // RFC-038 D3 (held-read): a read counts for the turn only on a thread this session holds or whose item
+        // the agent is assigned -- reading around is not working on it.
+        if (serverHolds.includes(threadId) || (agentId && data.thread?.work?.model?.assignee?.principal?.id === agentId)) touched.push(threadId);
         const rowChannel: string | null = data.thread?.channelId ?? data.parent?.channelId ?? null;
         const shape = (m: any) => ({
           id: m.id,
@@ -4434,7 +4499,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
       }
 
       case "read_deliveries":
-        return await readDeliveries(args);
+        return await readDeliveries(args, touched);
 
       case "list_threads": {
         { const gate = requireBridge(); if (gate) return gate; }
@@ -4530,6 +4595,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
           throw new Error(typeof reason === "string" ? reason : `einweave API error ${res.status}`);
         }
         const t = (await res.json()) as any;
+        touched.push(threadId);
         return {
           content: [
             {
@@ -4555,7 +4621,7 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Cal
       case "list_items":
       case "item_schema": {
         { const gate = requireBridge(); if (gate) return gate; }
-        return { content: [{ type: "text", text: await callWorkTool(name, args, workDeps) }] };
+        return { content: [{ type: "text", text: await callWorkTool(name, args, workDeps, touched) }] };
       }
 
       case "set_session_label": {

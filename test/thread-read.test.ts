@@ -595,6 +595,10 @@ describe("read_thread / list_threads", () => {
     let uiSocket: unknown = null;
     for (const deadline = Date.now() + 15_000; Date.now() < deadline && typeof uiSocket !== "string"; await Bun.sleep(200)) uiSocket = (await ok("ui_state", {})).uiSocket;
     expect(typeof uiSocket, "ui_state never carried a uiSocket").toBe("string");
+    // RFC-038 D3: the process's boot id, the same on every read of it (another one = a restarted server).
+    const boot = (await ok("ui_state", {})).boot;
+    expect(typeof boot).toBe("string");
+    expect((await ok("ui_state", {})).boot).toBe(boot);
 
     const big = (seq: number) => ({ ...msg(seq, "x".repeat(3000)), doc: [["p", 0, "x".repeat(3000)]], docV: 1 });
     stub.set({ replies: Array.from({ length: 30 }, (_, i) => big(100 + i)) });

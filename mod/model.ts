@@ -545,37 +545,6 @@ export function heldRow(h: UiHeld, now: number): HeldRowView {
   return { threadId: h.threadId, title: h.title ?? h.threadId, channel: h.channel ?? null, meta }
 }
 
-/** What a window's model is doing, as einweave's `turn` frame says it. */
-export type TurnState = 'working' | 'needs_you' | 'idle'
-
-/** Tools that run until the person answers: while one runs, the window waits on its person. */
-export const WAITS_ON_PERSON: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
-
-/** A Claude Code lifecycle event, as the turn state reads it (main loop only for `start` / `end`). */
-export type TurnEvent = { kind: 'start' } | { kind: 'end' } | { kind: 'ask' } | { kind: 'tool' } | { kind: 'notification'; type: string }
-
-/**
- * The next turn state, or null for no change. A turn starts working and ends idle (an Esc included);
- * a dialog shown to the person (`permission_prompt`, `elicitation_dialog`) or a tool that waits on them
- * makes it `needs_you`; the next tool call ends that wait. `idle_prompt` (Claude Code: about 60 s after
- * a turn ended, nothing typed) settles idle even when the end was missed.
- */
-export function nextTurn(cur: TurnState | null, ev: TurnEvent): TurnState | null {
-  switch (ev.kind) {
-    case 'start':
-      return 'working'
-    case 'end':
-      return 'idle'
-    case 'ask':
-      return 'needs_you'
-    case 'tool':
-      // A tool runs: whatever waited on the person was answered. Idle stays idle: a background subagent's call is not this window's turn.
-      return cur === 'needs_you' || cur === null ? 'working' : null
-    case 'notification':
-      return ev.type === 'permission_prompt' || ev.type === 'elicitation_dialog' ? 'needs_you' : ev.type === 'idle_prompt' ? 'idle' : null
-  }
-}
-
 /** One window in the Hand over picker (option B, Jörgen 2026-11-05): where it works, what it is doing, what it holds. */
 export interface PickerRow {
   id: string
