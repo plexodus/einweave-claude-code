@@ -5,8 +5,9 @@
  * ordered posts queued so far, then a snapshot built at send time.
  */
 import { describe, expect, test } from "bun:test";
-import { handBackChild, TurnLoops, type ListedAgent, type OrderedPost } from "../mod/turn-loops";
+import { handBackChild, LIST_MAX, TurnLoops, type ListedAgent, type OrderedPost } from "../mod/turn-loops";
 import { TurnList } from "../turn/list";
+import { MAX_ITEMS, parseTurnPost } from "../turn/post";
 
 function rig(list = new TurnList(), epoch = "e1") {
   const queued: OrderedPost[] = [];
@@ -200,6 +201,28 @@ describe("loops (decision 6)", () => {
     expect(r.state(), "the sub works on").toBe("working");
   });
 
+  test("only an einweave call or a call that waits on the person opens a loop; any other tool call is no turn", () => {
+    const r = rig();
+    r.ev((l) => l.toolCall(undefined, "tu-other-plugin", "Bash", false)); // another plugin's $.tool.call, main idle
+    r.ev((l) => l.toolCall("fork-memory", "tu-fork", "Edit", false)); // an engine fork: listed nowhere, no turn.complete
+    expect(r.state(), "nothing opened: idle stays idle").toBe("idle");
+    r.ev((l) => l.toolCall(undefined, "ask1", "AskUserQuestion", false));
+    expect(r.state(), "a reload mid-ask: the window waits on its person").toBe("needs_you");
+  });
+
+  test("a dialog waits on the NEWEST call in flight: an older call of another loop returning does not end it", () => {
+    const r = rig();
+    r.ev((l) => l.turnStart(undefined, "T1"));
+    r.ev((l) => l.turnStart("sub", "S1"));
+    r.ev((l) => l.toolCall("sub", "tu-slow", "Read", false)); // a long call already running
+    r.ev((l) => l.toolCall(undefined, "tu-bash", "Bash", false));
+    r.ev((l) => l.dialogShown()); // the permission prompt for tu-bash
+    r.ev((l) => l.toolDone("tu-slow"));
+    expect(r.state(), "the prompt is still open").toBe("needs_you");
+    r.ev((l) => l.toolDone("tu-bash"));
+    expect(r.state()).toBe("working");
+  });
+
   test("M4f2: a new module instance opens a loop from a step or a tool call it never saw start", () => {
     const list = new TurnList();
     const old = rig(list, "e1");
@@ -211,6 +234,47 @@ describe("loops (decision 6)", () => {
     expect(r.list.view()).toEqual({ state: "working", threads: ["A"] });
     r.ev((l) => l.turnComplete("sub", "S1"));
     expect(r.state()).toBe("idle");
+  });
+});
+
+describe("bounds: a post is never refused for its size", () => {
+  test("the mod keeps the server's bound", () => {
+    expect(LIST_MAX).toBe(MAX_ITEMS);
+  });
+
+  test("past the bound the newest are kept, and the snapshot still parses", () => {
+    const loops = new TurnLoops(() => {});
+    const many = Array.from({ length: LIST_MAX + 40 }, (_, i) => ({ id: `a${i}`, status: "completed" }));
+    loops.seed(many);
+    loops.turnStart(undefined, "T1");
+    for (let i = 0; i < LIST_MAX + 10; i++) loops.entered(`p${i}`);
+    loops.turnStep(undefined, "T1");
+    const snap = loops.snapshot();
+    expect(snap.agents.length).toBe(LIST_MAX);
+    expect(snap.agents.at(-1)).toBe(`a${LIST_MAX + 39}`);
+    expect(snap.loops[0]!.inTurn.length).toBe(LIST_MAX);
+    expect(parseTurnPost({ ...snap, epoch: "e1", seq: 1 }), "accepted").not.toBeNull();
+  });
+
+  test("F9: armed hand-backs are bounded; the newest are kept, a re-arm counts as new", () => {
+    const loops = new TurnLoops(() => {});
+    for (let i = 0; i < LIST_MAX + 5; i++) {
+      loops.reported(`c${i}`, undefined);
+      if (i === 9) loops.reported("c3", undefined); // re-armed before any went: now newer than c4…c9
+    }
+    loops.handBackEntered("c0");
+    loops.handBackEntered("c3");
+    loops.handBackEntered(`c${LIST_MAX + 4}`);
+    expect(loops.snapshot().waiting).toEqual([{ agent: "main", pending: [{ agent: "c3" }, { agent: `c${LIST_MAX + 4}` }] }]);
+  });
+
+  test("a redelivered entry is one entry, waiting or read", () => {
+    const loops = new TurnLoops(() => {});
+    loops.entered("p1");
+    loops.entered("p1");
+    loops.turnStep(undefined, "T1");
+    loops.entered("p1");
+    expect(loops.snapshot().loops[0]).toMatchObject({ inTurn: [{ id: "p1" }], pending: [] });
   });
 });
 

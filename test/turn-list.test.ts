@@ -3,7 +3,7 @@
  * Each test names the RFC rule it pins.
  */
 import { describe, expect, test } from "bun:test";
-import { PUSHED_KEPT, TurnList } from "../turn/list";
+import { INHERITED_KEPT, PUSHED_KEPT, TurnList } from "../turn/list";
 import type { TurnEntry, TurnLoopView, TurnPost, TurnStateWord } from "../types/turn";
 
 const id = (x: string): TurnEntry => ({ id: x });
@@ -184,6 +184,26 @@ describe("epochs", () => {
     l.post({ kind: "snapshot", epoch: "e2", seq: 1, state: "working", loops: [loop("main", "T1")], waiting: [], agents: [] });
     expect(threads(l)).toEqual([]);
   });
+
+  test("F7: a new epoch's own main touch, joined before that epoch's first snapshot, survives it", () => {
+    const l = new TurnList();
+    l.post({ kind: "snapshot", epoch: "e1", seq: 1, state: "working", loops: [loop("main", "T1")], waiting: [], agents: [] });
+    l.post({ kind: "tool", epoch: "e2", seq: 1, toolUseId: "tu1", agent: "main", turn: "T2" });
+    l.toolCall("tu1", ["M"]);
+    l.post({ kind: "snapshot", epoch: "e2", seq: 2, state: "working", loops: [loop("main", "T2")], waiting: [], agents: [] });
+    expect(threads(l)).toEqual(["M"]);
+  });
+
+  test("F8: a replaced epoch is never taken back (the old module instance's queue drains after a reload)", () => {
+    const l = new TurnList();
+    l.pushed("m1", "A");
+    l.post({ kind: "snapshot", epoch: "e1", seq: 1, state: "working", loops: [loop("main", "T1", [id("m1")])], waiting: [], agents: [] });
+    l.post({ kind: "snapshot", epoch: "e2", seq: 1, state: "idle", loops: [], waiting: [], agents: [] });
+    l.post({ kind: "snapshot", epoch: "e1", seq: 2, state: "working", loops: [loop("main", "T1", [id("m1")])], waiting: [], agents: [] });
+    expect(l.view()).toEqual({ state: "idle", threads: [] });
+    l.post({ kind: "snapshot", epoch: "e2", seq: 2, state: "working", loops: [loop("main", "T2", [id("m1")])], waiting: [], agents: [] });
+    expect(threads(l), "the current epoch still posts").toEqual(["A"]);
+  });
 });
 
 describe("work moved away", () => {
@@ -345,6 +365,37 @@ describe("delegated work (B1)", () => {
       m.snap([loop("c1", "C9")], "working", []);
       expect(threads(l), `listed: ${listed}`).toEqual([]);
     }
+  });
+
+  test("F4: the child's turn.complete lands BEFORE its report (the measured order): the hand-back still carries its touches and inherited set, and they light nothing meanwhile", () => {
+    for (const listed of [true, false]) {
+      const l = new TurnList();
+      const m = mod(l);
+      l.pushed("m1", "A");
+      const agents = listed ? ["c1"] : [];
+      m.snap([loop("main", "T1", [id("m1")])], "working", agents);
+      m.spawn("c1", { agent: "main", turn: "T1" });
+      m.snap([loop("c1", "C1")], "working", agents);
+      m.tool("tu1", "c1", "C1");
+      l.toolCall("tu1", ["B"]);
+      m.snap([loop("main", "T9")], "working", agents); // the child's turn.complete; main busy elsewhere
+      expect(threads(l), `closed child lights nothing (listed: ${listed})`).toEqual([]);
+      m.report("c1");
+      m.snap([loop("main", "T2", [hb("c1")])], "working", agents);
+      expect(new Set(threads(l)), `listed: ${listed}`).toEqual(new Set(["A", "B"]));
+    }
+  });
+
+  test("F9: sets of children never seen open are bounded; the oldest go first", () => {
+    const l = new TurnList();
+    const m = mod(l);
+    l.pushed("m1", "A");
+    m.snap([loop("main", "T1", [id("m1")])]);
+    for (let i = 0; i <= INHERITED_KEPT; i++) m.spawn(`c${i}`, { agent: "main", turn: "T1" });
+    m.snap([loop("c0", "C0")], "working", []);
+    expect(threads(l), "the oldest unseen set went").toEqual([]);
+    m.snap([loop(`c${INHERITED_KEPT}`, "CN")], "working", []);
+    expect(threads(l), "the newest is kept").toEqual(["A"]);
   });
 
   test("a spawn whose child has not been seen yet is not forgotten for lack of a loop", () => {

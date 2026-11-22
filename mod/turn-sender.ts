@@ -5,7 +5,8 @@
  * - Ordered posts (tool, spawn, report) go in event order; a snapshot queued before one goes before it, so
  *   the server never sees a spawn ahead of the step that lit the spawning turn.
  * - Snapshots are coalesced (one marker at the tail at most) and BUILT WHEN SENT, so a snapshot is never older
- *   than an ordered post ahead of it.
+ *   than an ordered post ahead of it — or when an ordered post queues behind one, so it is never newer than the
+ *   post behind it either (a spawn must not follow a snapshot in which its turn already closed).
  * - Every post carries `epoch` (random per module instance) and `seq` (counter, given at each attempt).
  * - A failed post stays at the head and is tried again at the next event or `resend()` (the socket changed or
  *   answered again). Nothing is derived from time.
@@ -13,7 +14,14 @@
 import type { TurnPost } from '../types/turn'
 import type { OrderedPost, SnapshotBody } from './turn-loops'
 
-type Item = OrderedPost | 'snapshot'
+/**
+ * The most posts waiting (no server takes them: none yet, or an older one's 404). The oldest go: a snapshot
+ * behind them supersedes theirs, and a lost tool or spawn post only leaves its thread unlit.
+ */
+export const QUEUE_MAX = 256
+
+/** A snapshot to build at send, or one built already (an ordered post came behind it). */
+type Item = OrderedPost | 'snapshot' | { built: SnapshotBody }
 
 export class TurnSender {
   private readonly queue: Item[] = []
@@ -37,13 +45,18 @@ export class TurnSender {
   changed(): void {
     // The head in flight was built already: a change after it needs a snapshot of its own.
     const tail = this.queue.length - 1
-    if (this.queue[tail] !== 'snapshot' || (tail === 0 && this.inFlight)) this.queue.push('snapshot')
+    if (this.queue[tail] !== 'snapshot' || (tail === 0 && this.inFlight)) this.push('snapshot')
     this.kick()
   }
 
   /** An ordered post, behind everything queued before it. */
   ordered(p: OrderedPost): void {
-    this.queue.push(p)
+    const tail = this.queue.length - 1
+    // Built now, so it shows no change that comes after this post (the spawning turn closing). A head in flight
+    // was built after the last change (a later one queues a marker of its own), so this is the body it carries:
+    // a failure sends that again.
+    if (this.queue[tail] === 'snapshot') this.queue[tail] = { built: this.build() }
+    this.push(p)
     this.kick()
   }
 
@@ -68,6 +81,12 @@ export class TurnSender {
     return this.queue.length
   }
 
+  /** Queue one item within QUEUE_MAX: the oldest go, never the head in flight. */
+  private push(item: Item): void {
+    this.queue.push(item)
+    while (this.queue.length > QUEUE_MAX) this.queue.splice(this.inFlight ? 1 : 0, 1)
+  }
+
   private kick(): void {
     if (this.sending || this.held) return
     this.sending = true
@@ -83,7 +102,8 @@ export class TurnSender {
   private async drain(): Promise<boolean> {
     while (this.queue.length) {
       const head = this.queue[0]
-      const body = (head === 'snapshot' ? { ...this.build(), epoch: this.epoch, seq: ++this.seq } : { ...head, epoch: this.epoch, seq: ++this.seq }) as TurnPost
+      const content = head === 'snapshot' ? this.build() : 'built' in head ? head.built : head
+      const body = { ...content, epoch: this.epoch, seq: ++this.seq } as TurnPost
       let ok = false
       this.inFlight = true
       try {

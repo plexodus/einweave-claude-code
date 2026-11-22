@@ -18,6 +18,10 @@ import type { LoopName, TurnEntry, TurnLoopView, TurnPost, TurnStateWord } from 
 /** Tools that run until the person answers: while one runs, the window waits on its person. */
 export const WAITS_ON_PERSON: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
+/** The most items any list of a post carries (the server refuses more: `turn/post.ts` MAX_ITEMS). The newest are kept. */
+export const LIST_MAX = 256
+const newest = <T>(xs: readonly T[]): T[] => xs.slice(-LIST_MAX)
+
 /** `$.agent.list()` statuses that mean the agent's loop has no open turn (never `taskStatus`). */
 const NOT_RUNNING: ReadonlySet<string> = new Set(['idle', 'completed', 'failed', 'killed'])
 
@@ -62,8 +66,8 @@ export class TurnLoops {
   private readonly asks = new Map<string, LoopName>()
   /** Tool calls in flight, by toolUseId → loop: a dialog waits on one of those open when it showed. */
   private readonly inflight = new Map<string, LoopName>()
-  /** A permission or MCP dialog shown: the calls in flight then (one of them asked). Ends when one returns. */
-  private dialog: Set<string> | null = null
+  /** A permission or MCP dialog shown: the call it asks for (the newest in flight then). Ends when that one returns. */
+  private dialog: string | null = null
   /** Hand-backs armed by `agent.report`: child → the loop that will read it. */
   private readonly armed = new Map<string, LoopName>()
   private agents: string[] = []
@@ -75,7 +79,10 @@ export class TurnLoops {
 
   /** An einweave entry's prompt ENTERED (its `next` resolved without `drop`): it waits for main's next request. */
   entered(id: string): void {
-    this.pendingOf(MAIN).push({ id })
+    // A redelivered entry already waiting, or already read by main's open turn, is the same entry.
+    const p = this.pendingOf(MAIN)
+    if (p.some(e => 'id' in e && e.id === id) || this.open.get(MAIN)?.inTurn.some(e => 'id' in e && e.id === id)) return
+    p.push({ id })
   }
 
   /** A hand-back prompt naming `child` entered: the armed hand-back joins its loop's `pending`. */
@@ -124,13 +131,17 @@ export class TurnLoops {
 
   /**
    * A tool call starts. `ours`: one of this plugin's tools, whose thread the server attributes to this loop's
-   * turn by `toolUseId`. A call of a loop with no open turn opens it (a reload never saw its `turn.start`).
+   * turn by `toolUseId`. Only such a call, or one that waits on the person, opens a loop with no open turn (a
+   * reload never saw its `turn.start`): any other tool call is no evidence of a turn (an engine fork's ids are
+   * listed nowhere and end no turn; another plugin's `$.tool.call` runs in main's name while main is idle).
    */
   toolCall(agentId: string | undefined, toolUseId: string, tool: string, ours: boolean): void {
     const name = loopOf(agentId)
-    const loop = this.openLoop(name, null)
+    const asks = WAITS_ON_PERSON.has(tool)
+    const loop = ours || asks ? this.openLoop(name, null) : this.open.get(name)
+    if (!loop) return
     this.inflight.set(toolUseId, name)
-    if (WAITS_ON_PERSON.has(tool)) this.asks.set(toolUseId, name)
+    if (asks) this.asks.set(toolUseId, name)
     if (ours) this.emit({ kind: 'tool', toolUseId, agent: name, turn: loop.turn })
   }
 
@@ -138,12 +149,15 @@ export class TurnLoops {
   toolDone(toolUseId: string): void {
     this.inflight.delete(toolUseId)
     this.asks.delete(toolUseId)
-    if (this.dialog?.has(toolUseId)) this.dialog = null
+    if (this.dialog === toolUseId) this.dialog = null
   }
 
-  /** A dialog shown to the person (`permission_prompt`, `elicitation_dialog`) blocks a call in flight. */
+  /**
+   * A dialog shown to the person (`permission_prompt`, `elicitation_dialog`) blocks a call in flight: the newest
+   * (a permission is asked as the call starts). Another loop's call returning never ends it.
+   */
   dialogShown(): void {
-    this.dialog = this.inflight.size ? new Set(this.inflight.keys()) : null
+    this.dialog = [...this.inflight.keys()].at(-1) ?? null
   }
 
   // ---------------------------------------------------------------- subagents
@@ -162,7 +176,10 @@ export class TurnLoops {
   /** `agent.report`: arms the hand-back for the loop that receives it (main when no parent). */
   reported(child: string, parentAgentId: string | undefined): void {
     const to = loopOf(parentAgentId)
+    // Bounded (a hand-back whose prompt never enters or drops frees nothing): a re-arm is the newest.
+    this.armed.delete(child)
     this.armed.set(child, to)
+    while (this.armed.size > LIST_MAX) this.armed.delete(this.armed.keys().next().value!)
     this.emit({ kind: 'report', agent: child, to })
   }
 
@@ -209,13 +226,17 @@ export class TurnLoops {
     return this.asks.size > 0 || this.dialog !== null ? 'needs_you' : 'working'
   }
 
-  /** Built when the sender SENDS it, so it is never older than an ordered post ahead of it. */
+  /**
+   * Built when the sender SENDS it, or when an ordered post queues behind it: never older than an ordered post
+   * ahead of it, never showing a change after one behind it.
+   */
   snapshot(): SnapshotBody {
     const loops: TurnLoopView[] = []
-    for (const [agent, l] of this.open) loops.push({ agent, turn: l.turn, inTurn: [...l.inTurn], pending: [...(this.pending.get(agent) ?? [])] })
+    for (const [agent, l] of this.open) loops.push({ agent, turn: l.turn, inTurn: newest(l.inTurn), pending: newest(this.pending.get(agent) ?? []) })
     const waiting: { agent: LoopName; pending: TurnEntry[] }[] = []
-    for (const [agent, p] of this.pending) if (!this.open.has(agent) && p.length) waiting.push({ agent, pending: [...p] })
-    return { kind: 'snapshot', state: this.state(), loops, waiting, agents: [...this.agents] }
+    for (const [agent, p] of this.pending) if (!this.open.has(agent) && p.length) waiting.push({ agent, pending: newest(p) })
+    // Every list within the server's bound, or the post is refused and the window's turn freezes there.
+    return { kind: 'snapshot', state: this.state(), loops: newest(loops), waiting: newest(waiting), agents: newest(this.agents) }
   }
 
   // ---------------------------------------------------------------- internals
@@ -248,8 +269,7 @@ export class TurnLoops {
     for (const [id, l] of this.inflight) {
       if (l !== name) continue
       this.inflight.delete(id)
-      this.dialog?.delete(id)
+      if (this.dialog === id) this.dialog = null
     }
-    if (this.dialog?.size === 0) this.dialog = null
   }
 }

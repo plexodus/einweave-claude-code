@@ -16,10 +16,16 @@ import type { LoopName, TurnEntry, TurnLoopView, TurnPost, TurnStateWord } from 
 export const PUSHED_KEPT = 1024;
 /** Tool joins waiting for their other half. */
 export const WAITERS_KEPT = 256;
+/** Inherited sets of children not yet seen open (a spawn whose loop never shows is freed by no event). */
+export const INHERITED_KEPT = 256;
+/** Replaced epochs remembered (one per mod reload): a post of one is refused. */
+export const RETIRED_KEPT = 64;
 
 type TurnRef = { agent: LoopName; turn: string | null };
 interface Touch extends TurnRef {
   thread: string;
+  /** The epoch it joined in: a new epoch's first snapshot drops only older ones. */
+  epoch: string | null;
 }
 interface Inherit {
   /** Spawning turns still open: the set follows them (a reply made after the spawn counts too). */
@@ -43,6 +49,8 @@ const turnMatches = (a: string | null, b: string | null) => a === null || b === 
 
 export class TurnList {
   private epoch: string | null = null;
+  /** Epochs a newer one replaced: the old module instance may still drain its queue after a reload. */
+  private readonly retired = new Set<string>();
   private seq = -1;
   /** The seq of the latest snapshot applied (a late tool join compares against it). */
   private snapSeq = -1;
@@ -59,6 +67,12 @@ export class TurnList {
   /** Pushed ids whose thread's work left, or whose conversation was re-keyed: they light nothing. ⊆ pushedIds. */
   private readonly tombs = new Set<string>();
   private touches: Touch[] = [];
+  /**
+   * Loops the latest snapshot closed, and their touches. A child's `turn.complete` lands BEFORE its
+   * `agent.report` (measured), so its report reads these; they light nothing and go at the next snapshot.
+   */
+  private closedNow = new Set<LoopName>();
+  private closedTouches: Touch[] = [];
   private readonly toolPosts = new Map<string, TurnRef & { seq: number }>();
   private readonly toolCalls = new Map<string, string[]>();
   private readonly inherited = new Map<string, Inherit>();
@@ -80,6 +94,7 @@ export class TurnList {
 
   /** One post from the mod, in its sender's order. */
   post(p: TurnPost): void {
+    if (this.retired.has(p.epoch)) return;
     if (p.epoch !== this.epoch) this.newEpoch(p.epoch);
     else if (p.seq <= this.seq) return;
     this.seq = p.seq;
@@ -125,6 +140,7 @@ export class TurnList {
   /** The thread's work left this session (release, handover, a hold moved away): its evidence goes. */
   drop(thread: string): void {
     this.touches = this.touches.filter((t) => t.thread !== thread);
+    this.closedTouches = this.closedTouches.filter((t) => t.thread !== thread);
     for (const [id, t] of this.pushedIds) if (t === thread) this.tombs.add(id);
     for (const inh of this.inherited.values()) inh.frozen.delete(thread);
     for (const hb of this.handbacks.values()) hb.frozen.delete(thread);
@@ -149,6 +165,7 @@ export class TurnList {
       } else this.handbacks.delete(e.agent);
     }
     this.touches = this.touches.filter((t) => t.agent !== "main");
+    this.closedTouches = this.closedTouches.filter((t) => t.agent !== "main");
     for (const [id, ref] of this.toolPosts) if (ref.agent === "main") this.toolPosts.delete(id);
   }
 
@@ -167,6 +184,10 @@ export class TurnList {
   // ---------------------------------------------------------------- internals
 
   private newEpoch(epoch: string): void {
+    if (this.epoch !== null) {
+      this.retired.add(this.epoch);
+      if (this.retired.size > RETIRED_KEPT) this.retired.delete(this.retired.values().next().value!);
+    }
     this.epoch = epoch;
     this.seq = -1;
     this.snapSeq = -1;
@@ -186,7 +207,7 @@ export class TurnList {
     if (this.epochFresh) {
       // A reload must not blank a subagent still working, nor lose the set of one that may yet resume.
       this.epochFresh = false;
-      this.touches = this.touches.filter((t) => t.agent !== "main" && next.has(t.agent));
+      this.touches = this.touches.filter((t) => t.epoch === this.epoch || (t.agent !== "main" && next.has(t.agent)));
       const listed = new Set(p.agents);
       for (const k of [...this.inherited.keys()]) if (!listed.has(k) && !next.has(k)) this.inherited.delete(k);
       for (const k of [...this.handbacks.keys()]) if (!listed.has(k)) this.handbacks.delete(k);
@@ -206,8 +227,11 @@ export class TurnList {
     for (const t of this.touches) if (t.turn === null) t.turn = next.get(t.agent)?.turn ?? null;
     for (const inh of this.inherited.values()) for (const r of inh.refs) if (r.turn === null) r.turn = next.get(r.agent)?.turn ?? null;
     // A touch goes with a snapshot in which its turn is closed. Only a newer snapshot gets here (seq), and the
-    // mod builds each snapshot when it sends it, so none is older than a touch it carries.
+    // mod builds each snapshot no earlier than the ordered posts ahead of it, so none is older than a touch it
+    // carries.
+    this.closedTouches = this.touches.filter((t) => !openIn(t, next));
     this.touches = this.touches.filter((t) => openIn(t, next));
+    this.closedNow = new Set([...this.loops.values()].filter((l) => !openIn(l, next)).map((l) => l.agent));
 
     this.loops = next;
     this.waitingOf = new Map(p.waiting.map((w) => [w.agent, w.pending]));
@@ -231,7 +255,7 @@ export class TurnList {
     if (ref.seq < this.snapSeq && !this.isOpen(ref)) return;
     for (const thread of threads) {
       if (!this.touches.some((t) => t.thread === thread && t.agent === ref.agent && t.turn === ref.turn)) {
-        this.touches.push({ agent: ref.agent, turn: ref.turn, thread });
+        this.touches.push({ agent: ref.agent, turn: ref.turn, thread, epoch: this.epoch });
       }
     }
   }
@@ -248,7 +272,11 @@ export class TurnList {
 
   private inheritOf(child: string): Inherit {
     let inh = this.inherited.get(child);
-    if (!inh) this.inherited.set(child, (inh = { refs: [], frozen: new Set(), seen: this.loops.has(child) }));
+    if (!inh) {
+      this.inherited.set(child, (inh = { refs: [], frozen: new Set(), seen: this.loops.has(child) }));
+      const unseen = [...this.inherited].filter(([, i]) => !i.seen).map(([k]) => k);
+      for (const k of unseen.slice(0, Math.max(0, unseen.length - INHERITED_KEPT))) this.inherited.delete(k);
+    }
     return inh;
   }
 
@@ -283,17 +311,18 @@ export class TurnList {
   /** Everything a child's work is for, at its report: its inherited set and every thread it touched. */
   private agentThreads(agent: string): Set<string> {
     const out = this.inheritedThreads(agent, new Set());
-    for (const t of this.touches) if (t.agent === agent) out.add(t.thread);
+    for (const t of [...this.touches, ...this.closedTouches]) if (t.agent === agent) out.add(t.thread);
     return out;
   }
 
   /**
    * An agent's inherited set and armed hand-back go once nothing names it (no open loop, no hand-back armed
    * TO it, no entry) and it is not listed: listed-then-gone, or never listed (a workflow agent) with its
-   * loop closed. A set whose child has not been seen open yet is kept (the spawn precedes the child's loop).
+   * loop closed. A set whose child has not been seen open yet is kept (the spawn precedes the child's loop),
+   * and so is one whose loop this snapshot closed (its report comes next).
    */
   private forget(): void {
-    const named = new Set<string>(this.loops.keys());
+    const named = new Set<string>([...this.loops.keys(), ...this.closedNow]);
     for (const hb of this.handbacks.values()) named.add(hb.to);
     for (const e of this.entries()) if ("agent" in e) named.add(e.agent);
     const gone = (k: string) => !named.has(k) && !this.agents.has(k);

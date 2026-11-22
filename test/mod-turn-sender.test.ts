@@ -1,6 +1,6 @@
 /** RFC-038 D3 — the mod's one ordered sender (`mod/turn-sender.ts`). */
 import { expect, test } from "bun:test";
-import { TurnSender } from "../mod/turn-sender";
+import { QUEUE_MAX, TurnSender } from "../mod/turn-sender";
 import type { SnapshotBody } from "../mod/turn-loops";
 import type { TurnPost } from "../types/turn";
 
@@ -36,7 +36,7 @@ function rig() {
   };
 }
 
-test("one post in flight; snapshots coalesce and are built when SENT; ordered posts keep their place", async () => {
+test("one post in flight; snapshots coalesce and are built when SENT, or when an ordered post queues behind them; ordered posts keep their place", async () => {
   const r = rig();
   await settle(); // release() drained an empty queue
   r.set("working");
@@ -52,7 +52,31 @@ test("one post in flight; snapshots coalesce and are built when SENT; ordered po
   expect(r.sent.map((p) => p.kind)).toEqual(["snapshot", "snapshot", "spawn", "snapshot"]);
   expect(r.sent.map((p) => p.seq)).toEqual([1, 2, 3, 4]);
   expect(r.sent.every((p) => p.epoch === "e1")).toBe(true);
-  expect((r.sent[1] as Extract<TurnPost, { kind: "snapshot" }>).state, "built at send: the latest state").toBe("idle");
+  const state = (i: number) => (r.sent[i] as Extract<TurnPost, { kind: "snapshot" }>).state;
+  expect(state(1), "F6: built when the spawn queued behind it, not after").toBe("working");
+  expect(state(3), "the tail one is built at send: the latest state").toBe("idle");
+});
+
+test("F6: a snapshot head that fails with an ordered post behind it goes again as it was built, not rebuilt after that post", async () => {
+  const r = rig();
+  await settle();
+  r.set("working");
+  r.s.changed(); // in flight (held), built "working"
+  r.failing(true);
+  r.s.ordered({ kind: "spawn", agent: "c1", from: { agent: "main", turn: "T1" } });
+  r.set("idle"); // the spawning turn closed after the spawn
+  r.open();
+  await settle();
+  expect(r.s.stalled).toBe(true);
+  r.failing(false);
+  r.s.changed();
+  await settle();
+  expect(r.sent.map((p) => (p.kind === "snapshot" ? `snapshot:${p.state}` : p.kind))).toEqual([
+    "snapshot:working",
+    "snapshot:working",
+    "spawn",
+    "snapshot:idle",
+  ]);
 });
 
 test("a failed post stays at the head and goes again at the next event, with a new seq", async () => {
@@ -122,6 +146,29 @@ test("a change queued after the drain's last look (before it hands back) is stil
     expect(sent.length, `depth ${depth}`).toBe(2);
     expect(s.waiting).toBe(0);
   }
+});
+
+test("F9: a queue no server takes (none yet, an older one's 404) is bounded; the newest posts are kept", async () => {
+  const sent: string[] = [];
+  let ok = false;
+  const s = new TurnSender("e1", () => ({ kind: "snapshot", state: "idle", loops: [], waiting: [], agents: [] }), async (p) => {
+    sent.push(p.kind === "tool" ? p.toolUseId : p.kind);
+    return ok;
+  });
+  s.release();
+  for (let i = 0; i < QUEUE_MAX + 10; i++) {
+    s.ordered({ kind: "tool", toolUseId: `tu${i}`, agent: "main", turn: "T1" });
+    await settle();
+  }
+  expect(s.waiting).toBe(QUEUE_MAX);
+  ok = true;
+  sent.length = 0;
+  s.resend();
+  await settle();
+  expect(sent.length, "resend's snapshot counts too").toBe(QUEUE_MAX);
+  expect(sent[0]).toBe("tu11");
+  expect(sent.at(-2)).toBe(`tu${QUEUE_MAX + 9}`);
+  expect(sent.at(-1)).toBe("snapshot");
 });
 
 test("nothing goes before release(); then the queue goes in order; a failure shows as stalled until it goes", async () => {

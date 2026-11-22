@@ -5,7 +5,8 @@
  */
 import type { TurnEntry, TurnLoopView, TurnPost } from "../types/turn";
 
-const MAX_ITEMS = 256;
+/** The most items any one list may carry (the mod keeps its newest: `mod/turn-loops.ts` LIST_MAX). */
+export const MAX_ITEMS = 256;
 const isStr = (v: unknown, max = 128): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
 const isTurn = (v: unknown): v is string | null => v === null || isStr(v);
 const isSeq = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;

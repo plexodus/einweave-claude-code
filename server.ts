@@ -224,6 +224,8 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR ?? "";
 // Stable for the lifetime of this plugin process — used when no session id is
 // available at all (e.g. older Claude Code versions)
 const FALLBACK_SESSION_KEY = crypto.randomUUID();
+/** This process, in the UI snapshot: a mod that sees another one knows the server restarted (RFC-038 D3: resend its turn). */
+const SERVER_BOOT: string = crypto.randomUUID();
 
 // Session key: the Bridge server reuses it as the context ID, so anything that
 // changes it mints a new context and orphans messages targeted at the old one.
@@ -3548,6 +3550,7 @@ function uiSnapshot() {
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
     uiSocket: ctlMgr?.companionPath() ?? null,
+    boot: SERVER_BOOT,
   });
 }
 

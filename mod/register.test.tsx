@@ -778,6 +778,8 @@ test('a snapshot with uiSocket: the thread tab reads over http.fetch on that soc
   const fetched: { url: string; socketPath?: string }[] = []
   let mode: 'ok' | 'refused' | 'error' = 'ok'
   on('http.fetch', (_$, e) => {
+    // The turn's own posts (RFC-038 D3) go on the same socket: this test is about the thread tab's reads.
+    if (e.url === 'http://einweave/turn') return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
     fetched.push({ url: e.url, socketPath: e.init?.socketPath })
     if (mode === 'refused') throw new Error('refused by policy')
     if (mode === 'error') return { value: { status: 409, ok: false, headers: {}, text: JSON.stringify({ error: 'einweave not connected — run /einweave:connect first.' }) } }
@@ -2641,4 +2643,34 @@ test('turn: seeded loops first, an entered entry pending then read at the step, 
   const last = snaps.at(-1)
   expect(last.state, 'main aborted; the seeded subagent works on').toBe('working')
   expect(last.loops.map((l: any) => l.agent)).toEqual(['sub-1'])
+})
+
+/** RFC-038 D3: a restarted plugin server has the same socket path (keyed by Claude Code's pid) and none of the turn. */
+test('turn: a snapshot naming another server boot sends the turn again; the same boot sends nothing', async ($, on) => {
+  const posts: any[] = []
+  on('http.fetch', (_$, e) => {
+    if (e.url === 'http://einweave/turn') {
+      posts.push(JSON.parse(String(e.init?.body)))
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
+    }
+    return { value: { status: 404, ok: false, headers: {}, text: '{}' } }
+  })
+  on('agent.list', () => ({ value: [] as never }))
+  const at = (boot: string) => ({ ...SNAP, uiSocket: '/tmp/ew/u1.sock', boot })
+  // Each relay ends after its snapshot (the server went): the same server, then a restarted one.
+  const { spawns, clock } = engine(on, { polled: at('boot-1'), pushes: [[line(1, at('boot-1'))], [line(1, at('boot-1'))], [line(1, at('boot-2'))]] })
+  await start($, clock)
+  await clock.settle()
+  const first = posts.length
+  expect(first, 'the first snapshot went').toBeGreaterThan(0)
+  expect(spawns.length).toBe(1)
+  for (let i = 0; i < 40 && spawns.length < 2; i++) await clock.advance(1_000)
+  await clock.settle()
+  const before = posts.length
+  expect(spawns.length).toBe(2)
+  expect(before, 'the same server again: nothing').toBe(first)
+  for (let i = 0; i < 40 && spawns.length < 3; i++) await clock.advance(1_000)
+  await clock.settle()
+  expect(spawns.length).toBeGreaterThanOrEqual(3)
+  expect(posts.slice(before).filter(p => p.kind === 'snapshot').length, 'the restarted server gets the turn, once').toBe(1)
 })

@@ -160,6 +160,7 @@ async function take($: EngineInterface, got: { rev: number; snap: UiSnapshot }, 
   // While the relay is live it is the truth (the plugin pushes every change on it): a poll's answer, however
   // late it lands, never overwrites it. A restarted plugin's relay counts from rev 1 under a higher polled rev.
   await update($, view, v => (live === undefined && v.live ? v : { ...applySnapshot(v, got.rev, got.snap, now, restart), ...(live === undefined ? {} : { live }) }))
+  turnResync($, got.snap)
   if (!wasDown && got.snap.connection.state === 'disconnected') $.clock.after(BAND_GRACE_MS + 50, () => detach(update($, view, v => ({ ...v }))))
 }
 
@@ -626,8 +627,8 @@ function placed(off: number, atTop: boolean, w: PaneWindow, sc: PaneScroll | und
 const EINWEAVE_TOOL = /^mcp__(?:plugin_einweave_)?einweave__/
 /** Posts through the engine of the latest event (a hooks module never keeps `$` itself). */
 let turnPoster: ((body: TurnPost) => Promise<boolean>) | null = null
-/** The socket the last post went to: a new one (a restarted plugin server) gets the snapshot again. */
-let turnSocket: string | null = null
+/** The server process the last post reached (its UI snapshot's `boot`): another one restarted and gets the snapshot again. */
+let turnBoot: string | null = null
 const turnSender = new TurnSender(
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   () => turnLoops.snapshot(),
@@ -637,10 +638,11 @@ const turnLoops = new TurnLoops(p => turnSender.ordered(p))
 
 /** One post. A refused one (400 malformed, 413 too large) is spent: it would never go. 404 (an older server) and no socket wait. */
 async function postTurn($: EngineInterface, body: TurnPost): Promise<boolean> {
-  const socketPath = (await read($, view)).snap?.uiSocket
+  const snap = (await read($, view)).snap
+  const socketPath = snap?.uiSocket
   if (!socketPath) return false
   const r = await $.http.fetch('http://einweave/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), socketPath })
-  turnSocket = socketPath
+  turnBoot = snap.boot ?? null
   if (r.status === 400 || r.status === 413) $.ui.log(`einweave turn post refused (${r.status})`, { to: 'debug' })
   return r.ok || r.status === 400 || r.status === 413
 }
@@ -654,6 +656,16 @@ function postVia($: EngineInterface): void {
 function turnChanged($: EngineInterface): void {
   postVia($)
   turnSender.changed()
+}
+
+/**
+ * A snapshot landed: a restarted plugin server (another `boot`, the same socket path) has none of this window's
+ * turn, and a post that failed waits for no next event: the snapshot goes again now.
+ */
+function turnResync($: EngineInterface, snap: UiSnapshot | null | undefined): void {
+  if (!snap?.uiSocket || ((snap.boot ?? null) === turnBoot && !turnSender.stalled)) return
+  postVia($)
+  turnSender.resend()
 }
 
 /** Close the subagent loops `$.agent.list()` says are done (a missed `turn.complete`), never by time. */
@@ -703,11 +715,7 @@ export const register: Register = on => {
     $.clock.every(POLL_MS, () => {
       detach(
         read($, view).then(v => {
-          // RFC-038 D3: a restarted plugin server (a new socket), or a post that failed with no event since.
-          if (v.snap?.uiSocket && (v.snap.uiSocket !== turnSocket || turnSender.stalled)) {
-            postVia($)
-            turnSender.resend()
-          }
+          turnResync($, v.snap)
           return v.live ? undefined : poll($)
         }),
       )
