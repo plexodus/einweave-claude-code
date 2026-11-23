@@ -121,6 +121,7 @@ describe("reply posts a threaded reply to the thread-native route", () => {
   let plugin: ReturnType<typeof Bun.spawn>;
   let out = "";
   let nextId = 1;
+  let instructions = "";
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "twire-"));
@@ -151,7 +152,7 @@ describe("reply posts a threaded reply to the thread-native route", () => {
     send({ jsonrpc: "2.0", id: initId, method: "initialize", params: {
       protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "0" },
     }});
-    await waitForId(initId);
+    instructions = String((await waitForId(initId)).result?.instructions ?? "");
     send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
   }, 30_000);
 
@@ -244,6 +245,42 @@ describe("reply posts a threaded reply to the thread-native route", () => {
     const r = await callTool("reply", { channel_id: "general", text: "hi", thread_id: "  " });
     expect(r.isError).toBe(true);
     expect(r.text).toContain("thread_id is required");
+    expect(stub.sends.length).toBe(0);
+  });
+
+  // One code mechanism: code is a Markdown fence, never a message type. What the model is told (instructions, tool
+  // description, schema) and what the tool accepts are one list; anything off it is refused before a send.
+  test("the model is told code is a fence: no `code` type in the schema, the description or the instructions", async () => {
+    const id = nextId++;
+    send({ jsonrpc: "2.0", id, method: "tools/list", params: {} });
+    const tools: { name: string; description: string; inputSchema: any }[] = (await waitForId(id)).result.tools;
+    const reply = tools.find((t) => t.name === "reply")!;
+    expect(reply.inputSchema.properties.type.enum).toEqual(["text", "question", "status", "response"]);
+    expect(reply.description).toContain("type (text, question, status, response)");
+    expect(reply.description).toContain('```lang title="name"');
+    expect(instructions).toContain("Message types: text (default), question, status, response.");
+    expect(instructions).toContain('```lang title="name"');
+  });
+
+  test("type code is refused with the fence, nothing sent", async () => {
+    const r = await callTool("reply", { channel_id: "general", text: "x = 1", type: "code" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('type "code" is gone');
+    expect(r.text).toContain('```lang title="name"');
+    expect(stub.sends.length).toBe(0);
+  });
+
+  test("an unknown type is refused with the list, never sent as text", async () => {
+    const r = await callTool("reply", { channel_id: "general", text: "hi", type: "memo" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('type "memo" is not a message type: text, question, status, response.');
+    expect(stub.sends.length).toBe(0);
+  });
+
+  test("type task keeps its create_item pointer, nothing sent", async () => {
+    const r = await callTool("reply", { channel_id: "general", text: "do it", type: "task" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("create_item");
     expect(stub.sends.length).toBe(0);
   });
 

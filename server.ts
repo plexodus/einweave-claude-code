@@ -66,6 +66,7 @@ import { clearNote, holdsNote } from "./clear-note";
 import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, refIdsOf, render, shouldDismiss } from "./link/adapter";
 import { planReplyTo, referenceFields } from "./reply-to";
+import { REPLY_TYPES, replyTypeRefusal } from "./reply-types";
 import type { WorkspaceLinks } from "./vendor/einweave-agent-sdk/core/index.js";
 import { MissedTracker } from "./delivery/missed";
 import { forYouBox } from "./delivery/for-you";
@@ -2597,7 +2598,7 @@ const mcp = new Server(
       "",
       "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
-      "Message types: text (default), question, code, status, response.",
+      "Message types: " + REPLY_TYPES.map((t) => (t === "text" ? "text (default)" : t)).join(", ") + ". Code goes in a Markdown fence, ```lang title=\"name\" (both optional): einweave shows it as a code block headed lang · name.",
       "",
       "WORK ITEMS (task, bug, feature, request) are threads with a status, an assignee and structured activity. Call item_schema once per session before filing or editing them. Each has a key, the workspace prefix and a number (EW-112): name items to people by it, and pass it anywhere a thread_id is asked for. create_item files one (read the `similar` it returns before going on); list_items(assignee: \"me\") lists your work; read_thread shows an item's header (work). Claiming work is update_item(assignee: \"me\") -- that makes this agent the assignee; take only moves a thread's hold between this agent's sessions. As the assignee, report with add_activity, not prose: a plan when you start, progress at least every ~15 minutes on long work, needs_input when blocked, and END with a result (proposed {reason}) -- never by resolving: a person resolves (resolve_item) or the review policy does. Events about items you are part of arrive as type=\"thread_event\".",
       "",
@@ -2630,7 +2631,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "reply",
       description:
-        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, code, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it); a message that links to another one ends with a line naming it (↳ links to sender: \"excerpt\" (message id, thread id)), and read rows carry links_to. Never cite seq to people; seq is for paging.",
+        "Send a message to an einweave channel. Pass channel_id from the inbound message. Optionally set type (text, question, status, response), title (names a new thread), and thread_id to reply into an existing thread; on a reply in a work item, assignee assigns it in the same step. To file a work item (task, bug, feature, request) use create_item. The first post this agent makes in an unheld thread makes this session its holder; the result says whether this session holds the thread or only contributed to a sibling session's. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it); a message that links to another one ends with a line naming it (↳ links to sender: \"excerpt\" (message id, thread id)), and read rows carry links_to. Never cite seq to people; seq is for paging. Code goes in a Markdown fence, ```lang title=\"name\" (both optional): einweave shows it as a code block headed lang · name.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2642,14 +2643,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: "string", description: "Message content." },
           type: {
             type: "string",
-            enum: [
-              "text",
-              "question",
-              "code",
-              "status",
-              "response",
-            ],
-            description: "Message type. Default: text.",
+            enum: [...REPLY_TYPES],
+            description: "Message type. Default: text. Code is not a type: put it in a Markdown fence.",
           },
           thread_id: {
             type: "string",
@@ -3685,9 +3680,7 @@ async function runTool(name: string, args: Record<string, unknown>, touched: str
         if (args.context_id !== undefined) {
           throw new Error("context_id is gone (RFC-028): the thread's hold decides who receives replies. To move a thread to another session of this agent, use handover; to take one, use take.");
         }
-        if (type === "task") {
-          throw new Error("type \"task\" is gone (RFC-029): file a work item with create_item(kind: \"task\", …).");
-        }
+        { const refused = replyTypeRefusal(type); if (refused) throw new Error(refused); }
         // RFC-035 D8: answering one message. Checked first; a target's thread or channel is the server's
         // answer (`/location`, one 404 for unknown and unreadable), never a guess.
         const replyPlan = planReplyTo(args);
