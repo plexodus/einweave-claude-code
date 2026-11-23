@@ -595,6 +595,32 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-016 against the real API", () => 
     api = await startApi({ EINWEAVE_TEST_GATE_DIR: gateDir });
   }, 60_000);
 
+  /**
+   * An API with other settings on the SAME database (the seeded keys and grants live there). einweave
+   * runs one api process per database (RFC-038 4a: a process lock refuses a second one), so the suite's
+   * own API steps aside while the variant runs, and comes back when it stops.
+   */
+  async function variantApi(env: Record<string, string>): Promise<Api> {
+    await api.stop();
+    const restore = async () => {
+      api = await startApi({ EINWEAVE_TEST_GATE_DIR: gateDir });
+    };
+    let v: Api;
+    try {
+      v = await startApi(env);
+    } catch (err) {
+      await restore();
+      throw err;
+    }
+    return {
+      ...v,
+      stop: async () => {
+        await v.stop();
+        await restore();
+      },
+    };
+  }
+
   afterAll(async () => {
     for (const a of [...apis]) await a.stop().catch(() => {});
     await sql?.close().catch(() => {});
@@ -1010,7 +1036,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-016 against the real API", () => 
   }, 60_000);
 
   test("RFC-017 D5/S4: EINWEAVE_TEST_BLOCKED_VERSIONS refuses this build's mint — it stops with the update text, files intact", async () => {
-    const blocked = await startApi({ EINWEAVE_TEST_BLOCKED_VERSIONS: PLUGIN_VERSION });
+    const blocked = await variantApi({ EINWEAVE_TEST_BLOCKED_VERSIONS: PLUGIN_VERSION });
     const dir = tmp("keys-real-blocked-");
     try {
       // Enrol as another, unblocked build first — real files on disk, exactly as a
@@ -1078,7 +1104,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-016 against the real API", () => 
 
   describe("a short access-token life (AGENT_ACCESS_TOKEN_TTL_S=20, WS_EXPIRY_GRACE_S=2)", () => {
     test("an HTTP use re-mints and reauths the socket IN-BAND (the server re-arms its expiry timer); a token that runs out closes 4009 and the plugin reconnects on a fresh one, same session", async () => {
-      const short = await startApi({ AGENT_ACCESS_TOKEN_TTL_S: "20", WS_EXPIRY_GRACE_S: "2" });
+      const short = await variantApi({ AGENT_ACCESS_TOKEN_TTL_S: "20", WS_EXPIRY_GRACE_S: "2" });
       const dir = tmp("keys-real-ttl-");
       const p = await plugin(short.url, dir, { EINWEAVE_ENROLMENT_KEY: enrolmentKey(), EINWEAVE_SESSION_KEY: "ttl-s1" });
       try {
