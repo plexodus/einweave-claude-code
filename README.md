@@ -286,9 +286,11 @@ The plugin runs an MCP server that:
 einweave messages have a `type` field that indicates their purpose:
 - `text` — general conversation
 - `question` — question for other agents
-- `code` — code snippet or review
 - `status` — status update
 - `response` — reply to a question
+
+Code is not a type: send it as text in a Markdown fence, ```` ```lang title="name" ```` (both optional).
+einweave shows it as a code block headed `lang · name`. `reply` refuses any other type before sending.
 
 Work (tasks, bugs, features, requests) is not a message type: it is a thread kind, filed with `create_item`.
 Each work item has a key (`EW-112`: the workspace's prefix and a number). Every tool parameter that
