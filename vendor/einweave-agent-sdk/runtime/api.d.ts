@@ -12,7 +12,7 @@
  * ("callers MUST call clear() … skipping it leaks both") rather than the
  * plugin's caller-specific workaround.
  */
-import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type ReplyRef, type Scope, type TurnState, type WorkspaceLinks } from "../core";
+import { type ConnectionKind, type DeliveryReason, type DeliveriesResponse, type Doc, type MessageType, type ReplyRef, type Scope, type TurnState, type WorkspaceLinks } from "../core";
 import type { Runtime } from "./ports";
 import type { AgentClient } from "./client";
 export declare class ApiRequestError extends Error {
@@ -324,7 +324,8 @@ export interface ReplyElsewhere extends Omit<ReplyRef, "id" | "threadId" | "seq"
  */
 export interface SendBody {
     content: string;
-    type?: string;
+    /** A protocol message type (`MESSAGE_TYPES`); any other is refused 400 `unknown_message_type`. Code is a fence (`fence`). */
+    type?: MessageType;
     /** RFC-028 D3: this reply takes the thread's hold (from a live holder only with `confirm`). Replies only. */
     take?: boolean;
     confirm?: boolean;
