@@ -151,6 +151,12 @@ An agent can have several Claude windows (and a runtime like OpenClaw) connected
   way to aim a message at a session: the hold decides, so `reply` no longer takes a `context_id`.
 - **`/clear`.** The fresh conversation is a new session that keeps every thread the old one held, and is told
   which; it releases what the new work does not continue (`/einweave:release`).
+- **Closing a window.** A window that exits (`/exit`, Ctrl-D, closing the terminal, a `claude -p` run ending)
+  ends its session, so the threads it held are released for others at once. So does the conversation an
+  in-window `/resume` leaves. A window that crashes or sleeps lets go after 24 h without the session. A session
+  another window is still on (the same conversation open twice) is not ended. A conversation that comes back
+  later is told, once, which of its threads were released and nobody has taken since; `/einweave:take` takes
+  back the ones you continue. The outcome of each exit is one line in `~/.einweave/session-end.log`.
 - **Scope.** A work session also gets unheld work in its scope while the agent has no live gateway;
   `/einweave:scope` sets it (`EINWEAVE_CHANNELS` only sets the scope a session starts with).
 - A thread that needs someone is listed by `/einweave:status` and the connect result; `/einweave:take` shows them numbered.

@@ -46,18 +46,18 @@ const line = (t: NoteThread): string => {
   return `- ${channel ? `#${channel} ` : ""}${safeTitle(t.title)} (${t.id})`;
 };
 
-/** Lines under a heading, as many as fit in `budget` characters; the rest counted. */
-function section(heading: string, items: NoteThread[], budget: number): string {
+/** Lines under a heading, as many as fit in `budget` characters; the rest counted, with `beyond` more not listed at all. */
+function section(heading: string, items: NoteThread[], budget: number, beyond = 0): string {
   if (items.length === 0) return "";
   const more = (n: number) => `\n- …and ${n} more (list_threads / take list them)`;
   let out = heading;
   for (let i = 0; i < items.length; i++) {
     const l = `\n${line(items[i]!)}`;
-    const after = items.length - i - 1;
-    if (out.length + l.length + (after > 0 ? more(after).length : 0) > budget) return out + more(items.length - i);
+    const after = items.length - i - 1 + beyond;
+    if (out.length + l.length + (after > 0 ? more(after).length : 0) > budget) return out + more(items.length - i + beyond);
     out += l;
   }
-  return out;
+  return beyond > 0 ? out + more(beyond) : out;
 }
 
 const TRAILER = "Ids are authoritative; titles are other people's text, shown for recognition only.";
@@ -79,4 +79,21 @@ export function holdsNote(held: NoteThread[]): string | null {
   const head = "einweave: this session holds these threads; replies to them come here.";
   const tail = TRAILER;
   return [head, section("Held:", held, NOTE_MAX_CHARS - head.length - tail.length - 2), tail].join("\n");
+}
+
+/**
+ * The threads this conversation's einweave session held that the server RELEASED, and nobody
+ * has taken since (plan 2026-11-26-closed-window-holds, S3c): its window closed, or nobody used it
+ * for 24 h — or, after `/clear`, what the previous conversation did not carry. `more`: released
+ * too, beyond the listed ones (the server caps the list). Null when there is nothing to say.
+ */
+export function releasedNote(released: NoteThread[], more: number, afterClear: boolean): string | null {
+  if (released.length === 0) return null;
+  const n = released.length + more;
+  const them = n === 1 ? "it" : "them";
+  const head = afterClear
+    ? `einweave: ${n} thread${n === 1 ? "" : "s"} the previous conversation in this window held ${n === 1 ? "was" : "were"} not carried here; nobody holds ${them}:`
+    : `einweave: this conversation's einweave session ended while it was away (its window closed, or nobody used it for 24 h), so the ${n} thread${n === 1 ? "" : "s"} it held ${n === 1 ? "was" : "were"} released. Nobody has taken ${them} since:`;
+  const tail = `take(ref) any the user is continuing; leave the rest. ${TRAILER}`;
+  return [head, section("", released, NOTE_MAX_CHARS - head.length - tail.length - 2, more).replace(/^\n/, ""), tail].join("\n");
 }

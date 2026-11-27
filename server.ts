@@ -58,11 +58,12 @@ import { resolveProfile, profileLabel } from "./auth/profile";
 import { SignIn, describeCredential, waitFor } from "./auth/login";
 import { PLUGIN_CLIENT_ID } from "./auth/client-id";
 import { Session, createRuntime, isApiRequestError, type Api, type MyWorkspace, type SearchRefusal, type SearchResponse, type SearchThreadRow, type SearchMessageRow, type ReadOutcome, type DeliveryAdapter, type Entry, type PendingEntry, type SessionStatus, type SessionStop, type MessageRefPreview } from "./vendor/einweave-agent-sdk/index.js";
-import { deadline, snippetParts, type SnippetPart } from "./vendor/einweave-agent-sdk/core/index.js";
+import { deadline, snippetParts, type SnippetPart, type ReleasedThread } from "./vendor/einweave-agent-sdk/core/index.js";
 import { sessionLock, fileSeqStore, type SessionLockHandle, type LockRecord } from "./vendor/einweave-agent-sdk/node.js";
 import { createHolds } from "./holds";
 import { readPendingReplace, writePendingReplace, clearPendingReplace } from "./replace-store";
-import { clearNote, holdsNote } from "./clear-note";
+import { clearNote, holdsNote, releasedNote } from "./clear-note";
+import { wasTold, markTold } from "./released-store";
 import type { SessionSource } from "./delivery/ctl-protocol";
 import { channelAdapter, refIdsOf, render, shouldDismiss } from "./link/adapter";
 import { planReplyTo, referenceFields } from "./reply-to";
@@ -1784,11 +1785,16 @@ function onStatus(st: SessionStatus): void {
       serverScope = st.scope ?? null;
       labelSetting.adopt(st.label);
       serverHolds = st.holds ?? [];
-      if (replaceSentBy && replaceSentBy === session) {
+      const replaced = replaceSentBy !== null && replaceSentBy === session;
+      if (replaced) {
         replaceSentBy = null;
         clearPendingReplace(STATE_DIR, SESSION_KEY);
-        void announceReplace(SESSION_KEY, st);
       }
+      // S3c: a release told once per ended session (the server repeats it on every auth).
+      const lost = st.released && st.released.length > 0 && st.releasedFrom && !wasTold(STATE_DIR, st.releasedFrom) ? st : null;
+      // Told from here on, before any await: a reconnect during the note's titles wait must not tell it again.
+      if (lost?.releasedFrom) markTold(STATE_DIR, lost.releasedFrom);
+      if (replaced || lost || noteWaiter?.key === SESSION_KEY) void announce(SESSION_KEY, replaced ? st : null, lost);
       // Read-tool acks that found no Session go to this one — if it is the same profile and agent.
       if (session) returnedAcks.flush(session, { profile: PROFILE_LABEL, agentId });
       noteServerAdvice(st.advice);
@@ -2033,8 +2039,10 @@ function recordReplace(from: string, to: string): void {
 /** The ctl `session` op (SessionStart): re-key, and the note this conversation starts with, if any. */
 async function onSessionStart(id: string, source: SessionSource | undefined): Promise<{ rekeyed: boolean; context: string | null }> {
   const rekeyed = rekeyTo(id, source);
-  if (rekeyed && source === "clear" && wantConnected && readPendingReplace(STATE_DIR, id)) {
-    return { rekeyed, context: await waitForNote(id) };
+  // After /clear: what the window carried. After an in-window /resume: what that conversation's
+  // session lost while it was away (S3c) -- known at its first `authenticated`.
+  if (rekeyed && wantConnected && ((source === "clear" && readPendingReplace(STATE_DIR, id)) || source === "resume")) {
+    return { rekeyed, context: await waitForNote(id, source === "resume" ? RESUME_NOTE_WAIT_MS : CLEAR_NOTE_WAIT_MS) };
   }
   if (!rekeyed && source === "compact" && authenticated && serverHolds.length > 0) {
     const titled = await withTimeout(holds.titlesOf(serverHolds), CLEAR_NOTE_WAIT_MS).catch(() => null);
@@ -2045,9 +2053,11 @@ async function onSessionStart(id: string, source: SessionSource | undefined): Pr
 
 // Measured 2026-10-23 (prod, n=11): /clear → the new session registered in 0.8-1.8 s.
 const CLEAR_NOTE_WAIT_MS = 5000;
+// After an in-window /resume there is usually nothing to say: wait less (a late note still comes, as a notice).
+const RESUME_NOTE_WAIT_MS = 2500;
 
 /** The /clear note for `key`, once its first `authenticated` answered — or null after the wait (it then goes as a notice). */
-function waitForNote(key: string): Promise<string | null> {
+function waitForNote(key: string, ms = CLEAR_NOTE_WAIT_MS): Promise<string | null> {
   return new Promise((resolve) => {
     noteWaiter?.resolve(null);
     const me = { key, resolve };
@@ -2056,7 +2066,7 @@ function waitForNote(key: string): Promise<string | null> {
       if (noteWaiter !== me) return;
       noteWaiter = null;
       resolve(null);
-    }, CLEAR_NOTE_WAIT_MS).unref?.();
+    }, ms).unref?.();
   });
 }
 
@@ -2065,20 +2075,37 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 /**
- * The first `authenticated` after a `replaces` declaration: what this conversation holds now.
- * To the waiting SessionStart hook, else (window connected later, hook gave up) as a channel
- * notice. `holds` (not `carried`): if the answer to the declaring connect was lost, the SDK
- * declares again and the server answers that a no-op, but the holds are still right (review F7).
+ * What a conversation is told at an `authenticated`: after a `replaces` declaration (`replaced`),
+ * what it holds now; and (S3c, `lost`) the threads its previous session held that the server
+ * released and nobody has taken since -- once per ended session (`releasedFrom`, marked told by the
+ * caller; a conversation that changes again during the titles wait is not told). To the waiting
+ * SessionStart hook (which also gets a null: nothing to say), else as a channel notice (window
+ * connected later, hook gave up, a launch /resume). `holds` (not `carried`): if the answer to the
+ * declaring connect was lost, the SDK declares again and the server answers that a no-op, but the
+ * holds are still right (review F7).
  */
-async function announceReplace(key: string, st: { holds?: string[] }): Promise<void> {
-  let note: string | null = null;
+async function announce(
+  key: string,
+  replaced: { holds?: string[] } | null,
+  lost: { released?: ReleasedThread[]; releasedFrom?: string; releasedMore?: number } | null
+): Promise<void> {
+  const parts: string[] = [];
   try {
-    const held = st.holds ?? [];
-    const titled = held.length > 0 ? await withTimeout(holds.titlesOf(held), CLEAR_NOTE_WAIT_MS).catch(() => null) : [];
-    note = clearNote(titled ?? held.map((t) => ({ id: t, title: null })));
+    if (replaced) {
+      const held = replaced.holds ?? [];
+      const titled = held.length > 0 ? await withTimeout(holds.titlesOf(held), CLEAR_NOTE_WAIT_MS).catch(() => null) : [];
+      const n = clearNote(titled ?? held.map((t) => ({ id: t, title: null })));
+      if (n) parts.push(n);
+    }
+    if (lost?.released && lost.releasedFrom) {
+      const threads = lost.released.map((t) => ({ id: t.threadId, title: t.title, channel: t.channelName }));
+      const n = releasedNote(threads, lost.releasedMore ?? 0, replaced !== null);
+      if (n) parts.push(n);
+    }
   } catch (err) {
-    process.stderr.write(`einweave channel: /clear note failed: ${err}\n`);
+    process.stderr.write(`einweave channel: session note failed: ${err}\n`);
   }
+  const note = parts.length > 0 ? parts.join("\n\n") : null;
   if (noteWaiter?.key === key) {
     const w = noteWaiter;
     noteWaiter = null;
@@ -2093,8 +2120,10 @@ async function announceReplace(key: string, st: { holds?: string[] }): Promise<v
  * switch Claude Code to another conversation WITHOUT restarting this server, which would
  * otherwise keep the key it was spawned with (measured 2026-10-11: 13 h on the previous
  * conversation's session after a `/clear`). The SessionStart hook reports the new id over
- * the control socket; this re-keys. Nothing is stranded: the old session's deliveries stay
- * with its grant on the server and come back when that conversation is resumed.
+ * the control socket; this re-keys. The old key's client stops at once (S3b). After `/clear` the
+ * new conversation carries the old one's threads (the window keeps them); after `/resume` the
+ * conversation that left this window ends its session, so its threads are released (S3a, plan
+ * 2026-11-26-closed-window-holds: no seat, no threads) -- unless another window is on it.
  *
  * Returns whether it re-keys. Never with an operator override, before the key is settled,
  * for an id the server would reject, or for the id already in use.
@@ -2104,6 +2133,8 @@ function rekeyTo(conversationId: string, source = ""): boolean {
   if (!sessionKeySettled || shuttingDown) return false;
   if (!SESSION_KEY_REGEX.test(conversationId) || conversationId === SESSION_KEY) return false;
   const from = SESSION_KEY;
+  creds.retire(from);
+  if (source === "resume") void endLeftConversation(from);
   // RFC-028 §11: only a /clear replaces the conversation (resume/startup/compact declare nothing).
   if (source === "clear") recordReplace(from, conversationId);
   SESSION_KEY = conversationId;
@@ -2147,6 +2178,16 @@ function rekeyTo(conversationId: string, source = ""): boolean {
   if (wantConnected) restartConnection();
   else stopConnection(); // the new conversation was left disconnected: say so everywhere
   return true;
+}
+
+/** S3a: an in-window `/resume` took conversation `key` out of this window; its session ends -- unless another window is on it. */
+async function endLeftConversation(key: string): Promise<void> {
+  try {
+    const r = await creds.endConversation(key, STATE_DIR, { claudePid: myIdentity().claudePid, current: () => SESSION_KEY });
+    process.stderr.write(`einweave channel: the session of ${key} (left this window): ${r ?? "no profile"}\n`);
+  } catch (err) {
+    process.stderr.write(`einweave channel: could not end the session of ${key} (${err}); it ends after 24 h idle\n`);
+  }
 }
 
 /** Close the link and stop every retry (disconnect, logout). */
@@ -2596,7 +2637,7 @@ const mcp = new Server(
       "",
       "The list_channels tool shows available channels. The list_agents tool shows connected agents and their status; list_presence shows who is around — people and agents, connected or when last seen. The read_messages tool reads a channel oldest-first; with no since_seq it returns only the NEWEST page, so use the next_since_seq it hands back to continue exactly, or since_seq: 0 to read from the start. It returns root messages only: read_thread(thread_id) reads a thread's replies (including ones sent before this session connected), and list_threads(channel_id) shows which threads have unread messages. Reading marks what you read as read; pass mark_read: false to peek. read_deliveries returns everything einweave still owes this session — pushed entries that did not reach you, including work-item events and action requests — and clears them; call it when told entries did not arrive. Before starting a NEW thread (reply without thread_id), call list_threads(channel_id, query: <what it is about>) — if a similar thread exists, reply into it instead; and give a new thread a title. When a reply answers a question thread YOU started, accept it with mark_answer(thread_id, message_id) — that resolves the question for everyone. Posting needs membership: if a reply fails with join_required, call join_channel(channel_id) and send again. who_can_see(channel_id) tells you who will read what you post. To answer a specific message use reply_to (its id or url): an inbound reply shows what it answers on its first line (↪ sender: \"excerpt\") and in reply_to. To mention a message in prose paste its url (read_messages and read_thread rows carry it); a message that links to another one ends with a line naming it (↳ links to sender: \"excerpt\" (message id, thread id)), and read rows carry links_to. Never cite seq to people; seq is for paging.",
       "",
-      "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
+      "Agents can run several sessions. A THREAD is held by one session of the agent: the first post an agent makes in an unheld thread (starting it, or the first reply) makes that session its holder, and replies to the thread then come to that session only. The reply result says whether this session holds the thread or only contributed to a sibling session's (\"contribution\": the holder gets the replies, not you). take(ref) takes a thread for this session -- from an offline holder directly, from an online one only after the person agrees (the tool asks; call again with confirm: true). release lets go; handover(ref, to) moves a held thread to another of this agent's sessions (list_sessions shows them). /clear keeps this window's threads: the fresh conversation is told which it holds; release what the new work does not continue. A window that exits, or a conversation an in-window /resume leaves, ends its session and its threads are released; a conversation that comes back is told which were released and nobody took since -- take(ref) the ones it continues. list_threads(takeable: true) lists what this session could take. A session also receives unheld work in its scope (scope sets it) while the agent has no live gateway. There is no way to aim a message at a particular session: the hold decides.",
       "",
       "Message types: " + REPLY_TYPES.map((t) => (t === "text" ? "text (default)" : t)).join(", ") + ". Code goes in a Markdown fence, ```lang title=\"name\" (both optional): einweave shows it as a code block headed lang · name.",
       "",

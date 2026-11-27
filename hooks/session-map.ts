@@ -26,6 +26,7 @@
  */
 
 import { procStartOf } from "../proc-start";
+import { spawn } from "child_process";
 import {
   readFileSync,
   writeFileSync,
@@ -51,6 +52,9 @@ const SESSION_ID_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 // the directory.
 const KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 const STDIN_TIMEOUT_MS = 2000;
+// SessionEnd: Claude Code kills the hook ~1.4 s after the window closes (measured 2026-11-27,
+// CC 2.1.332; hooks.json's timeout does not extend it), and its payload is already piped.
+const END_STDIN_TIMEOUT_MS = 500;
 // The `session` op answers after the new conversation's first `authenticated` (measured
 // 2026-10-23 on prod, n=11: 0.8-1.8 s from /clear). The server waits up to 5 s for it; this
 // waits a little longer for the answer itself, all under hooks.json's 10 s (stdin ≤ 2 s first).
@@ -83,7 +87,7 @@ function numericEnv(name: string): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-async function readHookPayload(): Promise<Record<string, any>> {
+async function readHookPayload(timeoutMs = STDIN_TIMEOUT_MS): Promise<Record<string, any>> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     // Bounded read: a hook invoked without a payload on stdin (manual run, a
@@ -92,7 +96,7 @@ async function readHookPayload(): Promise<Record<string, any>> {
     const text = await Promise.race([
       Bun.stdin.text(),
       new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), STDIN_TIMEOUT_MS);
+        timer = setTimeout(() => resolve(null), timeoutMs);
       }),
     ]);
     if (!text) return {};
@@ -345,6 +349,7 @@ async function main(): Promise<void> {
 
   if (argMode === "end") {
     for (const f of files) removeMapping(f);
+    endWhenClosed(await readHookPayload(END_STDIN_TIMEOUT_MS), claudePid);
     return;
   }
 
@@ -377,6 +382,31 @@ async function main(): Promise<void> {
     ending: false,
     written,
   });
+}
+
+/**
+ * A window that EXITS ends its conversation's einweave session, so the threads it held are
+ * released now (plan 2026-11-26-closed-window-holds, S3a; same seat keeps its threads, no seat,
+ * no threads). Not on `clear` (the window keeps them: the next conversation carries them) nor
+ * `resume` (the running server ends the old conversation's session itself when it re-keys).
+ *
+ * The work is a DETACHED process (hooks/session-end.ts): Claude Code kills this hook and what it
+ * started still running ~1.4 s in, but not a detached child of a hook that has already exited.
+ */
+function endWhenClosed(payload: Record<string, any>, claudePid: number | null): void {
+  const reason = String(payload.reason ?? "");
+  const key = String(payload.session_id ?? "");
+  if (reason === "clear" || reason === "resume") return;
+  if (!SESSION_ID_REGEX.test(key) || !claudePid) return;
+  try {
+    spawn(process.execPath, [join(import.meta.dir, "session-end.ts"), key, String(claudePid)], {
+      detached: true,
+      stdio: "ignore",
+      env: process.env,
+    }).unref();
+  } catch (err) {
+    log(`could not end the session of ${key}: ${err}`);
+  }
 }
 
 // The start branch's payload half: rewrite the mapping from the documented

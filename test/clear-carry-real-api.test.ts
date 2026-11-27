@@ -3,7 +3,10 @@
  * 0.37.0 release gate. The plugin's own code (server.ts over stdio, the vendored SDK 0.14.0) and
  * the real SessionStart hook against a real `packages/api` process (bridge #320 or later) on a
  * scratch Postgres database: a /clear carries every thread (`carry: "all"`), and the hook hands
- * the new conversation the note; a /resume moves nothing.
+ * the new conversation the note. Closed-window S3 (plan 2026-11-26, server #424-#426): an in-window
+ * /resume ENDS the session of the conversation it left (its threads are released), the conversation
+ * that comes back is told what its ended session lost, and a window that exits ends its session
+ * through the SessionEnd hook's detached process.
  *
  * ── HOW TO RUN IT ─────────────────────────────────────────────────────────────────────
  *   EINWEAVE_API_DIR=<bridge checkout with #320>/packages/api bun test test/clear-carry-real-api.test.ts
@@ -16,7 +19,7 @@
  * ancestor the plugin finds, and the hook runs with CLAUDE_PID set to it (as delivery-server.test.ts).
  */
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -136,6 +139,28 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-028 §11 /clear against the real 
     const line = out.split("\n").find((l) => l.startsWith("{"));
     return { err, context: line ? (JSON.parse(line).hookSpecificOutput?.additionalContext ?? null) : null };
   }
+  /** The SessionEnd hook, as Claude Code runs it when the window closes. */
+  async function sessionEnd(id: string, reason: string): Promise<void> {
+    const proc = Bun.spawn(["bun", HOOK_TS, "end"], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...(process.env as Record<string, string>), EINWEAVE_STATE_DIR: dir, CLAUDE_PLUGIN_DATA: dir, CLAUDE_PID: String(process.pid), CLAUDE_CODE_SESSION_ID: id, CLAUDE_CODE_SSE_PORT: "" },
+    });
+    proc.stdin.write(JSON.stringify({ hook_event_name: "SessionEnd", session_id: id, reason }));
+    proc.stdin.end();
+    await proc.exited;
+  }
+  /** session key → how its newest grant ended (null = live). */
+  async function ended(key: string): Promise<string | null> {
+    const db = new Bun.SQL(dbUrl);
+    try {
+      const r = await db`SELECT revoke_reason FROM agent_grants WHERE session_key = ${key} ORDER BY created_at DESC LIMIT 1`;
+      return r[0]?.revoke_reason ?? null;
+    } finally {
+      await db.close();
+    }
+  }
   /** thread → the session_key of the grant holding it (null = unheld). */
   async function holders(ids: string[]): Promise<Record<string, string | null>> {
     const db = new Bun.SQL(dbUrl);
@@ -227,11 +252,36 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-028 §11 /clear against the real 
     expect(note).toContain(`"Old log question" (${drop})`);
     expect(await until(connected, 10_000)).toBe(true);
 
-    // /resume of the old conversation: no replaces — the old session comes back holdless, nothing moves.
+    // /resume of the old conversation: no replaces. The conversation that LEFT this window (clear-c2) ends its
+    // session: no seat, no threads (closed-window S3a) -- its threads are released, nobody holds them.
     const resume = await sessionStart("clear-c1", "resume");
     expect(resume.err).toContain("server re-keyed to clear-c1");
-    expect(resume.context).toBeNull();
+    expect(resume.context).toBeNull(); // clear-c1 carried everything to clear-c2: it lost nothing
     expect(await until(connected, 10_000)).toBe(true);
-    expect(await holders([keep, drop])).toEqual({ [keep]: "clear-c2", [drop]: "clear-c2" });
-  }, 60_000);
+    expect(await until(async () => (await ended("clear-c2")) === "client_revoked", 10_000), `clear-c2 not ended:\n${log.slice(-2000)}`).toBe(true);
+    expect(await holders([keep, drop])).toEqual({ [keep]: null, [drop]: null });
+
+    // /resume back to clear-c2: its session ended while it was away, so it is told -- once -- what was released (S3c).
+    const back = await sessionStart("clear-c2", "resume");
+    expect(back.err).toContain("server re-keyed to clear-c2");
+    expect(back.context, `no released note:\n${back.err}\n${log.slice(-2000)}`).toContain("einweave session ended while it was away");
+    expect(back.context).toContain(`"Keep working on the deploy" (${keep})`);
+    expect(back.context).toContain(`"Old log question" (${drop})`);
+    expect(await until(connected, 10_000)).toBe(true);
+    const tolds = notices.length;
+    await call("disconnect");
+    await call("connect");
+    expect(await until(connected, 10_000)).toBe(true);
+    await Bun.sleep(500);
+    expect(notices.slice(tolds).filter((n) => n.includes("ended while it was away"))).toEqual([]);
+
+    // The window EXITS: the SessionEnd hook leaves a process behind that ends this conversation's session (S3a).
+    const t = await call("take", { ref: keep });
+    expect(t.isError, t.text).toBe(false);
+    expect(await holders([keep])).toEqual({ [keep]: "clear-c2" });
+    await sessionEnd("clear-c2", "prompt_input_exit");
+    expect(await until(async () => (await holders([keep]))[keep] === null, 15_000), `exit did not release:\n${existsSync(join(dir, "session-end.log")) ? readFileSync(join(dir, "session-end.log"), "utf8") : "(no session-end.log)"}`).toBe(true);
+    expect(await ended("clear-c2")).toBe("client_revoked");
+    expect(readFileSync(join(dir, "session-end.log"), "utf8")).toMatch(/ clear-c2 ended\n$/);
+  }, 90_000);
 });
