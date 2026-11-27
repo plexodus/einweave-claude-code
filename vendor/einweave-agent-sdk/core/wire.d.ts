@@ -49,6 +49,9 @@ export type TurnState = (typeof TURN_STATES)[number];
 export declare const TURN_THREADS_KEPT = 32;
 /** The `sessionInfo` fields `session.setDetails` replaces (the protocol's `SessionDetails`). */
 export declare const SESSION_DETAIL_KEYS: readonly ["repoName", "worktreeName", "branchName", "headShortSha"];
+/** What a message is, as a sender names it. Code is not a type: a Markdown fence (`fence`) is. */
+export declare const MESSAGE_TYPES: readonly ["text", "question", "status", "response"];
+export type MessageType = (typeof MESSAGE_TYPES)[number];
 /** The server's cap on ids in one ack frame; more are sent in chunks. */
 export declare const MAX_ACK_IDS = 500;
 /** The three accountable kinds (L1) — what a session's model owes (D3). */
@@ -134,8 +137,8 @@ declare const WIRE: {
         sessionKey: string;
     };
     released: {
-        key: string | null;
         title: string | null;
+        key: string | null;
         threadId: string;
         channelId: string;
         channelName: string;
@@ -197,15 +200,17 @@ declare const WIRE: {
         label?: string | null | undefined;
         carried?: string[] | undefined;
         released?: {
-            key: string | null;
             title: string | null;
+            key: string | null;
             threadId: string;
             channelId: string;
             channelName: string;
         }[] | undefined;
+        releasedFrom?: string | undefined;
+        releasedMore?: number | undefined;
         notCarried?: string[] | undefined;
-        handle: string | null;
         kind: "gateway" | "session" | "observer";
+        handle: string | null;
         agentId: string;
         agentName: string;
         contextId: string;
@@ -226,10 +231,10 @@ declare const WIRE: {
         threadId: string;
         agentId: string;
         holder: {
-            online: boolean;
             label: string | null;
             parked: boolean;
             id: string;
+            online: boolean;
         } | null;
         via: "reply" | "start" | "take" | "handover" | "release" | "settled" | "access_lost" | "grant_end" | "unassigned" | "replaced" | "carry" | "lease";
         by: {
@@ -238,9 +243,9 @@ declare const WIRE: {
         };
     };
     for_you: {
+        title: string | null;
         key: string | null;
         id: string;
-        title: string | null;
         threadId: string | null;
         channelId: string | null;
         entry: "message" | "action_request" | "thread_event";
@@ -338,11 +343,11 @@ declare const WIRE: {
         addressed: boolean;
     };
     thread_event: {
+        status: string | null;
         work: {
             text: string;
         } | null;
         key: string | null;
-        status: string | null;
         action: string;
         id: string;
         threadId: string;
@@ -449,8 +454,10 @@ type _AuthenticatedPayload = typeof WIRE.authenticated;
 /**
  * The server accepted the auth. `contextId` is this session's GRANT id (the address other sessions
  * target, the id on its sends); `kind`/`scope`/`holds` what it holds now (RFC-028); `carried` /
- * `released` / `notCarried` only when the auth declared `replaces`; `client` only when a newer build
- * is available and this session is the holder (RFC-017 D7).
+ * `notCarried` only when the auth declared `replaces`; `released` + `releasedFrom` (+ `releasedMore`)
+ * after a `replaces`, or on every auth of a session that follows an ended one (its predecessor's
+ * released threads — "a closed window holds nothing"); `client` only when a newer build is available
+ * and this session is the holder (RFC-017 D7).
  */
 export interface AuthenticatedPayload extends _AuthenticatedPayload {
 }

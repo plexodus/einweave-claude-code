@@ -63,6 +63,25 @@ export interface LogoutResult {
         failed: string;
     };
 }
+/**
+ * What `revokeSession` found. `ended`: nothing is live under that key any more (ended now, or
+ * already ended, or never minted — the server answers all three alike). `not_enrolled`: this store
+ * holds no installation, so nothing of it can be live (one a NEWER build wrote is not "none": that
+ * throws `refused`, as an enrolment over it does). `installation_gone`: the installation itself
+ * is revoked, expired, locked or its agent deactivated — every session of it is over already; the
+ * store is left as it is (the next mint meets the same refusal and clears it, as it always has).
+ * `kept`: the caller's `keep` check said someone is on the key after all — nothing was sent.
+ */
+export type RevokeSessionResult = "ended" | "kept" | "not_enrolled" | "installation_gone";
+export interface RevokeSessionOptions {
+    /**
+     * Asked UNDER the installation lock, right before the revoke goes out: true keeps the session
+     * (`kept`, nothing sent). Every mint takes the same lock, so no mint of that key lands between
+     * this answer and the revoke — a check made before the lock could be stale by then (a window
+     * came back on the key, and its fresh session would be ended). Bound by the lock's budget.
+     */
+    keep?: () => Promise<boolean>;
+}
 export declare class AgentClient {
     private readonly rt;
     private readonly opts;
@@ -75,6 +94,9 @@ export declare class AgentClient {
      * this, a `setTimeout` armed just before `stop()` still fires `go()` (a mint) after
      * the caller believed the ticker was fully stopped. */
     private lateRefreshTimer;
+    /** Set by `stop()`, for good: a mint in flight then lands without arming the ticker again,
+     * or the dropped client would refresh its session key every hour, a session nobody uses. */
+    private dropped;
     /** RFC-016 E9: a revoked session mints again only after an explicit `requestSessionReconnect()`. */
     private sessionBlocked;
     private reconnectNext;
@@ -234,8 +256,23 @@ export declare class AgentClient {
     logout(opts?: {
         revoke?: boolean;
     }): Promise<LogoutResult>;
+    /**
+     * End ONE session of this installation server-side (§3.5, scope `session`): its grant ends
+     * `client_revoked`, its threads are released, its sockets close. For a window that has CLOSED
+     * (the Claude Code plugin's SessionEnd): the caller names the key it means — this client's own
+     * `sessionKey` is never implied. A later mint of the same key is a NEW session that follows the
+     * ended one (it keeps its label and scope, and is told which threads were released).
+     *
+     * Under the installation lock, reading the join state THERE: the revoke presents it, verified
+     * not advanced, and a stale one would LOCK the installation (E8). Idempotent: an unknown or
+     * already-ended key answers `ended` too. Nothing of this client changes — no stop, no reconnect
+     * gate (that is `sessionRevoked`, for a revoke this client's own socket was told of): the caller
+     * is not that session's connection. `opts.keep`: the caller's last word, under the lock.
+     */
+    revokeSession(sessionKey: string, opts?: RevokeSessionOptions): Promise<RevokeSessionResult>;
     /** One `Session` (one WebSocket) authenticated as this client. `opts.kind` is required (RFC-028 D1). */
     session(opts: SessionOptions): Session;
-    /** Stop the refresh ticker — call once before dropping this client. */
+    /** Stop the refresh ticker, for good — call once before dropping this client. A mint still
+     * in flight completes but arms nothing; an explicit call (`accessToken`, a Session) still mints. */
     stop(): void;
 }

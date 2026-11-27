@@ -46,6 +46,7 @@ import {
   type InstallationGoneReason,
 } from "../vendor/einweave-agent-sdk/core/index.js";
 import { PLUGIN_CLIENT_ID } from "./client-id";
+import { endConversation, type Here } from "../end-session";
 import { startLoopback, type LoopbackLogin } from "./loopback";
 import { isHeadless, browserDisabled, openBrowser } from "./browser";
 import { profileLabel, type Profile } from "./profile";
@@ -322,6 +323,26 @@ export class SignIn {
       }
     }
     return this.live!.client;
+  }
+
+  /**
+   * A re-key (RFC-028 B4: /clear, /resume) left `sessionKey` behind: its client stops NOW
+   * (plan 2026-11-26-closed-window-holds, S3b). Left to the next `client()` — which a window
+   * left disconnected never makes — its ticker refreshed the old key every hour: a session
+   * nobody holds, never idle, so never ended.
+   */
+  retire(sessionKey: string): void {
+    const prev = this.live;
+    if (prev?.sessionKey !== sessionKey) return;
+    this.live = null;
+    void prev.client.then((c) => c.stop(), () => {});
+  }
+
+  /** End conversation `sessionKey`'s session (S3a: an in-window /resume took it out of this window), unless someone is on it. Null: no profile. */
+  async endConversation(sessionKey: string, stateDir: string, here: Here): Promise<string | null> {
+    const p = this.profile;
+    if (!p) return null;
+    return endConversation(this.d.rt, stateDir, p.dir, sessionKey, here, this.d.clientVersion);
   }
 
   /** `Authorization: DPoP …` + a proof for ONE HTTP request (§3.4, C16). Throws the person's text. */

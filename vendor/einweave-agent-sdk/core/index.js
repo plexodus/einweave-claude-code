@@ -21,6 +21,7 @@ import {
   KNOWN_FORMAT,
   MAX_ACK_IDS,
   MAX_CLOCK_OFFSET_MS,
+  MESSAGE_TYPES,
   METADATA_TTL_MS,
   MINT_BUDGET_MS,
   MINT_TIMEOUT_MS,
@@ -52,6 +53,7 @@ import {
   docToRender,
   dpopProof,
   expandLink,
+  fence,
   formatItemKey,
   generateSoftwareKey,
   httpHtu,
@@ -82,7 +84,7 @@ import {
   userAgent,
   validateItemPrefix,
   wsHtu
-} from "../index-gbawynqc.js";
+} from "../index-yqx68d2t.js";
 export {
   ADDRESSED_REASONS,
   ASSERTION_TTL_S,
@@ -106,6 +108,7 @@ export {
   KNOWN_FORMAT,
   MAX_ACK_IDS,
   MAX_CLOCK_OFFSET_MS,
+  MESSAGE_TYPES,
   METADATA_TTL_MS,
   MINT_BUDGET_MS,
   MINT_TIMEOUT_MS,
@@ -137,6 +140,7 @@ export {
   docToRender,
   dpopProof,
   expandLink,
+  fence,
   formatItemKey,
   generateSoftwareKey,
   httpHtu,

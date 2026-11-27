@@ -9,7 +9,7 @@
  * it the ancestor the plugin finds, and the hook is run with CLAUDE_PID set to it.
  */
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createAgentAuthRoutes } from "./agent-auth-routes";
 import { mintAgentToken } from "./agent-auth-stub";
@@ -25,10 +25,10 @@ const mid = (n: number) => `0190a000-0000-7000-8000-${String(n).padStart(12, "0"
 
 type Ack = { ids: string[]; how: string };
 
-function startStub() {
+function startStub(authOpts: Parameters<typeof createAgentAuthRoutes>[0] = {}) {
   const sockets = new Set<any>();
   const acks: Ack[] = [];
-  const agentAuth = createAgentAuthRoutes();
+  const agentAuth = createAgentAuthRoutes(authOpts);
   agentAuth.addEnrolmentKey(ENROLMENT_KEY);
   let authCount = 0;
   const authKeys: string[] = [];
@@ -37,6 +37,8 @@ function startStub() {
   const authReplaces: unknown[] = [];
   /** Held threads an auth WITHOUT `replaces` reports (a session that already holds work). */
   let plainHolds: string[] = [];
+  /** What an auth of session key K reports its ended predecessor lost (closed-window S3c), by K. */
+  const lostOnAuth = new Map<string, Record<string, unknown>>();
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -81,6 +83,8 @@ function startStub() {
                 notCarried: r.carry === "all" ? [] : (r.carry ?? []).filter((t: string) => t !== THREAD),
               }
             : plainHolds.length > 0 ? { holds: plainHolds } : {};
+          const lost = lostOnAuth.get(String(frame.sessionInfo?.sessionKey ?? "")) ?? {};
+          Object.assign(replaced, lost);
           ws.send(JSON.stringify({ v: 2, type: "authenticated", payload: { agentId: "bellman", agentName: "Bellman", contextId: "ctx-under-test", ...replaced } }));
         }
       },
@@ -102,6 +106,15 @@ function startStub() {
     /** The `replaces` each auth frame carried (undefined = none), in order. */
     authReplaces: () => [...authReplaces],
     holdOnAuth: (ids: string[]) => (plainHolds = ids),
+    /** Every auth of session key `key` reports what its ended predecessor `from` lost. */
+    lostOnAuth: (key: string, from: string, more?: number) =>
+      lostOnAuth.set(key, { released: [{ threadId: THREAD, key: null, title: "Fix the build", channelId: CHANNEL_ID, channelName: "general" }], releasedFrom: from, ...(more ? { releasedMore: more } : {}) }),
+    /** Every session grant the auth stub opened (key, how it ended), in order. */
+    sessions: () => agentAuth.sessions(),
+    /** Every revoke the auth stub accepted (scope), in order. */
+    revokes: () => agentAuth.revokes(),
+    /** The session key of every mint, in order. */
+    mintKeys: () => agentAuth.mintKeys(),
     liveSockets: () => sockets.size,
     /** Push a message entry to every connected socket, as the server's `message` frame. */
     pushMessage(id: string, content = "hello") {
@@ -232,6 +245,21 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     await proc.exited;
     return { err, out };
   }
+  /** The real SessionEnd hook, as Claude Code runs it when the window closes. */
+  async function runSessionEnd(sessionId: string, reason: string) {
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      EINWEAVE_STATE_DIR: dir,
+      CLAUDE_PLUGIN_DATA: dir,
+      CLAUDE_PID: String(process.pid),
+      CLAUDE_CODE_SESSION_ID: sessionId,
+      CLAUDE_CODE_SSE_PORT: "",
+    };
+    const proc = Bun.spawn(["bun", SESSION_MAP_HOOK, "end"], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env });
+    proc.stdin.write(JSON.stringify({ hook_event_name: "SessionEnd", session_id: sessionId, reason }));
+    proc.stdin.end();
+    await proc.exited;
+  }
   /** /clear to `sessionId`, retried until the running server answered the hook. */
   async function clearTo(sessionId: string, source = "clear") {
     let r = { err: "", out: "" };
@@ -276,6 +304,129 @@ describe("plugin ⇄ hook ⇄ server: confirmation reaches the server", () => {
     await waitFor(() => stub.authKeys().includes("sess-0302"), 10_000, "auth under the new key");
     expect(stub.authReplaces()[stub.authKeys().indexOf("sess-0302")]).toBeUndefined();
     expect(contextOf(r.out)).toBeNull();
+  }, 40_000);
+
+  // Closed-window S3a: no seat, no threads. The conversation /resume took out of this window ends its session.
+  test("closed-window S3a: an in-window /resume ENDS the session of the conversation that left; the new one stays", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    await clearTo("sess-0302", "resume");
+    await waitFor(() => stub.sessions().some((g) => g.key === "sess-0301" && g.revoked === "client_revoked"), 10_000, "sess-0301 ended");
+    expect(stub.revokes().map((r) => r.scope)).toEqual(["session"]);
+    await waitFor(() => stub.authKeys().includes("sess-0302") && stub.connected(), 10_000, "auth under the new key");
+    expect(stub.sessions().filter((g) => g.key === "sess-0302").map((g) => g.revoked)).toEqual([null]);
+  }, 40_000);
+
+  test("closed-window S3a: /clear ends nothing (the window keeps its threads)", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    await clearTo("sess-0302");
+    await waitFor(() => stub.authKeys().includes("sess-0302") && stub.connected(), 10_000, "auth under the new key");
+    await Bun.sleep(1000);
+    expect(stub.revokes()).toEqual([]);
+  }, 40_000);
+
+  test("closed-window S3a: a /resume away from a conversation ANOTHER window is on ends nothing", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    // Another Claude Code's einweave on sess-0301 (standing by on its lock): a live pid, another claudePid.
+    const other = Bun.spawn(["sleep", "30"]);
+    try {
+      const { procStartOf } = await import("../proc-start");
+      mkdirSync(join(dir, "procs"), { recursive: true });
+      writeFileSync(join(dir, "procs", `${other.pid}.json`), JSON.stringify({ format: 0, pid: other.pid, procStart: procStartOf(other.pid), software: "einweave-claude-code", version: "0.52.0", sessionKey: "sess-0301", profile: "default", claudePid: 1, tty: "", termProgram: "", cwd: "", state: "standby", startedAt: new Date().toISOString() }));
+      await clearTo("sess-0302", "resume");
+      await waitFor(() => stub.authKeys().includes("sess-0302") && stub.connected(), 10_000, "auth under the new key");
+      await Bun.sleep(1500);
+      expect(stub.revokes()).toEqual([]);
+    } finally {
+      other.kill();
+    }
+  }, 40_000);
+
+  test("closed-window S3a: the window EXITS: the SessionEnd hook's detached process ends its conversation's session", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    // This window's own einweave is still up (holds the lock): it is this window's, so it does not keep the session.
+    await runSessionEnd("sess-0301", "prompt_input_exit");
+    await waitFor(() => stub.sessions().some((g) => g.key === "sess-0301" && g.revoked === "client_revoked"), 15_000, "sess-0301 ended");
+    expect(stub.revokes().map((r) => r.scope)).toEqual(["session"]);
+    await waitFor(() => existsSync(join(dir, "session-end.log")), 5000, "the outcome line");
+    expect(readFileSync(join(dir, "session-end.log"), "utf8")).toMatch(/ sess-0301 ended\n$/);
+  }, 40_000);
+
+  test("closed-window S3a: the window exits while ANOTHER window is on the conversation: kept, nothing revoked, and the log says why", async () => {
+    await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    const other = Bun.spawn(["sleep", "30"]);
+    try {
+      const { procStartOf } = await import("../proc-start");
+      writeFileSync(join(dir, "procs", `${other.pid}.json`), JSON.stringify({ format: 0, pid: other.pid, procStart: procStartOf(other.pid), software: "einweave-claude-code", version: "0.52.0", sessionKey: "sess-0301", profile: "default", claudePid: 1, tty: "", termProgram: "", cwd: "", state: "standby", startedAt: new Date().toISOString() }));
+      await runSessionEnd("sess-0301", "prompt_input_exit");
+      await waitFor(() => existsSync(join(dir, "session-end.log")), 10_000, "the outcome line");
+      expect(readFileSync(join(dir, "session-end.log"), "utf8")).toMatch(new RegExp(` sess-0301 kept: another window's einweave \\(pid ${other.pid}\\) is on this conversation\n$`));
+      expect(stub.revokes()).toEqual([]);
+    } finally {
+      other.kill();
+    }
+  }, 40_000);
+
+  test("closed-window S3a: /clear in a disconnected window, then it exits: the conversation that still holds the threads ends too", async () => {
+    const p = await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    await call(p, "disconnect", {});
+    await clearTo("sess-0302"); // never connects: sess-0301 keeps its threads, replaces/sess-0302.json waits to declare
+    expect(existsSync(join(dir, "replaces", "sess-0302.json"))).toBe(true);
+    await runSessionEnd("sess-0302", "prompt_input_exit");
+    await waitFor(() => stub.sessions().some((g) => g.key === "sess-0301" && g.revoked === "client_revoked"), 15_000, "sess-0301 ended");
+    await waitFor(() => existsSync(join(dir, "session-end.log")), 5000, "the outcome line");
+    expect(readFileSync(join(dir, "session-end.log"), "utf8")).toMatch(/ sess-0302 ended; replaced sess-0301 ended\n$/);
+    expect(existsSync(join(dir, "replaces", "sess-0302.json")), "a later /resume of sess-0302 declares nothing").toBe(false);
+  }, 40_000);
+
+  // Closed-window S3b: a re-key stops the old key's client at once. Left to the next client() -- which a window left
+  // disconnected never makes -- its ticker refreshed the old key on every refresh: a session nobody holds, never idle.
+  test("closed-window S3b: after a /clear in a disconnected window the old conversation's key is never minted again", async () => {
+    stub.stop();
+    stub = startStub({ accessTtlS: 3 }); // refresh due within one 15 s tick of the SDK's ticker
+    const p = await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    await call(p, "disconnect", {});
+    await clearTo("sess-0302");
+    const minted = stub.mintKeys().length;
+    await Bun.sleep(17_000); // past the ticker's first tick after the refresh point
+    expect(stub.mintKeys().slice(minted).filter((k) => k === "sess-0301")).toEqual([]);
+  }, 60_000);
+
+  // Closed-window S3c: a conversation is told, once, what its ended session lost.
+  test("closed-window S3c: /resume into a conversation whose session ended: the hook hands the released threads, once", async () => {
+    stub.lostOnAuth("sess-0302", "grant-0301", 2);
+    const p = await boot(true);
+    await waitFor(() => stub.authKeys().includes("sess-0301") && stub.connected(), 15_000, "first auth");
+    const r = await clearTo("sess-0302", "resume");
+    const note = contextOf(r.out)!;
+    expect(note).toContain("einweave session ended while it was away");
+    expect(note).toContain(`#general "Fix the build" (${THREAD})`);
+    expect(note).toContain("…and 2 more");
+    expect(note).toContain("take(ref) any the user is continuing");
+    expect(existsSync(join(dir, "told", "grant-0301.json"))).toBe(true);
+    // Told once: the server repeats it on every auth, the window does not.
+    const notices = () => lines(p).filter((m) => m.method === "notifications/claude/channel" && String(m.params?.content).includes("ended while it was away")).length;
+    await call(p, "disconnect", {});
+    await call(p, "connect", {});
+    await waitFor(() => stub.authKeys().filter((k) => k === "sess-0302").length >= 2, 10_000, "second auth");
+    await Bun.sleep(500);
+    expect(notices()).toBe(0);
+  }, 60_000);
+
+  test("closed-window S3c: no hook waiting (a launch /resume): the released threads come as a channel notice", async () => {
+    stub.lostOnAuth("sess-0301", "grant-0300");
+    const p = await boot(true);
+    await waitFor(
+      () => lines(p).some((m) => m.method === "notifications/claude/channel" && String(m.params?.content).includes("so the 1 thread it held was released")),
+      15_000,
+      "the released note as a notice"
+    );
   }, 40_000);
 
   test("RFC-028 §11: cleared TWICE while disconnected: the connect declares the conversation that held the threads", async () => {

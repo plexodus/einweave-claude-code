@@ -720,6 +720,8 @@ export function createAuthCore(opts: StubOptions = {}) {
     },
     expireAccess: () => access.clear(),
     sessionsFor: (instId: string) => [...sessions.values()].filter((s) => s.instId === instId),
+    /** Every session grant, in creation order (a copy). */
+    allSessions: () => [...sessions.values()].map((s) => ({ ...s })),
   };
 }
 

@@ -193,7 +193,33 @@ export function listProcs(stateDir: string, excludePid?: number): ListedProc[] {
   return out;
 }
 
-type LiveVerdict = "live" | "dead" | "unverifiable";
+/**
+ * A LIVE process whose record a NEWER plugin wrote (D8: not this build's to interpret) that may be on
+ * `key` -- its `sessionKey` is `key`, or not a string -- or null. For a caller that must fail closed
+ * on what it cannot read (end-session.ts). Never sweeps or rewrites anything.
+ */
+export function newerProcOn(stateDir: string, key: string): number | null {
+  let names: string[];
+  try {
+    names = __io.readdirSync(procsDir(stateDir));
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const m = PROC_FILE_RE.exec(name);
+    if (!m) continue;
+    try {
+      const rec = JSON.parse(__io.readFileSync(join(procsDir(stateDir), name), "utf8"));
+      if (!(typeof rec?.format === "number" && rec.format > PROC_FORMAT)) continue;
+      if (typeof rec.sessionKey === "string" && rec.sessionKey !== key) continue;
+      const pid = Number(m[1]);
+      if (__ps.pidAlive(pid)) return pid;
+    } catch {}
+  }
+  return null;
+}
+
+export type LiveVerdict = "live" | "dead" | "unverifiable";
 
 /**
  * "dead" only when BOTH sides of the identity check actually compared and disagreed — a
@@ -204,7 +230,7 @@ type LiveVerdict = "live" | "dead" | "unverifiable";
  * "dead", it is UNVERIFIABLE: sweeping it would be a guess, and the exact guess that could
  * make a real, live window vanish from `status` merely because `ps` failed once.
  */
-function checkLive(pid: number, rec: Record<string, unknown>): LiveVerdict {
+export function checkLive(pid: number, rec: { procStart?: unknown }): LiveVerdict {
   if (!__ps.pidAlive(pid)) return "dead";
   const recordedStart = typeof rec.procStart === "string" ? rec.procStart : "";
   const currentStart = __ps.procStartOf(pid);

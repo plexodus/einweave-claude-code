@@ -82,7 +82,16 @@ export type SessionStatus = {
     holds?: string[];
     /** RFC-028 §11 — after `replaces`: threads handed to this session, threads released, `carry` ids not carried. */
     carried?: string[];
+    /**
+     * Threads this seat's previous session held and the server released: the conversation a `replaces`
+     * replaced (a /clear), or — on EVERY auth of a session that follows an ended one (a window back after
+     * an exit, an idle-out, a long sleep) — that predecessor's still-unheld threads.
+     */
     released?: ReleasedThread[];
+    /** The session `released` is about. The same id comes on every auth: tell the person once per id. */
+    releasedFrom?: string;
+    /** Released threads beyond the listed ones (the server caps the list). */
+    releasedMore?: number;
     notCarried?: string[];
 } | {
     kind: "closed";

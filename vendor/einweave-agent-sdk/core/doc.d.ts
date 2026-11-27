@@ -2,7 +2,10 @@ export type Tag = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | 
 /** RFC-035 D5: a reference to a message in this workspace (`m` = its id); children = the link's own text. */
  | "ref";
 export interface Attrs {
+    /** `pre`: the fence's language (its info string's first token). */
     lang?: string;
+    /** `pre`: the fence's `title="…"` — the block's name in its header (≤ 80 code points, no bidi controls). */
+    title?: string;
     checked?: boolean;
     start?: number;
     href?: string;
@@ -26,8 +29,6 @@ export type Doc = DocNode[];
 export interface DocCase {
     name: string;
     content: string;
-    /** `code`: never parsed (D2), the doc is one `pre`. */
-    type?: "code";
     /** Lowercased token → the principal it resolved to at send. */
     resolved?: Record<string, {
         p: string;
@@ -67,6 +68,11 @@ export declare const docToRender: (m: DocCarrier) => Doc | null;
 export declare const allowedLink: (u: unknown) => u is string;
 /** G8: may a rendered doc show this image (https only)? The server's rule; a renderer re-applies it. */
 export declare const allowedImage: (u: unknown) => u is string;
+/** Code as a message: a Markdown fence with an optional language and title (see the protocol's `fence`). Throws RangeError. */
+export declare const fence: (text: string, o?: {
+    lang?: string;
+    title?: string;
+}) => string;
 /** A message as plain text for previews: the rendered doc's text, else `content`. */
 export declare const messageText: (m: DocCarrier, nameOf?: (principalId: string) => string | undefined) => string;
 export declare const DOC_CORPUS: readonly DocCase[];

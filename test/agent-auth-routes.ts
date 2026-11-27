@@ -25,6 +25,12 @@ export interface AgentAuthRoutes {
   mintEnrolmentKey(uses?: number): string;
   /** Register a specific, well-formed key (see mintAgentToken) — for a key shared across stubs. */
   addEnrolmentKey(key: string, uses?: number): void;
+  /** Every session grant (key, how it ended), in creation order. */
+  sessions(): { key: string; revoked: string | null }[];
+  /** Every accepted revoke (installation id, scope), in order. */
+  revokes(): { id: string; scope: string }[];
+  /** The session key of every mint (client_credentials), in order. */
+  mintKeys(): string[];
 }
 
 export function createAgentAuthRoutes(opts: Pick<StubOptions, "agentId" | "accessTtlS" | "mintDelayMs"> = {}): AgentAuthRoutes {
@@ -33,5 +39,8 @@ export function createAgentAuthRoutes(opts: Pick<StubOptions, "agentId" | "acces
     mintEnrolmentKey: (uses = 1) => core.mintEnrolmentKey(uses),
     addEnrolmentKey: (key, uses = 1) => core.addEnrolmentKey(key, uses),
     handle: (req) => core.handleAuth(req),
+    sessions: () => core.allSessions().map((s) => ({ key: s.key, revoked: s.revoked })),
+    revokes: () => [...core.stats.revokes],
+    mintKeys: () => core.stats.mintBodies.filter((b) => b.grant_type === "client_credentials").map((b) => String(b.session_key ?? "")),
   };
 }

@@ -14,6 +14,7 @@ function isAddressed(reasons) {
       return true;
   return false;
 }
+var MESSAGE_TYPES = ["text", "question", "status", "response"];
 var CONNECTION_KINDS = ["gateway", "session", "observer"];
 var TURN_STATES = ["working", "needs_you", "idle"];
 var TURN_THREADS_KEPT = 32;
@@ -107,6 +108,7 @@ var CONNECTION_KINDS2 = CONNECTION_KINDS;
 var TURN_STATES2 = TURN_STATES;
 var TURN_THREADS_KEPT2 = TURN_THREADS_KEPT;
 var SESSION_DETAIL_KEYS2 = SESSION_DETAIL_KEYS;
+var MESSAGE_TYPES2 = MESSAGE_TYPES;
 var MAX_ACK_IDS2 = MAX_ACK_IDS;
 var ENTRY_KINDS2 = ENTRY_KINDS;
 var WS_CLOSE_CODES = CLOSE_CODES;
@@ -347,6 +349,19 @@ ${text}
 `).map((line) => line.trim()).filter(Boolean).join(`
 `);
 }
+function fence(text, o = {}) {
+  const { lang, title } = o;
+  if (lang !== undefined && (lang === "" || [...lang].length > 32 || /[\s`"]/.test(lang) || lang.startsWith("title=")))
+    throw new RangeError(`fence: a language the parser cannot read back: ${JSON.stringify(lang)}`);
+  if (title !== undefined && /["`\r\n]/.test(title))
+    throw new RangeError(`fence: a title the parser cannot read back: ${JSON.stringify(title)}`);
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const bar = "`".repeat(Math.max(3, longest + 1));
+  const info = [lang, title ? `title="${title}"` : undefined].filter(Boolean).join(" ");
+  return `${bar}${info}
+${text}
+${bar}`;
+}
 function docToRender(m) {
   return m.docV != null && m.docV >= 1 && m.docV <= DOC_V && Array.isArray(m.doc) ? m.doc : null;
 }
@@ -554,6 +569,22 @@ todo`
       ]
     ],
     text: "const a = 1;"
+  },
+  {
+    name: "fenced code with a title",
+    content: '```log title="api"\nGET /x 200\n```',
+    doc: [
+      [
+        "pre",
+        {
+          lang: "log",
+          title: "api"
+        },
+        `GET /x 200
+`
+      ]
+    ],
+    text: "GET /x 200"
   },
   {
     name: "unclosed fence",
@@ -777,19 +808,6 @@ line two`
     ],
     text: `hi @aio, not @aio, not @aio, not @nobody
 nor @aio`
-  },
-  {
-    name: "code message",
-    content: "**not** @aio markdown",
-    type: "code",
-    doc: [
-      [
-        "pre",
-        0,
-        "**not** @aio markdown"
-      ]
-    ],
-    text: "**not** @aio markdown"
   }
 ];
 var DOC_FORWARD_CASES = [
@@ -806,6 +824,7 @@ var docText2 = docText;
 var docToRender2 = docToRender;
 var allowedLink2 = allowedLink;
 var allowedImage2 = allowedImage;
+var fence2 = fence;
 var messageText2 = messageText;
 var DOC_CORPUS2 = DOC_CORPUS;
 var DOC_FORWARD_CASES2 = DOC_FORWARD_CASES;
@@ -1613,4 +1632,4 @@ class TokenClient {
 function isKeyAlreadyEnrolled(e) {
   return isOAuthError(e) && e.error === "invalid_dpop_proof" && e.description === "key_already_enrolled";
 }
-export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, TURN_STATES2 as TURN_STATES, TURN_THREADS_KEPT2 as TURN_THREADS_KEPT, SESSION_DETAIL_KEYS2 as SESSION_DETAIL_KEYS, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, principalLabel, expandLink, threadUrl, messageUrl, ITEM_PREFIX_MIN2 as ITEM_PREFIX_MIN, ITEM_PREFIX_MAX2 as ITEM_PREFIX_MAX, ITEM_PREFIX_FALLBACK2 as ITEM_PREFIX_FALLBACK, validateItemPrefix2 as validateItemPrefix, deriveItemPrefix2 as deriveItemPrefix, formatItemKey2 as formatItemKey, parseItemKey2 as parseItemKey, matchItemKeys2 as matchItemKeys, parseThreadRef, SEARCH_MARK_START, SEARCH_MARK_END, snippetParts, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, SUPERSEDE_ASSERTION_TYP, supersedeAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };
+export { ADDRESSED_REASONS2 as ADDRESSED_REASONS, BROADCAST_REASONS2 as BROADCAST_REASONS, isAddressed2 as isAddressed, PROTOCOL_VERSION2 as PROTOCOL_VERSION, CONTROL_FRAME_TYPES2 as CONTROL_FRAME_TYPES, CONNECTION_KINDS2 as CONNECTION_KINDS, TURN_STATES2 as TURN_STATES, TURN_THREADS_KEPT2 as TURN_THREADS_KEPT, SESSION_DETAIL_KEYS2 as SESSION_DETAIL_KEYS, MESSAGE_TYPES2 as MESSAGE_TYPES, MAX_ACK_IDS2 as MAX_ACK_IDS, ENTRY_KINDS2 as ENTRY_KINDS, WS_CLOSE_CODES, WS_CLOSE_REASONS, classifyClose, reconnectDelay, closeOutcome, DEFAULT_HOLDER_VERSION, decideLock, KNOWN_FORMAT, classifyVersioned, isNewerFormat, userAgent, identityTokenClientOptions, DOC_V2 as DOC_V, docText2 as docText, docToRender2 as docToRender, allowedLink2 as allowedLink, allowedImage2 as allowedImage, fence2 as fence, messageText2 as messageText, DOC_CORPUS2 as DOC_CORPUS, DOC_FORWARD_CASES2 as DOC_FORWARD_CASES, Dedupe, stripControlChars, principalLabel, expandLink, threadUrl, messageUrl, ITEM_PREFIX_MIN2 as ITEM_PREFIX_MIN, ITEM_PREFIX_MAX2 as ITEM_PREFIX_MAX, ITEM_PREFIX_FALLBACK2 as ITEM_PREFIX_FALLBACK, validateItemPrefix2 as validateItemPrefix, deriveItemPrefix2 as deriveItemPrefix, formatItemKey2 as formatItemKey, parseItemKey2 as parseItemKey, matchItemKeys2 as matchItemKeys, parseThreadRef, SEARCH_MARK_START, SEARCH_MARK_END, snippetParts, randomB64url, isP256PublicJwk, isP256PrivateJwk, jwkThumbprint, softwareSigner, generateSoftwareKey, deadline, normalizeHtu, apiOrigin, httpHtu, wsHtu, dpopProof, CLIENT_ASSERTION_TYPE, ASSERTION_TTL_S, clientAssertion, SUPERSEDE_ASSERTION_TYP, supersedeAssertion, MAX_CLOCK_OFFSET_MS, Clock, isJoinState, joinStateSeq, OAuthError, isOAuthError, TransportError, DiscoveryError, AbortedError, GONE_REASONS, assertNever, classifyTokenError, MINT_TIMEOUT_MS, MINT_BUDGET_MS, METADATA_TTL_MS, supportsKeyCredentials, TokenClient, isKeyAlreadyEnrolled };

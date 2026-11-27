@@ -29,7 +29,7 @@ import {
   supportsKeyCredentials,
   userAgent,
   wsHtu
-} from "./index-gbawynqc.js";
+} from "./index-yqx68d2t.js";
 
 // src/runtime/runtime.ts
 function unref(handle) {
@@ -941,6 +941,8 @@ class Session {
       ...Array.isArray(p.holds) ? { holds: p.holds } : {},
       ...Array.isArray(p.carried) ? { carried: p.carried } : {},
       ...Array.isArray(p.released) ? { released: p.released } : {},
+      ...typeof p.releasedFrom === "string" ? { releasedFrom: p.releasedFrom } : {},
+      ...typeof p.releasedMore === "number" ? { releasedMore: p.releasedMore } : {},
       ...Array.isArray(p.notCarried) ? { notCarried: p.notCarried } : {}
     });
     this.flushAcks();
@@ -1063,7 +1065,7 @@ function withDetails(base, details) {
 }
 
 // src/runtime/sdk-version.generated.ts
-var SDK_VERSION = "0.38.0";
+var SDK_VERSION = "0.42.0";
 
 // src/runtime/api.ts
 var HTTP_TIMEOUT_MS = 20000;
@@ -1381,6 +1383,7 @@ class AgentClient {
   inflight = null;
   ticker = null;
   lateRefreshTimer = null;
+  dropped = false;
   sessionBlocked = false;
   reconnectNext = false;
   mintNotBefore = 0;
@@ -1637,7 +1640,7 @@ class AgentClient {
     return { token: g.access_token, expiresAt: now + lifeMs, refreshAt: now + lifeMs - marginMs - jitterMs, sessionId: g.session_id, installationId: inst.installationId, signer };
   }
   armTicker() {
-    if (this.ticker)
+    if (this.ticker || this.dropped)
       return;
     const due = () => {
       const a = this.access;
@@ -1759,9 +1762,9 @@ class AgentClient {
     };
     return { auth, complete };
   }
-  async refuseOverNewer() {
+  async refuseOverNewer(doing = "signing in here") {
     if (await this.opts.store.isNewer?.()) {
-      throw new AgentClientError({ code: "refused", message: "this store holds an installation written by a newer build — update before signing in here" });
+      throw new AgentClientError({ code: "refused", message: `this store holds an installation written by a newer build — update before ${doing}` });
     }
   }
   async discoverOrRefuse(signal) {
@@ -1884,10 +1887,40 @@ class AgentClient {
     this.resourceNonce = undefined;
     return result;
   }
+  async revokeSession(sessionKey, opts = {}) {
+    if (sessionKey === "")
+      throw new AgentClientError({ code: "refused", message: "revokeSession needs the session key of the window to end" });
+    return this.opts.store.withLock(async (signal) => {
+      const record = await this.opts.store.read();
+      if (!record) {
+        await this.refuseOverNewer("ending a session from here");
+        return "not_enrolled";
+      }
+      if (opts.keep && await opts.keep())
+        return "kept";
+      try {
+        const meta = await this.tokens.discover(record.installation.apiUrl, signal);
+        const signer = this.opts.signer ?? await softwareSigner(record.privateJwk);
+        await this.tokens.revoke(meta, signer, {
+          installationId: record.installation.installationId,
+          joinState: record.joinState,
+          attempt: await this.opts.store.readAttempt(),
+          scope: "session",
+          sessionKey
+        }, { signal });
+        return "ended";
+      } catch (e) {
+        if (classifyTokenError(e).kind === "installation_gone")
+          return "installation_gone";
+        throw this.toClientError(e);
+      }
+    }, this.lockOpts());
+  }
   session(opts) {
     return new Session(this.rt, this, opts);
   }
   stop() {
+    this.dropped = true;
     this.ticker?.clear();
     this.ticker = null;
     this.lateRefreshTimer?.clear();
