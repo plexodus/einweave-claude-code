@@ -767,7 +767,7 @@ test('Take on an Inbox row takes it by id; from an online holder it asks the per
   await ui.unmount()
 })
 
-test('a snapshot with uiSocket: the thread tab reads over http.fetch on that socket (whole page), with NO mcp.call for ui_thread; a refusal falls back to MCP; an error body is shown', async ($, on) => {
+test('a snapshot with modSocket: the thread tab reads over http.fetch on that socket (whole page), with NO mcp.call for ui_thread; a refusal falls back to MCP; an error body is shown', async ($, on) => {
   const thread = {
     thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' },
     channel_id: 'c',
@@ -785,12 +785,12 @@ test('a snapshot with uiSocket: the thread tab reads over http.fetch on that soc
     if (mode === 'error') return { value: { status: 409, ok: false, headers: {}, text: JSON.stringify({ error: 'einweave not connected — run /einweave:connect first.' }) } }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(thread) } }
   })
-  const { calls, clock } = engine(on, { polled: { ...WAITING, uiSocket: '/tmp/ew/u1.sock' }, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify({ ...thread, messages: [{ ...thread.messages[0], content: 'Read over MCP' }] })) : undefined) })
+  const { calls, clock } = engine(on, { polled: { ...WAITING, modSocket: '/tmp/ew/m1.sock' }, answer: c => (c.tool === 'ui_thread' ? text(JSON.stringify({ ...thread, messages: [{ ...thread.messages[0], content: 'Read over MCP' }] })) : undefined) })
   await start($, clock)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: `open:${T_OLD}` })
   await clock.settle()
-  expect(fetched).toEqual([{ url: `http://einweave/thread/${T_OLD}`, socketPath: '/tmp/ew/u1.sock' }])
+  expect(fetched).toEqual([{ url: `http://einweave/thread/${T_OLD}`, socketPath: '/tmp/ew/m1.sock' }])
   expect(calls.filter(c => c.tool === 'ui_thread')).toEqual([])
   expect(await ui.find({ key: `ln:${T_OLD}:root:0` })).toMatchObject({ text: 'Read over the socket' })
   // The fetch refused (no socket any more, a policy): this call alone goes over MCP.
@@ -808,7 +808,7 @@ test('a snapshot with uiSocket: the thread tab reads over http.fetch on that soc
   await ui.unmount()
 })
 
-test('a snapshot with uiSocket: a person\'s actions (a /einweave command, a pane button) POST /tool/<name> on that socket, with NO mcp.call for them; a refusal falls back to MCP', async ($, on) => {
+test('a snapshot with modSocket: a person\'s actions (a /einweave command, a pane button) POST /tool/<name> on that socket, with NO mcp.call for them; a refusal falls back to MCP', async ($, on) => {
   const posted: { url: string; method?: string; body?: string; socketPath?: string }[] = []
   let refused = false
   on('http.fetch', (_$, e) => {
@@ -817,18 +817,18 @@ test('a snapshot with uiSocket: a person\'s actions (a /einweave command, a pane
     if (refused) throw new Error('refused by policy')
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ content: [{ type: 'text', text: 'released over the socket' }] }) } }
   })
-  const { calls, clock } = engine(on, { polled: { ...WAITING, uiSocket: '/tmp/ew/u1.sock' }, answer: c => text(`${c.tool} ${JSON.stringify(c.args)}`) })
+  const { calls, clock } = engine(on, { polled: { ...WAITING, modSocket: '/tmp/ew/m1.sock' }, answer: c => text(`${c.tool} ${JSON.stringify(c.args)}`) })
   await start($, clock)
   expect((await $.command.run({ command: 'einweave', args: 'release 2' })).text).toBe('released over the socket')
-  expect(posted).toEqual([{ url: 'http://einweave/tool/release', method: 'POST', body: '{"ref":"2"}', socketPath: '/tmp/ew/u1.sock' }])
+  expect(posted).toEqual([{ url: 'http://einweave/tool/release', method: 'POST', body: '{"ref":"2"}', socketPath: '/tmp/ew/m1.sock' }])
   expect(calls.filter(c => c.tool === 'release')).toEqual([])
   refused = true
   expect((await $.command.run({ command: 'einweave', args: 'release 3' })).text).toBe('release {"ref":"3"}')
   expect(calls.filter(c => c.tool === 'release').map(c => c.args)).toEqual([{ ref: '3' }])
 })
 
-for (const [name, polled] of [['absent', WAITING], ['null', { ...WAITING, uiSocket: null }], ['junk', { ...WAITING, uiSocket: 42 as unknown as string }]] as const) {
-  test(`a snapshot whose uiSocket is ${name}: the thread tab reads through mcp.call, and http.fetch is never touched`, async ($, on) => {
+for (const [name, polled] of [['absent', WAITING], ['null', { ...WAITING, modSocket: null }], ['junk', { ...WAITING, modSocket: 42 as unknown as string }]] as const) {
+  test(`a snapshot whose modSocket is ${name}: the thread tab reads through mcp.call, and http.fetch is never touched`, async ($, on) => {
     const thread = { thread: { id: T_OLD, title: 'Older ask', kind: 'question', status: 'open' }, channel_id: 'c', messages: [], has_older: false, older_count: 0 }
     let fetches = 0
     on('http.fetch', () => {
@@ -2338,7 +2338,7 @@ test('Inbox search: filters alone say "newest first" (what the server did) and o
 
 /**
  * Hand over picker, option B (Jörgen 2026-11-05). The windows are read anew as the picker opens (`GET /sessions`
- * on the UI socket): the snapshot's are up to a minute old. The picker draws from the list it opened with (the
+ * on the mod server): the snapshot's are up to a minute old. The picker draws from the list it opened with (the
  * `handover` atom, written as it opens and once by that read), so a later snapshot cannot reorder it.
  * MUTATIONS (seen red): skip the fresh read → the snapshot's stale order; draw from the snapshot instead of the
  * picker's own list → the same.
@@ -2349,7 +2349,7 @@ test('the Hand over picker reads the windows anew as it opens and draws from tha
   const win = (id: string, over: Record<string, unknown>) => ({ id, label: `label ${id}`, online: true, name: null, folder: null, branch: null, activity: null, holds: { title: null, count: 0 }, ...over })
   const HELD: UiSnapshot = {
     ...SNAP,
-    uiSocket: '/tmp/ew/u1.sock',
+    modSocket: '/tmp/ew/m1.sock',
     holds: [{ threadId: 't1', title: 'Fix the build', channel: 'dev', quietSince: null, unseenByModel: 0, lastBy: null }],
     // Stale: the snapshot says s1 is working.
     sessions: [win('s1', { activity: { state: 'working', since: at(60_000) } }), win('s2', {})],
@@ -2607,7 +2607,7 @@ test('turn: seeded loops first, an entered entry pending then read at the step, 
     if (e.tool === 'Bash') await $.classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' })
     return { result: 'ran' } as never
   })
-  const { clock } = engine(on, { polled: { ...SNAP, uiSocket: '/tmp/ew/u1.sock' } })
+  const { clock } = engine(on, { polled: { ...SNAP, modSocket: '/tmp/ew/m1.sock' } })
   await start($, clock)
   await clock.settle()
   await clock.advance(60_000) // a poll tick: it would retry a snapshot that found no socket
@@ -2628,7 +2628,7 @@ test('turn: seeded loops first, an entered entry pending then read at the step, 
   expect(new Set(posts.map(p => p.epoch)).size, 'one epoch').toBe(1)
   // Each attempt takes the next seq (one that found no socket yet was never received): strictly rising.
   expect(posts.every((p, i) => i === 0 || p.seq > posts[i - 1].seq), 'seq rises').toBe(true)
-  expect(posts.every(p => p.socket === '/tmp/ew/u1.sock')).toBe(true)
+  expect(posts.every(p => p.socket === '/tmp/ew/m1.sock')).toBe(true)
   const snaps = posts.filter(p => p.kind === 'snapshot')
   expect(snaps[0].loops, 'the seed: a running agent with a model; a pane teammate (no model) runs no loop').toEqual([{ agent: 'sub-1', turn: null, inTurn: [], pending: [] }])
   expect(snaps[0].agents).toEqual(['sub-1', 'mate'])
@@ -2638,7 +2638,7 @@ test('turn: seeded loops first, an entered entry pending then read at the step, 
   const main = (p: any) => p.loops.find((l: any) => l.agent === 'main')
   expect(snaps.some(p => main(p)?.turn === 'm1' && main(p).pending.length === 1 && main(p).inTurn.length === 0), 'turn started: still pending').toBe(true)
   expect(snaps.some(p => JSON.stringify(main(p)?.inTurn) === JSON.stringify([{ id: 'e1' }])), 'the step: read').toBe(true)
-  expect(posts.filter(p => p.kind === 'tool'), 'only our tools').toEqual([{ kind: 'tool', toolUseId: 'tu1', agent: 'main', turn: 'm1', epoch: posts[0].epoch, seq: expect.any(Number), socket: '/tmp/ew/u1.sock' }])
+  expect(posts.filter(p => p.kind === 'tool'), 'only our tools').toEqual([{ kind: 'tool', toolUseId: 'tu1', agent: 'main', turn: 'm1', epoch: posts[0].epoch, seq: expect.any(Number), socket: '/tmp/ew/m1.sock' }])
   expect(snaps.some(p => p.state === 'needs_you'), 'the dialog').toBe(true)
   const last = snaps.at(-1)
   expect(last.state, 'main aborted; the seeded subagent works on').toBe('working')
@@ -2656,7 +2656,7 @@ test('turn: a snapshot naming another server boot sends the turn again; the same
     return { value: { status: 404, ok: false, headers: {}, text: '{}' } }
   })
   on('agent.list', () => ({ value: [] as never }))
-  const at = (boot: string) => ({ ...SNAP, uiSocket: '/tmp/ew/u1.sock', boot })
+  const at = (boot: string) => ({ ...SNAP, modSocket: '/tmp/ew/m1.sock', boot })
   // Each relay ends after its snapshot (the server went): the same server, then a restarted one.
   const { spawns, clock } = engine(on, { polled: at('boot-1'), pushes: [[line(1, at('boot-1'))], [line(1, at('boot-1'))], [line(1, at('boot-2'))]] })
   await start($, clock)

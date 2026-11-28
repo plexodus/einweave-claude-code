@@ -18,7 +18,7 @@
  *   over it, or the file vanished) it re-opens with takeover, and it looks on its own — an
  *   unref'd interval while it holds the lock, not only when `status` is asked.
  *
- * A COMPANION (the pane's data socket, ui/ui-server.ts) rides on the same decision: it is opened only
+ * A COMPANION (the mod server, ui/mod-server.ts) rides on the same decision: it is opened only
  * once this process serves the control socket, so it has the same takeover semantics for free, and it
  * is stopped wherever the control socket is (lost, replaced, closed). Its own loss alone re-opens it.
  * It never fails the session: no companion, the pane reads over MCP.

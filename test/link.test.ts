@@ -165,16 +165,31 @@ describe("link/adapter — what reaches the model", () => {
     expect(h.dismissed).toEqual(["r2"]);
   });
 
-  test("RFC-028: a sibling session's contribution to a thread this session holds is surfaced, naming the holder; the old per-message target is gone", async () => {
+  test("RFC-028: a sibling session's contribution to a thread this session holds is surfaced, naming this session as holder; the old per-message target is gone", async () => {
     const h = harness();
     // A pre-0.31 server stamped contextId; it means nothing now -- the hold is the target.
     await h.adapter.push!(asEntry(msg("e1", { metadata: JSON.stringify({ contextId: "other-grant", contextAgentId: ME.agent }) })));
-    await h.adapter.push!(asEntry(msg("e2", { agentId: ME.agent, deliveryReasons: ["thread" as never], addressed: true, metadata: JSON.stringify({ contribution: { holder: { id: ME.grant, label: "my window #aaaa" } } }) })));
+    await h.adapter.push!(asEntry(msg("e2", { agentId: ME.agent, deliveryReasons: ["thread" as never], addressed: true })));
     expect(h.dismissed).toEqual([]);
     expect(h.pushed).toEqual(["e1", "e2"]);
     expect(h.notified[0]!.meta.context_id).toBeUndefined();
-    expect(h.notified[1]!.meta).toMatchObject({ contribution_holder_id: ME.grant, contribution_holder: "my window #aaaa" });
+    expect(h.notified[0]!.meta.contribution_holder_id).toBeUndefined();
+    expect(h.notified[1]!.meta).toMatchObject({ contribution_holder_id: ME.grant });
     expect(Object.keys(h.notified[1]!.meta).slice(0, 2)).toEqual(["channel_id", "message_id"]);
+  });
+
+  test("RFC-039 D4: contribution is derived here, never read from metadata -- a stamp is ignored, and only a held-thread delivery is one", async () => {
+    const h = harness();
+    const stamp = JSON.stringify({ contribution: { holder: { id: "someone-elses-session", label: "their window" } } });
+    // Another agent's post carrying a stamp: not a contribution of ours, and the stamp's session never surfaces.
+    await h.adapter.push!(asEntry(msg("s1", { deliveryReasons: ["thread" as never], addressed: true, metadata: stamp })));
+    // A sibling's post that reached us as a mention, not for the hold: no holder claim.
+    await h.adapter.push!(asEntry(msg("s2", { agentId: ME.agent, deliveryReasons: ["mention" as never], addressed: true, metadata: stamp })));
+    expect(h.pushed).toEqual(["s1", "s2"]);
+    for (const n of h.notified) {
+      expect(n.meta.contribution_holder_id).toBeUndefined();
+      expect(n.meta.contribution_holder).toBeUndefined();
+    }
   });
 
   test("nothing is pushed before the host is ready", async () => {

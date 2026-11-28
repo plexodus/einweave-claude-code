@@ -50,11 +50,11 @@ describe("buildUiState", () => {
     expect(s.gateway).toEqual({ online: true, label: "bridge-gw" });
   });
 
-  test("uiSocket: the pane's data socket path when open, null when not (the mod then reads over MCP)", () => {
-    expect(buildUiState(INPUTS).uiSocket).toBeNull();
-    expect(buildUiState({ ...INPUTS, uiSocket: "/s/ctl/u1.sock" }).uiSocket).toBe("/s/ctl/u1.sock");
+  test("modSocket: the mod server's socket path when open, null when not (the mod then reads over MCP)", () => {
+    expect(buildUiState(INPUTS).modSocket).toBeNull();
+    expect(buildUiState({ ...INPUTS, modSocket: "/s/ctl/m1.sock" }).modSocket).toBe("/s/ctl/m1.sock");
     // Not connected still names it: the socket is the session's, not the connection's.
-    expect(buildUiState({ ...INPUTS, authenticated: false, uiSocket: "/s/ctl/u1.sock" }).uiSocket).toBe("/s/ctl/u1.sock");
+    expect(buildUiState({ ...INPUTS, authenticated: false, modSocket: "/s/ctl/m1.sock" }).modSocket).toBe("/s/ctl/m1.sock");
   });
 
   // Red: sort ascending → t1 before t3; drop the "not caught up" rank → t2 first (hold order); read titles from

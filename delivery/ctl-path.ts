@@ -23,7 +23,7 @@ import { join } from "node:path";
  */
 const MAX_SOCKET_PATH = 86;
 
-function socketPath(prefix: "c" | "u", stateDir: string, claudePid: number): string {
+function socketPath(prefix: "c" | "m", stateDir: string, claudePid: number): string {
   const direct = join(stateDir, "ctl", `${prefix}${claudePid}.sock`);
   if (Buffer.byteLength(direct) <= MAX_SOCKET_PATH) return direct;
   const tag = createHash("sha256").update(stateDir).digest("hex").slice(0, 8);
@@ -35,11 +35,11 @@ export function ctlSocketPath(stateDir: string, claudePid: number): string {
 }
 
 /**
- * The pane's data socket (ui/ui-server.ts): beside the control socket, same directory, same rules,
- * `u` for UI. The mod reads it over HTTP so a long thread page is not cut by the host's tool-output limit.
+ * The mod server (ui/mod-server.ts): beside the control socket, same directory, same rules,
+ * `m` for mod. The mod reads it over HTTP so a long thread page is not cut by the host's tool-output limit.
  */
-export function uiSocketPath(stateDir: string, claudePid: number): string {
-  return socketPath("u", stateDir, claudePid);
+export function modSocketPath(stateDir: string, claudePid: number): string {
+  return socketPath("m", stateDir, claudePid);
 }
 
 /**

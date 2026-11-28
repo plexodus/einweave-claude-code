@@ -1,5 +1,5 @@
 /**
- * RFC-038 D3 against the REAL einweave API: the mod's turn posts (`POST /turn`, the UI socket) and a model's tool
+ * RFC-038 D3 against the REAL einweave API: the mod's turn posts (`POST /turn`, the mod server) and a model's tool
  * call (`_meta["claudecode/toolUseId"]`) become the session's `session_turn_threads` rows, and an idle turn
  * clears them. Plugin 0.51.0's release gate.
  *
@@ -11,11 +11,11 @@
  * it FAILS (never a quiet green). Seeding: test/fixtures/real-api-seed.ts (its own process).
  *
  * "Claude Code's pid" is this test process (a `sessions/pid-<pid>.json` mapping, as clear-carry-real-api): the
- * plugin opens its UI socket for it, where the test posts as the mod would.
+ * plugin opens its mod server for it, where the test posts as the mod would.
  */
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { uiSocketPath } from "../delivery/ctl-path";
+import { modSocketPath } from "../delivery/ctl-path";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -213,7 +213,7 @@ describe.skipIf(!HAVE_SERVER || !HAVE_PG)("RFC-038 D3: turn threads against the 
 
   /** One post as the mod sends it. */
   async function turnPost(body: Record<string, unknown>): Promise<Response> {
-    return await fetch("http://einweave/turn", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ epoch: "e1", seq: ++seq, ...body }), unix: uiSocketPath(dir, process.pid) } as RequestInit);
+    return await fetch("http://einweave/turn", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ epoch: "e1", seq: ++seq, ...body }), unix: modSocketPath(dir, process.pid) } as RequestInit);
   }
   const snapshot = (state: string, loops: unknown[]) => turnPost({ kind: "snapshot", state, loops, waiting: [], agents: [] });
   async function rows(): Promise<string[]> {

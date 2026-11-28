@@ -102,9 +102,9 @@ function snapshotOf(o: unknown): { rev: number; snap: UiSnapshot } | null {
   return typeof rev === 'number' && isSnapshot(rest) ? { rev, snap: socketChecked(rest) } : null
 }
 
-/** `uiSocket` is a path or nothing: anything else (a plugin that sent junk) reads as no socket, never as a path to fetch. */
+/** `modSocket` is a path or nothing: anything else (a plugin that sent junk) reads as no socket, never as a path to fetch. */
 function socketChecked(s: UiSnapshot): UiSnapshot {
-  return s.uiSocket === undefined || (typeof s.uiSocket === 'string' && s.uiSocket !== '') ? s : { ...s, uiSocket: null }
+  return s.modSocket === undefined || (typeof s.modSocket === 'string' && s.modSocket !== '') ? s : { ...s, modSocket: null }
 }
 
 function isSnapshot(s: unknown): s is UiSnapshot {

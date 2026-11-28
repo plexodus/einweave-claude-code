@@ -46,6 +46,8 @@ export function senderGrant(msg: Inbound): string {
  */
 export interface RenderView {
   selfHandle?: string;
+  /** This session's own grant id: a post by another session of this agent is told apart from its own. */
+  selfGrant?: string;
   refs?: ReadonlyMap<string, MessageRefPreview> | null;
 }
 
@@ -93,7 +95,7 @@ export function replyLine(r: NonNullable<Inbound["replyTo"]>, selfHandle?: strin
   return `↪ ${replySender(r, selfHandle)}: ${what}`;
 }
 
-export function renderMessage(msg: Inbound, view: RenderView = {}): Rendered {
+export function renderMessage(msg: Inbound, view: RenderView = {}, self: string | null = null): Rendered {
   const meta = parseMetadata(msg.metadata);
   const out: ChannelMeta = {
     channel_id: msg.channelId ?? "",
@@ -109,14 +111,14 @@ export function renderMessage(msg: Inbound, view: RenderView = {}): Rendered {
   // RFC-035 D8: the message this one answers (same channel, maybe another thread).
   if (msg.replyTo) out.reply_to = msg.replyTo.id;
   if (str(meta.routedTo)) out.routed_to = str(meta.routedTo);
-  // RFC-028 D3: another session of THIS agent posted into a thread this session holds. The
-  // server stamps `contribution = {holder}`; replies to it come to the holder, not to the sibling.
-  const holder = meta.contribution && typeof meta.contribution === "object" ? (meta.contribution as { holder?: { id?: unknown; label?: unknown } }).holder : undefined;
-  if (holder && str(holder.id)) {
-    out.contribution_holder_id = str(holder.id);
-    if (str(holder.label)) out.contribution_holder = str(holder.label);
-  }
   const from = senderGrant(msg);
+  // RFC-028 D3: another session of THIS agent posted into a thread this session holds; replies to
+  // it come here, not to the sibling. Derived here, never read from `metadata.contribution`: that
+  // stamp named the holding session to every reader, and RFC-039 D4 keeps session facts to the
+  // agent and its managers (the server stops writing it). Held = delivered for the "thread" reason.
+  if (self && msg.agentId === self && from && view.selfGrant && from !== view.selfGrant && msg.deliveryReasons?.includes("thread")) {
+    out.contribution_holder_id = view.selfGrant;
+  }
   if (from) out.sender_context_id = from;
   const lines = [
     ...(msg.replyTo ? [replyLine(msg.replyTo, view.selfHandle)] : []),
@@ -130,7 +132,7 @@ export function renderMessage(msg: Inbound, view: RenderView = {}): Rendered {
 export function render(entry: Entry, self: string | null = null, view: RenderView = {}): Rendered {
   switch (entry.kind) {
     case "message":
-      return renderMessage(entry.message, view);
+      return renderMessage(entry.message, view, self);
     case "thread_event": {
       // RFC-029 §6: something happened to a work item this agent is part of. `channel_id` then
       // `message_id` lead (the hook's tag rule); the entry id is what it confirms.
@@ -214,7 +216,7 @@ export function channelAdapter(d: AdapterDeps): DeliveryAdapter {
       try {
         const ids = entry.kind === "message" ? refIdsOf(entry.message.doc) : [];
         const refs = ids.length > 0 && d.loadRefs ? await d.loadRefs(ids) : undefined;
-        rendered = render(entry, d.myAgentId() || null, { selfHandle: d.myHandle?.() || undefined, refs });
+        rendered = render(entry, d.myAgentId() || null, { selfHandle: d.myHandle?.() || undefined, selfGrant: d.myGrant() || undefined, refs });
         await d.notify(rendered);
       } catch (err) {
         try {

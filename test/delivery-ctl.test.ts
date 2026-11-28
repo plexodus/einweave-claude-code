@@ -220,12 +220,12 @@ describe("sweepStaleCtlSockets", () => {
       ["other.sock", false],
       ["c4.sock.bak", false],
       ["c4.sock.tmp-x-ab12", false],
-      // The UI data socket's names (ui/ui-server.ts) follow the same rules.
-      ["u1.sock", true],
-      ["u2.sock", false],
-      ["u3-0123abcd.sock", true],
-      ["u9.sock.tmp-7-ab12", true],
-      ["u9.sock.tmp-2-ab12", false],
+      // The mod server socket's names (ui/mod-server.ts) follow the same rules.
+      ["m1.sock", true],
+      ["m2.sock", false],
+      ["m3-0123abcd.sock", true],
+      ["m9.sock.tmp-7-ab12", true],
+      ["m9.sock.tmp-2-ab12", false],
       ["x1.sock", false],
     ];
     for (const [n] of cases) writeFileSync(join(dir, n), "");

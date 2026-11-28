@@ -97,14 +97,14 @@ const NO_CHANNEL: ChannelView = { threads: [], error: null, loading: true }
 const paint = (tone: Tone | undefined) => (tone === 'dim' ? { dimColor: true } : tone ? { color: PALETTE[tone] } : {})
 
 /**
- * One of the pane's reads, as the MCP tool's result. Over the plugin's UI socket when the snapshot names one
+ * One of the pane's reads, as the MCP tool's result. Over the plugin's mod server when the snapshot names one
  * (`$.http.fetch` with `socketPath`, whole): the host cuts a tool result at its MODEL-facing output limit, and a long
  * thread page came back as an error (88,741 chars, 2026-11-03). A refusal of the fetch itself (no socket any more,
  * a policy) falls back to the MCP tool for that call, which keeps its size budget; an answer, even an error, stands.
  * `ui_state` goes over MCP until a snapshot has named the socket (that read is how the mod learns its path).
  */
-async function uiRead($: EngineInterface, path: string, query: Record<string, string | number>, tool: string, args: Record<string, string | number>, server = SERVER) {
-  const socketPath = (await read($, view)).snap?.uiSocket
+async function modRead($: EngineInterface, path: string, query: Record<string, string | number>, tool: string, args: Record<string, string | number>, server = SERVER) {
+  const socketPath = (await read($, view)).snap?.modSocket
   if (socketPath) {
     try {
       // Encoded: a search query is free text (spaces, #, &, quotes).
@@ -123,12 +123,12 @@ async function uiRead($: EngineInterface, path: string, query: Record<string, st
 
 /**
  * A person's action (Take, Release, Connect, a `/einweave` command): the plugin's tool of that name, run over
- * the UI socket when the snapshot names one (`POST /tool/:name`, the same code as the MCP tool), so the
+ * the mod server when the snapshot names one (`POST /tool/:name`, the same code as the MCP tool), so the
  * person's own action is not a model's tool call: not bound by its output limit nor seen by its tool hooks.
  * A refusal of the fetch itself falls back to the MCP tool; an answer, even an error, stands.
  */
-async function uiTool($: EngineInterface, tool: string, args: Record<string, unknown>) {
-  const socketPath = (await read($, view)).snap?.uiSocket
+async function modTool($: EngineInterface, tool: string, args: Record<string, unknown>) {
+  const socketPath = (await read($, view)).snap?.modSocket
   if (socketPath) {
     try {
       const r = await $.http.fetch(`http://einweave/tool/${encodeURIComponent(tool)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args), socketPath })
@@ -170,7 +170,7 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
     // The first draw runs while the server is still starting: wait for it, or the read fails and says "not answering".
     const c = await $.mcp.connect('einweave')
     if (!c.isConnected) return void (await update($, view, v => ({ ...v, error: c.message })))
-    const r = await uiRead($, '/state', {}, 'ui_state', {}, c.server)
+    const r = await modRead($, '/state', {}, 'ui_state', {}, c.server)
     const got = r.isError ? null : fromTool(r)
     if (got) await take($, got, restart)
     else await update($, view, v => ({ ...v, error: r.isError ? textOf(r) || 'ui_state failed' : 'ui_state answered no snapshot' }))
@@ -183,7 +183,7 @@ async function poll($: EngineInterface, restart = false): Promise<void> {
 }
 
 async function connect($: EngineInterface): Promise<string> {
-  const r = await uiTool($, 'connect', {})
+  const r = await modTool($, 'connect', {})
   let text = textOf(r)
   await poll($)
   if ((await read($, view)).snap?.connection.state === 'standby') {
@@ -191,7 +191,7 @@ async function connect($: EngineInterface): Promise<string> {
     try {
       answer = await $.ui.ask('Another window has this einweave session. Take it over here?', ['Take it over', 'Leave it'])
     } catch {}
-    if (answer === 'Take it over') text = textOf(await uiTool($, 'connect', { takeover: 'lock' }))
+    if (answer === 'Take it over') text = textOf(await modTool($, 'connect', { takeover: 'lock' }))
   }
   return text.startsWith('connecting') ? settled($) : text
 }
@@ -266,7 +266,7 @@ async function editKeys($: EngineInterface, verb: 'bind' | 'unbind', asked?: str
 
 /** Take this session back from the window that took it over: the person pressed for it, so no question. */
 async function takeBack($: EngineInterface): Promise<string> {
-  const text = textOf(await uiTool($, 'connect', { takeover: 'lock' }))
+  const text = textOf(await modTool($, 'connect', { takeover: 'lock' }))
   return text.startsWith('connecting') ? settled($) : text
 }
 
@@ -291,7 +291,7 @@ async function settled($: EngineInterface): Promise<string> {
  * the person, and only on their yes take it with confirm (by id: a number cannot carry a confirmation).
  */
 async function takeThread($: EngineInterface, ref: string): Promise<string> {
-  const first = textOf(await uiTool($, 'take', { ref }))
+  const first = textOf(await modTool($, 'take', { ref }))
   const o = takeOutcome(first)
   if (o.kind !== 'ask') {
     await poll($)
@@ -302,7 +302,7 @@ async function takeThread($: EngineInterface, ref: string): Promise<string> {
     answer = await $.ui.ask(o.question, ['Take it', 'Leave it'])
   } catch {}
   if (answer !== 'Take it') return 'Nothing was taken.'
-  const text = textOf(await uiTool($, 'take', { ref: o.id, confirm: true }))
+  const text = textOf(await modTool($, 'take', { ref: o.id, confirm: true }))
   await poll($)
   return text
 }
@@ -338,9 +338,9 @@ async function setTabs($: EngineInterface, f: (t: PaneTabs) => PaneTabs): Promis
  * question: the first take asks (and arms the confirm for that thread), the second confirms it.
  */
 async function undoHandover($: EngineInterface, id: string): Promise<string> {
-  const first = textOf(await uiTool($, 'take', { ref: id }))
+  const first = textOf(await modTool($, 'take', { ref: id }))
   const o = takeOutcome(first)
-  const text = o.kind === 'ask' ? textOf(await uiTool($, 'take', { ref: o.id, confirm: true })) : first
+  const text = o.kind === 'ask' ? textOf(await modTool($, 'take', { ref: o.id, confirm: true })) : first
   await update($, handed, h => (h.threadId === id ? NO_HANDED : h))
   await poll($)
   return text
@@ -351,7 +351,7 @@ async function loadThread($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...(m[id] ?? NO_THREAD), loading: true } }))
   let got: ThreadView
   try {
-    const r = await uiRead($, `/thread/${encodeURIComponent(id)}`, {}, 'ui_thread', { thread_id: id })
+    const r = await modRead($, `/thread/${encodeURIComponent(id)}`, {}, 'ui_thread', { thread_id: id })
     got = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
   } catch (err) {
     got = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
@@ -371,7 +371,7 @@ async function loadOlder($: EngineInterface, id: string): Promise<void> {
   await update($, threads, m => ({ ...m, [id]: { ...m[id]!, loadingOlder: true } }))
   let page: ThreadView
   try {
-    const r = await uiRead($, `/thread/${encodeURIComponent(id)}`, { before_seq: before, limit: OLDER_PAGE }, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
+    const r = await modRead($, `/thread/${encodeURIComponent(id)}`, { before_seq: before, limit: OLDER_PAGE }, 'ui_thread', { thread_id: id, before_seq: before, limit: OLDER_PAGE })
     page = r.isError ? { ...NO_THREAD, loading: false, error: textOf(r) || 'ui_thread failed' } : threadView(textOf(r))
   } catch (err) {
     page = { ...NO_THREAD, loading: false, error: String(err).slice(0, 200) }
@@ -399,7 +399,7 @@ async function showThread($: EngineInterface, id: string, title: string): Promis
 }
 
 /**
- * Run the Inbox search for the query as it is now (RFC-031): `/search` over the UI socket, else
+ * Run the Inbox search for the query as it is now (RFC-031): `/search` over the mod server, else
  * `ui_search`. `more` appends the next page. An answer for an edit that is no longer the newest is
  * dropped: typing on while a request is out never draws a stale page.
  */
@@ -414,7 +414,7 @@ async function runSearch($: EngineInterface, more = false): Promise<void> {
   const query: Record<string, string> = { q, type: st.type, sort: st.sort, ...(cursor ? { cursor } : {}) }
   let got: ReturnType<typeof searchAnswer>
   try {
-    const r = await uiRead($, '/search', query, 'ui_search', { query: q, type: st.type, sort: st.sort, ...(cursor ? { cursor } : {}) })
+    const r = await modRead($, '/search', query, 'ui_search', { query: q, type: st.type, sort: st.sort, ...(cursor ? { cursor } : {}) })
     got = r.isError ? { rows: [], total: null, next: null, refused: null, applied: null, error: textOf(r) || 'search failed' } : searchAnswer(textOf(r))
   } catch (err) {
     got = { rows: [], total: null, next: null, refused: null, applied: null, error: String(err).slice(0, 200) }
@@ -443,7 +443,7 @@ async function loadChannels($: EngineInterface): Promise<void> {
   await update($, channels, c => ({ ...c, loading: true }))
   let got
   try {
-    const r = await uiRead($, '/channels', {}, 'ui_channels', {})
+    const r = await modRead($, '/channels', {}, 'ui_channels', {})
     got = r.isError ? { ...NO_CHANNELS, loading: false, error: textOf(r) || 'ui_channels failed' } : channelsView(textOf(r))
   } catch (err) {
     got = { ...NO_CHANNELS, loading: false, error: String(err).slice(0, 200) }
@@ -457,7 +457,7 @@ async function loadChannel($: EngineInterface, id: string): Promise<void> {
   await update($, channel, m => ({ ...m, [id]: { ...(m[id] ?? NO_CHANNEL), loading: true } }))
   let got: ChannelView
   try {
-    const r = await uiRead($, `/channel/${encodeURIComponent(id)}`, {}, 'ui_channel', { channel_id: id })
+    const r = await modRead($, `/channel/${encodeURIComponent(id)}`, {}, 'ui_channel', { channel_id: id })
     got = r.isError ? { ...NO_CHANNEL, loading: false, error: textOf(r) || 'ui_channel failed' } : channelView(textOf(r))
   } catch (err) {
     got = { ...NO_CHANNEL, loading: false, error: String(err).slice(0, 200) }
@@ -620,7 +620,7 @@ function placed(off: number, atTop: boolean, w: PaneWindow, sc: PaneScroll | und
 
 /**
  * RFC-038 D3: which of this window's loops (main, each subagent) are working, and which einweave entries each
- * open turn has read, told IN ORDER to the plugin's server (`POST /turn`, the UI socket) by ONE sender. From
+ * open turn has read, told IN ORDER to the plugin's server (`POST /turn`, the mod server) by ONE sender. From
  * Claude Code's own lifecycle, in process, never a timer. Module variables: a reload is a new epoch, whose
  * first snapshot waits for the seed from `$.agent.list()` (a subagent still working must not go dark).
  */
@@ -639,7 +639,7 @@ const turnLoops = new TurnLoops(p => turnSender.ordered(p))
 /** One post. A refused one (400 malformed, 413 too large) is spent: it would never go. 404 (an older server) and no socket wait. */
 async function postTurn($: EngineInterface, body: TurnPost): Promise<boolean> {
   const snap = (await read($, view)).snap
-  const socketPath = snap?.uiSocket
+  const socketPath = snap?.modSocket
   if (!socketPath) return false
   const r = await $.http.fetch('http://einweave/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), socketPath })
   turnBoot = snap.boot ?? null
@@ -663,7 +663,7 @@ function turnChanged($: EngineInterface): void {
  * turn, and a post that failed waits for no next event: the snapshot goes again now.
  */
 function turnResync($: EngineInterface, snap: UiSnapshot | null | undefined): void {
-  if (!snap?.uiSocket || ((snap.boot ?? null) === turnBoot && !turnSender.stalled)) return
+  if (!snap?.modSocket || ((snap.boot ?? null) === turnBoot && !turnSender.stalled)) return
   postVia($)
   turnSender.resend()
 }
@@ -838,18 +838,18 @@ export const register: Register = on => {
       case 'connect':
         return { text: await connect($) }
       case 'status': {
-        const r = await uiTool($, 'status', {})
+        const r = await modTool($, 'status', {})
         const text = textOf(r)
         return { text: action.full || r.isError ? text : statusSummary(text, (await read($, view)).snap?.waiting ?? null) }
       }
       case 'tool': {
-        const r = await uiTool($, action.tool, action.args)
+        const r = await modTool($, action.tool, action.args)
         return { text: textOf(r) || (r.isError ? `${action.tool} failed` : 'Done.') }
       }
       case 'take':
         return { text: await takeThread($, action.ref) }
       case 'search': {
-        const r = await uiRead($, '/search', { q: action.words }, 'ui_search', { query: action.words })
+        const r = await modRead($, '/search', { q: action.words }, 'ui_search', { query: action.words })
         return { text: r.isError ? textOf(r) || 'search failed' : searchText(textOf(r), action.words) }
       }
     }
@@ -1002,7 +1002,7 @@ export const register: Register = on => {
     const t = await read($, tabs)
     const runs = (key: string, segs: Seg[]) => segs.map((g, n) => <Text key={`${key}:${n}`} {...paint(g.tone)} weight={g.weight}>{g.text}</Text>)
     const act = (tool: string, args: Record<string, unknown>) => () =>
-      detach(uiTool($, tool, args).then(
+      detach(modTool($, tool, args).then(
         r => $.ui.toast(textOf(r).split('\n')[0] || (r.isError ? `${tool} failed` : 'Done.')),
         err => $.ui.toast(`${tool} failed: ${String(err).slice(0, 120)}`),
       ))
@@ -1067,8 +1067,8 @@ export const register: Register = on => {
           if (!opened) return
           // What each window is doing NOW: the snapshot's list is up to a minute old. Read once; the order then
           // stays while the picker is open. A failed read keeps the snapshot's.
-          // Over the UI socket only: no MCP tool reads it (the model has no use for it).
-          const socketPath = (await read($, view)).snap?.uiSocket
+          // Over the mod server only: no MCP tool reads it (the model has no use for it).
+          const socketPath = (await read($, view)).snap?.modSocket
           if (!socketPath) return
           let fresh: NonNullable<UiSnapshot['sessions']> | null = null
           try {
@@ -1097,9 +1097,9 @@ export const register: Register = on => {
         (async () => {
           const at = s?.holds.findIndex(h => h.threadId === threadId) ?? -1
           const row = at >= 0 && s ? heldRow(s.holds[at]!, now) : null
-          let r: Awaited<ReturnType<typeof uiTool>>
+          let r: Awaited<ReturnType<typeof modTool>>
           try {
-            r = await uiTool($, 'handover', { ref: threadId, to: w.id })
+            r = await modTool($, 'handover', { ref: threadId, to: w.id })
           } catch (err) {
             $.ui.toast(`handover failed: ${String(err).slice(0, 120)}`)
             return

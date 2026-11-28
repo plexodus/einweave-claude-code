@@ -1,5 +1,7 @@
 /**
- * The pane's data, over a private per-session Unix socket (`delivery/ctl-path.ts` uiSocketPath).
+ * The mod server: the mod's channel to this process, over a private per-session Unix socket
+ * (`delivery/ctl-path.ts` modSocketPath). It carries the pane's data, a person's actions and RFC-038
+ * turns. The control socket (delivery/ctl-server.ts) is the HOOKS' channel; this one is the MOD's.
  *
  * WHY. The mod read its thread pages, channel lists and snapshots by calling this plugin's own MCP
  * tools, and Claude Code applies its MODEL-facing tool-output limit (MAX_MCP_OUTPUT_TOKENS, 25k tokens)
@@ -29,7 +31,7 @@ import type { Server } from "bun";
 import { ensurePrivateDir } from "../delivery/private-dir";
 
 /** A route's refusal, with the status to answer. Any other throw is a 500. */
-export class UiHttpError extends Error {
+export class ModHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -39,35 +41,35 @@ export class UiHttpError extends Error {
 }
 
 /** What each route returns: the plain view object, serialised here. */
-export interface UiRoutes {
+export interface ModRoutes {
   state(): Promise<unknown>;
   channels(): Promise<unknown>;
   channel(id: string): Promise<unknown>;
   thread(id: string, page: { beforeSeq?: number; limit?: number }): Promise<unknown>;
   /** RFC-031: one search page; a refused query is a value in the answer, not an error. */
   search(p: { query: string; type?: "threads" | "messages"; sort?: "relevance" | "newest"; cursor?: string; limit?: number }): Promise<unknown>;
-  /** A person's action: the MCP tool `name`'s result; a tool not allowed is a UiHttpError 403. */
+  /** A person's action: the MCP tool `name`'s result; a tool not allowed is a ModHttpError 403. */
   tool(name: string, args: Record<string, unknown>): Promise<unknown>;
   /** This agent's other sessions, read now (the Hand over picker opens on it): `{ sessions: UiSession[] }`. */
   sessions(): Promise<unknown>;
-  /** RFC-038 D3: one post of the mod's ordered turn sender (JSON, unchecked here); a malformed one is a UiHttpError 400. */
+  /** RFC-038 D3: one post of the mod's ordered turn sender (JSON, unchecked here); a malformed one is a ModHttpError 400. */
   turn(post: unknown): Promise<unknown>;
 }
 
-export interface UiServerOptions {
+export interface ModServerOptions {
   path: string;
-  routes: UiRoutes;
+  routes: ModRoutes;
   log: (line: string) => void;
 }
 
-export interface UiServer {
+export interface ModServer {
   path: string;
   /** Is the public path still the socket this server created? "replaced": another process bound it since. */
   ownership(): "ours" | "replaced" | "gone";
   stop(): void;
 }
 
-export type UiOpen = { server: UiServer; failure?: undefined } | { server: null; failure: string };
+export type ModOpen = { server: ModServer; failure?: undefined } | { server: null; failure: string };
 
 /** A request line longer than this is not ours (ids are UUIDs). */
 const MAX_URL = 2048;
@@ -88,7 +90,7 @@ function intParam(v: string | null): number | undefined {
   return Number.isSafeInteger(n) ? n : undefined;
 }
 
-export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response> {
+export function modHandler(routes: ModRoutes): (req: Request) => Promise<Response> {
   return async (req) => {
     if (req.method !== "GET" && req.method !== "POST") return json(405, { error: "GET or POST only" });
     if (req.url.length > MAX_URL) return json(414, { error: "request too long" });
@@ -151,7 +153,7 @@ export function uiHandler(routes: UiRoutes): (req: Request) => Promise<Response>
         }
       }
     } catch (err) {
-      const status = err instanceof UiHttpError ? err.status : 500;
+      const status = err instanceof ModHttpError ? err.status : 500;
       return json(status, { error: err instanceof Error ? err.message : String(err) });
     }
     return json(404, { error: "not found" });
@@ -167,17 +169,17 @@ function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
 }
 
 /** Never throws: a socket that cannot open is a failure the caller logs, and the mod reads over MCP. */
-export function openUiServer(o: UiServerOptions): UiOpen {
+export function openModServer(o: ModServerOptions): ModOpen {
   let server: Server<undefined> | undefined;
   let mine: { ino: number; dev: number } | null = null;
   const tmp = `${o.path}.tmp-${process.pid}-${Math.random().toString(16).slice(2, 6)}`;
   try {
     const safe = ensurePrivateDir(dirname(o.path));
     if (!safe.ok) {
-      o.log(`einweave ui: data socket not started — ${safe.reason}; the pane reads over MCP`);
+      o.log(`einweave mod server: not started — ${safe.reason}; the pane reads over MCP`);
       return { server: null, failure: safe.reason };
     }
-    server = Bun.serve({ unix: tmp, maxRequestBodySize: MAX_BODY, fetch: uiHandler(o.routes) });
+    server = Bun.serve({ unix: tmp, maxRequestBodySize: MAX_BODY, fetch: modHandler(o.routes) });
     chmodSync(tmp, 0o600);
     const st = lstatSync(tmp);
     mine = { ino: st.ino, dev: st.dev };
@@ -190,7 +192,7 @@ export function openUiServer(o: UiServerOptions): UiOpen {
       unlinkSync(tmp);
     } catch {}
     const detail = err instanceof Error ? err.message : String(err);
-    o.log(`einweave ui: data socket not started (the pane reads over MCP): ${detail}`);
+    o.log(`einweave mod server: not started (the pane reads over MCP): ${detail}`);
     return { server: null, failure: detail };
   }
   const ownership = (): "ours" | "replaced" | "gone" => {

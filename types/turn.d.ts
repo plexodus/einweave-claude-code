@@ -1,5 +1,5 @@
 /**
- * RFC-038 D3 — what the mod posts to its MCP server (`POST /turn` on the UI socket), one post per request,
+ * RFC-038 D3 — what the mod posts to its MCP server (`POST /turn` on the mod server), one post per request,
  * through ONE ordered sender. Shared by the mod (`mod/turn-loops.ts`) and the server (`turn/list.ts`).
  *
  * `epoch` is random per mod module instance (a reload, a new window); `seq` counts within it. The server
