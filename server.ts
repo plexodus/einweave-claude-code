@@ -91,6 +91,7 @@ import { sendMessage, isSendRefusal } from "./send-refusals";
 import { TurnList } from "./turn/list";
 import { parseTurnPost } from "./turn/post";
 import { TOOL_TURN } from "./turn/tools";
+import { agentNames, seenLine } from "./receipt-line";
 
 /** Text someone else wrote, for the pane: control characters stripped (control-chars.ts); null stays null. */
 function cleanOrNull(v: unknown): string | null {
@@ -787,6 +788,13 @@ function notifyInboundFailure(frameType: unknown, err: unknown): void {
 // when one gets its first "seen" receipt. Only receipt-notified types are
 // tracked: keeping chatter here would evict pending asks.
 const sentAsks = new Map<string, { type: string; at: number }>();
+/** RFC-039 D4: a receipt names the agent that saw it; the name comes from the agent directory. */
+const agentNameOf = agentNames(async () => {
+  const res = await apiFetch("/api/agents");
+  if (!res.ok) return null;
+  const data = (await res.json()) as { agents?: { id: string; name: string }[] };
+  return data.agents ?? [];
+});
 const SENT_ASK_TTL_MS = 24 * 60 * 60 * 1000;
 const SENT_ASK_MAX = 1000;
 
@@ -1889,14 +1897,9 @@ function onStatus(st: SessionStatus): void {
       const sent = sentAsks.get(r.messageId);
       if (!sent || !r.firstSeen || r.state !== "seen") return;
       sentAsks.delete(r.messageId);
-      mcp
-        .notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: `✓✓ Your ${sent.type} (${r.messageId}) was seen by ${r.contextLabel || r.contextId} at ${r.at ?? "now"}.`,
-            meta: { type: "receipt", message_id: r.messageId, seen_by_context: r.contextId ?? "", ...(r.contextLabel ? { seen_by_label: r.contextLabel } : {}) },
-          },
-        })
+      void agentNameOf(r.agentId)
+        .catch(() => null)
+        .then((name) => mcp.notification({ method: "notifications/claude/channel", params: seenLine(sent.type, r, name) }))
         .catch(() => {});
       return;
     }
@@ -2495,7 +2498,7 @@ async function readDeliveries(args: Record<string, unknown>, touched: string[] =
       echoes.push(e.id);
       continue;
     }
-    const r = render(e, agentId || null, { selfHandle: agentHandle || undefined, refs: pageRefs });
+    const r = render(e, agentId || null, { selfHandle: agentHandle || undefined, selfGrant: myContextId || undefined, refs: pageRefs });
     const { channel_id, thread_id, ...meta } = r.meta; // the two ids ride at the top level, once
     const item = {
       kind: e.kind,
