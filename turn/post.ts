@@ -1,5 +1,5 @@
 /**
- * RFC-038 D3 — a `POST /turn` body from the mod, checked before the turn list sees it. The UI socket lives in
+ * RFC-038 D3 — a `POST /turn` body from the mod, checked before the turn list sees it. The mod server lives in
  * the plugin's private directory, so the sender is this window's own mod; the check keeps a malformed post (a
  * version skew, a bug) from corrupting the list, and it is all-or-nothing.
  */

@@ -1,5 +1,5 @@
 /**
- * RFC-038 D3 — ONE ordered sender from the mod to its MCP server (`POST /turn`, the UI socket).
+ * RFC-038 D3 — ONE ordered sender from the mod to its MCP server (`POST /turn`, the mod server).
  *
  * - One post in flight.
  * - Ordered posts (tool, spawn, report) go in event order; a snapshot queued before one goes before it, so

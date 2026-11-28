@@ -236,7 +236,7 @@ describe("read_thread / list_threads", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "rt-"));
     stub = startStub();
-    // The ctl socket (and the UI socket that follows it) needs Claude's pid, which the hook's session map names:
+    // The ctl socket (and the mod server that follows it) needs Claude's pid, which the hook's session map names:
     // this test process stands in for Claude Code.
     mkdirSync(join(dir, "sessions"), { recursive: true });
     writeFileSync(join(dir, "sessions", `pid-${process.pid}.json`), JSON.stringify({ sessionId: "11111111-2222-3333-4444-555555555555", claudePid: process.pid, procStart: "", updatedAt: new Date().toISOString() }));
@@ -591,10 +591,10 @@ describe("read_thread / list_threads", () => {
     expect((await ok("ui_thread", { thread_id: THREAD })).thread).not.toHaveProperty("work");
   });
 
-  test("the UI socket serves the thread page WHOLE (no budget): ui_state carries its path, GET /thread/:id over it is larger than UI_THREAD_BUDGET, the MCP ui_thread stays under it", async () => {
-    let uiSocket: unknown = null;
-    for (const deadline = Date.now() + 15_000; Date.now() < deadline && typeof uiSocket !== "string"; await Bun.sleep(200)) uiSocket = (await ok("ui_state", {})).uiSocket;
-    expect(typeof uiSocket, "ui_state never carried a uiSocket").toBe("string");
+  test("the mod server serves the thread page WHOLE (no budget): ui_state carries its path, GET /thread/:id over it is larger than UI_THREAD_BUDGET, the MCP ui_thread stays under it", async () => {
+    let modSocket: unknown = null;
+    for (const deadline = Date.now() + 15_000; Date.now() < deadline && typeof modSocket !== "string"; await Bun.sleep(200)) modSocket = (await ok("ui_state", {})).modSocket;
+    expect(typeof modSocket, "ui_state never carried a modSocket").toBe("string");
     // RFC-038 D3: the process's boot id, the same on every read of it (another one = a restarted server).
     const boot = (await ok("ui_state", {})).boot;
     expect(typeof boot).toBe("string");
@@ -602,7 +602,7 @@ describe("read_thread / list_threads", () => {
 
     const big = (seq: number) => ({ ...msg(seq, "x".repeat(3000)), doc: [["p", 0, "x".repeat(3000)]], docV: 1 });
     stub.set({ replies: Array.from({ length: 30 }, (_, i) => big(100 + i)) });
-    const res = await fetch(`http://einweave/thread/${THREAD}`, { unix: uiSocket as string } as RequestInit);
+    const res = await fetch(`http://einweave/thread/${THREAD}`, { unix: modSocket as string } as RequestInit);
     expect(res.status).toBe(200);
     const raw = await res.text();
     expect(raw.length).toBeGreaterThan(40000);
@@ -614,9 +614,9 @@ describe("read_thread / list_threads", () => {
     // The MCP tool keeps its budget for the same thread.
     expect(((await callTool("ui_thread", { thread_id: THREAD })).text as string).length).toBeLessThanOrEqual(40000);
     // A refusal is JSON with its status, not a dropped socket.
-    expect((await fetch(`http://einweave/thread/no-such`, { unix: uiSocket as string } as RequestInit)).status).toBe(500);
+    expect((await fetch(`http://einweave/thread/no-such`, { unix: modSocket as string } as RequestInit)).status).toBe(500);
     // A person's action runs the tool of that name (the same answer as MCP); a tool no person starts is refused.
-    const post = (name: string, args: object) => fetch(`http://einweave/tool/${name}`, { method: "POST", body: JSON.stringify(args), unix: uiSocket as string } as RequestInit);
+    const post = (name: string, args: object) => fetch(`http://einweave/tool/${name}`, { method: "POST", body: JSON.stringify(args), unix: modSocket as string } as RequestInit);
     const status = await post("status", {});
     expect(status.status).toBe(200);
     expect(((await status.json()) as { content: { text: string }[] }).content[0]!.text).toBe((await callTool("status", {})).text);

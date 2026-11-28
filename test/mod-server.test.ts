@@ -1,5 +1,5 @@
 /**
- * The pane's data socket (ui/ui-server.ts): HTTP over a private Unix socket, so a long thread page is not
+ * The mod server (ui/mod-server.ts): HTTP over a private Unix socket, so a long thread page is not
  * cut by Claude Code's tool-output limit. The safety rules are the control socket's (delivery/ctl-server.ts),
  * pinned here the same way: the file is 0600 in a 0700 directory, an unsafe directory refuses to bind, and
  * `stop()` leaves a newer server's socket alone.
@@ -8,7 +8,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openUiServer, UiHttpError, type UiRoutes, type UiServer } from "../ui/ui-server";
+import { openModServer, ModHttpError, type ModRoutes, type ModServer } from "../ui/mod-server";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -16,18 +16,18 @@ afterEach(() => {
 });
 
 function privateDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "ew-ui-"));
+  const dir = mkdtempSync(join(tmpdir(), "ew-mod-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   return dir; // mkdtemp makes it 0700
 }
 
 const seen: string[] = [];
-const ROUTES: UiRoutes = {
+const ROUTES: ModRoutes = {
   state: async () => ({ rev: 1 }),
   channels: async () => ({ channels: [] }),
   sessions: async () => ({ sessions: [{ id: "s1" }] }),
   channel: async (id) => {
-    if (id === "nope") throw new UiHttpError(404, "no such channel");
+    if (id === "nope") throw new ModHttpError(404, "no such channel");
     return { channel_id: id };
   },
   thread: async (id, page) => {
@@ -40,7 +40,7 @@ const ROUTES: UiRoutes = {
     return { results: [] };
   },
   tool: async (name, args) => {
-    if (name !== "take") throw new UiHttpError(403, `${name} is not run from the pane`);
+    if (name !== "take") throw new ModHttpError(403, `${name} is not run from the pane`);
     return { content: [{ type: "text", text: `took ${String(args.ref)}` }] };
   },
   turn: async (post) => {
@@ -49,8 +49,8 @@ const ROUTES: UiRoutes = {
   },
 };
 
-function open(path: string, routes: UiRoutes = ROUTES): UiServer {
-  const r = openUiServer({ path, routes, log: () => {} });
+function open(path: string, routes: ModRoutes = ROUTES): ModServer {
+  const r = openModServer({ path, routes, log: () => {} });
   if (!r.server) throw new Error(`did not open: ${r.failure}`);
   cleanups.push(() => r.server.stop());
   return r.server;
@@ -75,9 +75,9 @@ async function raw(path: string, request: string): Promise<string> {
   return done.promise.finally(() => clearTimeout(timer));
 }
 
-describe("ui server", () => {
+describe("mod server", () => {
   test("serves a 200 KB thread page whole: no budget on the socket", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     const res = await get(path, "/thread/x");
     expect(res.status).toBe(200);
@@ -87,7 +87,7 @@ describe("ui server", () => {
   });
 
   test("routes: state, channels, channel (id decoded), thread with its page query", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     expect(await (await get(path, "/state")).json()).toEqual({ rev: 1 });
     expect(await (await get(path, "/channels")).json()).toEqual({ channels: [] });
@@ -99,7 +99,7 @@ describe("ui server", () => {
   });
 
   test("GET /search passes q, type, sort, cursor and limit decoded; no q or a bad type/sort is 400", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     const q = encodeURIComponent('deploy "a phrase" in:#ops');
     const res = await get(path, `/search?q=${q}&type=messages&sort=newest&cursor=${encodeURIComponent("eyJ/=")}&limit=7`);
@@ -113,7 +113,7 @@ describe("ui server", () => {
   });
 
   test("POST /turn takes one JSON post of the mod's turn sender; GET is 405, not JSON 400, too large 413, a path after it 404", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     const post = { kind: "snapshot", epoch: "e", seq: 1, state: "working", loops: [], waiting: [], agents: [] };
     const res = await get(path, "/turn", { method: "POST", body: JSON.stringify(post) });
@@ -127,7 +127,7 @@ describe("ui server", () => {
   });
 
   test("a failing route answers { error } with its status (a plain throw is 500); the server stays up", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     const gone = await get(path, "/channel/nope");
     expect(gone.status).toBe(404);
@@ -139,7 +139,7 @@ describe("ui server", () => {
   });
 
   test("POST /tool/:name runs a person's action with its JSON arguments; a refused tool is 403; GET on it 405; bad bodies 400/413", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     const post = (url: string, body: string) => get(path, url, { method: "POST", body, headers: { "content-type": "application/json" } });
     const ok = await post("/tool/take", JSON.stringify({ ref: "t1" }));
@@ -153,7 +153,7 @@ describe("ui server", () => {
   });
 
   test("unknown routes are 404; only GET; a body is refused", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     open(path);
     for (const url of ["/", "/nope", "/state/extra", "/thread", "/thread/a/b", "/channel"]) expect((await get(path, url)).status).toBe(404);
     expect((await get(path, "/state", { method: "POST" })).status).toBe(405);
@@ -166,7 +166,7 @@ describe("ui server", () => {
 
   test("the socket is 0600 in a 0700 directory", () => {
     const dir = privateDir();
-    const path = join(dir, "u1.sock");
+    const path = join(dir, "m1.sock");
     open(path);
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(dir).mode & 0o777).toBe(0o700);
@@ -175,9 +175,9 @@ describe("ui server", () => {
   test("a directory that is not private refuses to bind, and nothing is left behind", () => {
     const dir = privateDir();
     chmodSync(dir, 0o755);
-    const path = join(dir, "u1.sock");
+    const path = join(dir, "m1.sock");
     const lines: string[] = [];
-    const r = openUiServer({ path, routes: ROUTES, log: (l) => lines.push(l) });
+    const r = openModServer({ path, routes: ROUTES, log: (l) => lines.push(l) });
     expect(r.server).toBeNull();
     expect(r.failure).toMatch(/mode 755/);
     expect(lines.join("\n")).toMatch(/not started/);
@@ -186,7 +186,7 @@ describe("ui server", () => {
   });
 
   test("stop() removes its own socket", () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     const s = open(path);
     expect(existsSync(path)).toBe(true);
     s.stop();
@@ -194,7 +194,7 @@ describe("ui server", () => {
   });
 
   test("stop() leaves a newer server's socket alone", async () => {
-    const path = join(privateDir(), "u1.sock");
+    const path = join(privateDir(), "m1.sock");
     const a = open(path);
     const b = open(path, { ...ROUTES, state: async () => ({ rev: 2 }) });
     expect(a.ownership()).toBe("replaced");
@@ -203,4 +203,32 @@ describe("ui server", () => {
     expect(b.ownership()).toBe("ours");
     expect(await (await get(path, "/state")).json()).toEqual({ rev: 2 });
   });
+});
+
+/**
+ * RFC-039 §5 step 0: the server first named for the pane is the MOD server — it carries the pane's data, a person's actions,
+ * RFC-038 turns and, next, the mod's control signals. No old name is left in the plugin's sources, so a
+ * reader never meets two names for one channel. The patterns are split so this file does not match itself.
+ */
+test("no source names the mod server by its old UI name", async () => {
+  const root = join(import.meta.dir, "..");
+  const old = [
+    new RegExp("\\bui" + "-server\\b"),
+    new RegExp("\\bUi" + "(HttpError|Routes|Server|ServerOptions|Open)\\b"),
+    new RegExp("\\bui" + "(Socket|SocketPath|Read|Tool|Handler|Routes)\\b"),
+    new RegExp("\\bUI " + "(socket|server)\\b", "i"),
+    new RegExp("\\bdata " + "socket\\b", "i"),
+    new RegExp("\\bu" + "\\d+(-[0-9a-f]{8,12})?\\.sock\\b"),
+    new RegExp('socketPath\\("' + 'u"'),
+  ];
+  const skip = ["vendor/", "node_modules/", "docs/", "test/fixtures/"];
+  const hits: string[] = [];
+  for await (const file of new Bun.Glob("**/*.{ts,tsx,md,json}").scan({ cwd: root })) {
+    if (skip.some((d) => file.startsWith(d))) continue;
+    const lines = (await Bun.file(join(root, file)).text()).split("\n");
+    lines.forEach((line, i) => {
+      if (old.some((re) => re.test(line))) hits.push(`${file}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  expect(hits).toEqual([]);
 });

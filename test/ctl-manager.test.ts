@@ -7,11 +7,11 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readdirSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { ctlSocketPath, uiSocketPath } from "../delivery/ctl-path";
+import { ctlSocketPath, modSocketPath } from "../delivery/ctl-path";
 import { CtlManager } from "../delivery/ctl-manager";
 import { openCtlServer, type CtlServerOptions } from "../delivery/ctl-server";
 import { MissedTracker } from "../delivery/missed";
-import { openUiServer } from "../ui/ui-server";
+import { openModServer } from "../ui/mod-server";
 
 const PID = 616161;
 type E = { id: string };
@@ -65,9 +65,9 @@ const until = async (pred: () => boolean, ms = 3000) => {
 };
 
 describe("CtlManager", () => {
-  test("the UI socket rides on the control socket: opened once it is ours, advertised, stopped with it, and re-opened alone if it is lost", async () => {
+  test("the mod server rides on the control socket: opened once it is ours, advertised, stopped with it, and re-opened alone if it is lost", async () => {
     const t = setup();
-    const uiPath = uiSocketPath(t.dir, PID);
+    const modPath = modSocketPath(t.dir, PID);
     const changes: Array<string | null> = [];
     const flag = { holds: true };
     let m!: CtlManager<E>;
@@ -76,17 +76,17 @@ describe("CtlManager", () => {
       retryDelaysMs: [10],
       watchMs: 20,
       holdsLock: () => flag.holds,
-      companion: () => openUiServer({ path: uiPath, routes: { state: async () => ({}), channels: async () => ({}), channel: async () => ({}), thread: async () => ({}), tool: async () => ({}), search: async () => ({}), sessions: async () => ({}), turn: async () => ({}) }, log: () => {} }).server,
+      companion: () => openModServer({ path: modPath, routes: { state: async () => ({}), channels: async () => ({}), channel: async () => ({}), thread: async () => ({}), tool: async () => ({}), search: async () => ({}), sessions: async () => ({}), turn: async () => ({}) }, log: () => {} }).server,
       onCompanion: () => void changes.push(m.companionPath()),
     });
     cleanups.push(() => m.close());
     await m.ensure();
-    expect(m.companionPath()).toBe(uiPath);
-    expect(readdirSync(join(t.dir, "ctl")).sort()).toEqual([`c${PID}.sock`, `u${PID}.sock`]);
+    expect(m.companionPath()).toBe(modPath);
+    expect(readdirSync(join(t.dir, "ctl")).sort()).toEqual([`c${PID}.sock`, `m${PID}.sock`]);
     // Lost alone (a tmp cleaner): the lock holder's watch brings it back.
-    rmSync(uiPath);
-    expect(await until(() => changes.length >= 3 && m.companionPath() === uiPath)).toBe(true);
-    expect(changes).toEqual([uiPath, null, uiPath]);
+    rmSync(modPath);
+    expect(await until(() => changes.length >= 3 && m.companionPath() === modPath)).toBe(true);
+    expect(changes).toEqual([modPath, null, modPath]);
     // Stopped with the control socket.
     m.close();
     expect(m.companionPath()).toBeNull();

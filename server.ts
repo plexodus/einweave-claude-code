@@ -74,8 +74,8 @@ import { forYouBox } from "./delivery/for-you";
 import { buildUiState, mergeRefresh, toHeld, toWaiting, UiWatch, UI_WAITING_LIMIT, UI_WAITING_PAGE, UI_WAITING_PAGES, type HeldInfo, type UiGateway, type UiSession, type UiWaiting } from "./ui/ui-state";
 import { sweepCtlDirs, removeLegacyCtlDir, type CtlServerOptions } from "./delivery/ctl-server";
 import { CtlManager } from "./delivery/ctl-manager";
-import { ctlSocketPath, uiSocketPath } from "./delivery/ctl-path";
-import { openUiServer, UiHttpError, type UiRoutes } from "./ui/ui-server";
+import { ctlSocketPath, modSocketPath } from "./delivery/ctl-path";
+import { openModServer, ModHttpError, type ModRoutes } from "./ui/mod-server";
 import { legacyEnvProblem } from "./legacy-env";
 import { ReturnedAcks } from "./delivery/returned-acks";
 import type { NoticeEntry } from "./delivery/notice";
@@ -1227,7 +1227,7 @@ let pushedCount = 0;
 let session: Session | null = null;
 /**
  * RFC-038 D3: what this window's model is doing and which threads its turn serves. The mod's ordered posts
- * (`POST /turn` on the UI socket, from Claude Code's own turn lifecycle) joined with what only this process
+ * (`POST /turn` on the mod server, from Claude Code's own turn lifecycle) joined with what only this process
  * knows: the entries it pushed, the threads its tools acted on, the threads whose work left, the re-keys.
  * Kept here so a Session made later (connect, a re-key) starts with the state AND the list.
  */
@@ -1402,11 +1402,11 @@ async function holdsLiveLock(): Promise<boolean> {
  */
 const PERSON_TOOLS = new Set(["connect", "take", "release", "handover", "scope", "set_session_label", "status", "disconnect", "logout", "list_threads"]);
 
-/** The UI socket's routes: the same reads as the `ui_*` tools, whole (no budget), gated as they are; and a person's actions. */
-const uiRoutes: UiRoutes = {
+/** The mod server's routes: the same reads as the `ui_*` tools, whole (no budget), gated as they are; and a person's actions. */
+const modRoutes: ModRoutes = {
   state: () => uiState(),
   tool: async (name, args) => {
-    if (!PERSON_TOOLS.has(name)) throw new UiHttpError(403, `${name} is not run from the pane`);
+    if (!PERSON_TOOLS.has(name)) throw new ModHttpError(403, `${name} is not run from the pane`);
     return runTool(name, args);
   },
   channels: async () => (uiGate(), await uiChannels()),
@@ -1418,7 +1418,7 @@ const uiRoutes: UiRoutes = {
   // RFC-038 D3: one post of the mod's ordered turn sender (never a model's call): kept, and sent while a Session exists.
   turn: async (body) => {
     const post = parseTurnPost(body);
-    if (!post) throw new UiHttpError(400, "not a turn post");
+    if (!post) throw new ModHttpError(400, "not a turn post");
     turnList.post(post);
     turnReported = true;
     publishTurn();
@@ -1428,7 +1428,7 @@ const uiRoutes: UiRoutes = {
 /** requireBridge() as an HTTP refusal: its text says why (not configured, not connected). */
 function uiGate(): void {
   const gate = requireBridge();
-  if (gate) throw new UiHttpError(409, gate.content[0]!.text);
+  if (gate) throw new ModHttpError(409, gate.content[0]!.text);
 }
 
 function ctlOptions(claudePid: number, takeover: boolean): CtlServerOptions<PendingEntry> {
@@ -3304,7 +3304,7 @@ const workDeps: WorkDeps = {
 
 /**
  * The pane's four reads as plain view objects, shared by the `ui_*` MCP tools (the fallback) and the
- * UI socket (ui/ui-server.ts, which serves them whole). The MCP wrapper gates on requireBridge() and
+ * mod server (ui/mod-server.ts, which serves them whole). The MCP wrapper gates on requireBridge() and
  * wraps the result as a tool output; the socket does the same gate as an HTTP 409.
  */
 async function uiState() {
@@ -3585,7 +3585,7 @@ function uiSnapshot() {
     gateway: uiGateway,
     version: PLUGIN_VERSION,
     staleSince: staleSince !== null ? localIso(staleSince) : null,
-    uiSocket: ctlMgr?.companionPath() ?? null,
+    modSocket: ctlMgr?.companionPath() ?? null,
     boot: SERVER_BOOT,
   });
 }
@@ -3705,7 +3705,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 /**
  * One tool, by name: what an MCP call runs, and what the pane's socket runs for the actions a person
- * starts (ui/ui-server.ts `POST /tool/:name`, PERSON_TOOLS). Same code, same answers; only the path in
+ * starts (ui/mod-server.ts `POST /tool/:name`, PERSON_TOOLS). Same code, same answers; only the path in
  * differs, so a person's action is not bound by the model's tool-output limit or its tool hooks.
  */
 async function runTool(name: string, args: Record<string, unknown>, touched: string[] = []): Promise<CallToolResult> {
@@ -5015,8 +5015,8 @@ async function startCtl(claudePid: number): Promise<void> {
     options: (takeover) => ctlOptions(claudePid, takeover),
     retryDelaysMs: CTL_RETRY_DELAYS_MS,
     holdsLock: holdsLiveLock,
-    // The pane's data socket follows the control socket (ctl-manager.ts); the snapshot carries its path.
-    companion: () => openUiServer({ path: uiSocketPath(STATE_DIR, claudePid), routes: uiRoutes, log: (line) => process.stderr.write(line + "\n") }).server,
+    // The mod server follows the control socket (ctl-manager.ts); the snapshot carries its path.
+    companion: () => openModServer({ path: modSocketPath(STATE_DIR, claudePid), routes: modRoutes, log: (line) => process.stderr.write(line + "\n") }).server,
     onCompanion: refreshUi,
     ...(CTL_WATCH_MS ? { watchMs: CTL_WATCH_MS } : {}),
   });
